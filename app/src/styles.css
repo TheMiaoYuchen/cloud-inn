@@ -1,0 +1,27 @@
+:root {
+  font-family: Inter, Avenir, Helvetica, Arial, sans-serif;
+  color: #1f2621;
+  background: #f5f2ea;
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+body {
+  margin: 0;
+}
+
+nav {
+  display: flex;
+  gap: 1rem;
+  padding: 1rem;
+}
+
+main {
+  padding: 1rem;
+}
+
+a {
+  color: inherit;
+}
