@@ -315,8 +315,11 @@ fn validate_game(g: &Value) -> Result<Fields, String> {
                 .map_err(|_| "存档数据损坏".to_string())?,
             metrics: serde_json::to_string(obj(v, "metrics")?)
                 .map_err(|_| "存档数据损坏".to_string())?,
-            visual: serde_json::to_string(obj(v, "visual")?)
-                .map_err(|_| "存档数据损坏".to_string())?,
+            visual: {
+                validate_visual_tree(obj(v, "visual")?)?;
+                serde_json::to_string(obj(v, "visual")?)
+            }
+            .map_err(|_| "存档数据损坏".to_string())?,
         }),
     };
     let floor = obj(g, "floor")?;
@@ -412,6 +415,51 @@ fn validate_phase2(value: &Value) -> Result<String, String> {
         .ok_or_else(|| "存档数据损坏".to_string())?;
     if !object["roomVariants"].is_array() {
         return Err("存档数据损坏".into());
+    }
+    let template = &object["corridorTemplate"];
+    if !template.is_null() {
+        let width = intv(template, "width", 1, true)?;
+        let height = intv(template, "height", 1, true)?;
+        for key in ["core", "corridor", "entrances", "slots"] {
+            if !obj(template, key)?.is_array() {
+                return Err("存档数据损坏".into());
+            }
+        }
+        for point in obj(template, "core")?
+            .as_array()
+            .unwrap()
+            .iter()
+            .chain(obj(template, "corridor")?.as_array().unwrap())
+            .chain(obj(template, "entrances")?.as_array().unwrap())
+        {
+            let x = intv(point, "x", 0, false)?;
+            let y = intv(point, "y", 0, false)?;
+            if x >= width || y >= height {
+                return Err("存档数据损坏".into());
+            }
+        }
+    }
+    if let Some(placements) = object.get("floorPlacements") {
+        let placements = placements
+            .as_array()
+            .ok_or_else(|| "存档数据损坏".to_string())?;
+        let variant_ids = variants
+            .iter()
+            .map(|v| strv(v, "id"))
+            .collect::<Result<HashSet<_>, _>>()?;
+        let mut slots = HashSet::new();
+        for placement in placements {
+            if !slots.insert(strv(placement, "slotId")?)
+                || !variant_ids.contains(&strv(placement, "variantId")?)
+            {
+                return Err("存档数据损坏".into());
+            }
+            if ![0, 90, 180, 270].contains(&intv(placement, "rotation", 0, false)?)
+                || obj(placement, "mirrored")?.as_bool().is_none()
+            {
+                return Err("存档数据损坏".into());
+            }
+        }
     }
     if let Some(master) = object.get("roomMaster") {
         if !master.is_null() && !master.is_object() {

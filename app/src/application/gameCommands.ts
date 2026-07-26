@@ -75,10 +75,11 @@ export function createGameCommands(savePort: SavePort) {
         changedMaster,
         phase2.roomVariants,
       );
-      const legalIds = new Set(legalChanges.map((change) => change.id));
-      if (changes.some((change) => !legalIds.has(change.id))) {
+      const legalById = new Map(legalChanges.map((change) => [change.id, change]));
+      if (changes.some((change) => !legalById.has(change.id))) {
         throw new Error("同步选项已过期，请重新预览");
       }
+      const normalizedChanges = changes.map(change => ({ ...legalById.get(change.id)!, selected: change.selected }));
       const roomMaster = createRoomMaster({
         id: changedMaster.id,
         name: changedMaster.name,
@@ -90,7 +91,7 @@ export function createGameCommands(savePort: SavePort) {
       const roomVariants = applySelectedSync(
         roomMaster,
         phase2.roomVariants,
-        changes,
+        normalizedChanges,
       );
       return persist(state, {
         ...state,
@@ -108,9 +109,15 @@ export function createGameCommands(savePort: SavePort) {
       const template = phase2?.corridorTemplate;
       if (!phase2 || !template) throw new Error("请先选择环廊模板");
       if (!template.slots.some(slot => slot.id === input.slotId)) throw new Error("房间槽位无效");
-      if (!phase2.roomVariants.some(variant => variant.id === input.variantId)) throw new Error("客房变体无效");
+      const variant = phase2.roomVariants.find(item => item.id === input.variantId);
+      if (!variant?.metrics || !state.roomBlueprint) throw new Error("客房变体无效");
+      const existingRoom = state.floor.rooms.find(room=>room.slotId===input.slotId);
+      const refundedCash = state.cashCents + (existingRoom?.committedBuildCostCents ?? 0);
+      if (refundedCash < variant.metrics.buildCostCents) throw new Error("资金不足，设计已保留");
       const floorPlacements = [...(phase2.floorPlacements ?? []).filter(item => item.slotId !== input.slotId), structuredClone(input)];
-      return persist(state, { ...state, phase2: { ...phase2, floorPlacements } });
+      const room = { id:`room-${input.slotId}`, slotId:input.slotId, roomBlueprintId:state.roomBlueprint.id, committedBuildCostCents:variant.metrics.buildCostCents };
+      const rooms=[...state.floor.rooms.filter(item=>item.slotId!==input.slotId),room];
+      return persist(state, { ...state, phase:rooms.length?'ready':'floor', cashCents:refundedCash-variant.metrics.buildCostCents, floor:{...state.floor,rooms}, phase2: { ...phase2, floorPlacements } });
     },
 
     async saveRoomBlueprint(
