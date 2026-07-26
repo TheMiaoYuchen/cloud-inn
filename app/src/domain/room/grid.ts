@@ -5,6 +5,10 @@ export type RoomValidation =
   | { ok: true; areaSquareMeters: number }
   | { ok: false; reason: string };
 
+function isFiniteInteger(value: number): boolean {
+  return Number.isFinite(value) && Number.isInteger(value);
+}
+
 function coordinateKey(x: number, y: number): string {
   return `${x},${y}`;
 }
@@ -30,6 +34,17 @@ export function createRectangle(
   height: number,
   zone: ZoneKind,
 ): Cell[] {
+  if (
+    !isFiniteInteger(x) ||
+    !isFiniteInteger(y) ||
+    !isFiniteInteger(width) ||
+    !isFiniteInteger(height) ||
+    width < 0 ||
+    height < 0
+  ) {
+    throw new Error("矩形参数必须是有限整数，宽高不能为负数");
+  }
+
   const cells: Cell[] = [];
 
   for (let cellY = y; cellY < y + height; cellY += 1) {
@@ -63,8 +78,14 @@ export function validateRoomCells(
   }
 
   if (
+    !isFiniteInteger(columns) ||
+    !isFiniteInteger(rows) ||
+    columns <= 0 ||
+    rows <= 0 ||
     normalizedCells.some(
       (cell) =>
+        !isFiniteInteger(cell.x) ||
+        !isFiniteInteger(cell.y) ||
         cell.x < 0 ||
         cell.y < 0 ||
         cell.x >= columns ||
