@@ -1,0 +1,59 @@
+import type { Cell } from "../game/state";
+
+/** Shared visual language inherited by a hotel, series, and room variant. */
+export interface DesignGene {
+  palette: string;
+  materials: string[];
+  metal: string;
+  lighting: string;
+  mood: string;
+}
+
+export interface StylePreset {
+  id: string;
+  name: string;
+  gene: DesignGene;
+}
+
+export type RoomVariantOverride =
+  | "bedType"
+  | "area"
+  | "view"
+  | "furniture"
+  | "featureIntensity"
+  | "gene";
+
+export interface RoomVariant {
+  id: string;
+  name: string;
+  masterId: string;
+  cells: Cell[];
+  rotation: 0 | 90 | 180 | 270;
+  mirrored: boolean;
+  overrides: RoomVariantOverride[];
+  gene: DesignGene;
+}
+
+export interface GridPoint {
+  x: number;
+  y: number;
+}
+
+export interface CorridorSlot {
+  id: string;
+  anchor: GridPoint;
+  width: number;
+  height: number;
+}
+
+export interface CorridorTemplate {
+  id: string;
+  name: string;
+  width: number;
+  height: number;
+  core: GridPoint[];
+  corridor: GridPoint[];
+  entrances: GridPoint[];
+  slots: CorridorSlot[];
+}
+

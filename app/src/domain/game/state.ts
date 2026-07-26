@@ -8,6 +8,11 @@ import type {
   RoomInstanceId,
   SaveId,
 } from "../primitives";
+import type {
+  CorridorTemplate,
+  DesignGene,
+  RoomVariant,
+} from "../design/designTypes";
 
 export type ZoneKind = "bedroom" | "bathroom";
 
@@ -60,6 +65,13 @@ export interface DailyReport {
   reasons: string[];
 }
 
+/** Optional Phase 2 envelope; absent in and compatible with Phase 1 saves. */
+export interface Phase2DesignState {
+  hotelGene: DesignGene;
+  roomVariants: RoomVariant[];
+  corridorTemplate: CorridorTemplate | null;
+}
+
 export interface GameState {
   schemaVersion: 1;
   rulesetVersion: typeof prototypeConfig.rulesetVersion;
@@ -76,6 +88,7 @@ export interface GameState {
   };
   reports: DailyReport[];
   latestReport: DailyReport | null;
+  phase2?: Phase2DesignState;
 }
 
 export function createNewGame(saveId: SaveId): GameState {
