@@ -19,14 +19,20 @@ export function MinimalCanvas() {
         window.devicePixelRatio,
       );
       const nextApp = new Application();
-      await nextApp.init({
-        width: size.width,
-        height: size.height,
-        resolution: size.resolution,
-        autoDensity: true,
-        background: "#182321",
-        antialias: true,
-      });
+      try {
+        await nextApp.init({
+          width: size.width,
+          height: size.height,
+          resolution: size.resolution,
+          autoDensity: true,
+          background: "#182321",
+          antialias: true,
+        });
+      } catch (error) {
+        nextApp.destroy(true, { children: true });
+        console.error("Failed to initialize Pixi canvas", error);
+        return;
+      }
 
       if (cancelled) {
         nextApp.destroy(true, { children: true });
