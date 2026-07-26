@@ -1,4 +1,5 @@
 import { render, screen } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
 import { describe, expect, it } from 'vitest';
 import { FloorPlanningPage } from './FloorPlanningPage';
 import { GameProvider } from '../state/GameProvider';
@@ -16,6 +17,7 @@ async function floorPort() {
 
 describe('phase two floor planning', () => {
   it('shows template selection, square ring corridor, true-size slots, and hints', async () => {
+    const user=userEvent.setup();
     render(<GameProvider savePort={await floorPort()} saveId="floor-save"><FloorPlanningPage /></GameProvider>);
     expect(await screen.findByRole('heading', { name:'高层酒店楼层规划' })).toBeInTheDocument();
     expect(screen.getByRole('button', { name:'完整方形环廊' })).toBeInTheDocument();
@@ -24,5 +26,9 @@ describe('phase two floor planning', () => {
     expect(screen.getByText('核心筒')).toBeInTheDocument();
     expect(screen.getAllByLabelText(/房间槽位/).length).toBeGreaterThan(4);
     expect(screen.getByRole('region', { name:'规划提示' })).toBeInTheDocument();
+    await user.selectOptions(screen.getByLabelText('替换房型'),'master-corner');
+    await user.click(screen.getByRole('button',{name:'旋转 90°'}));
+    await user.click(screen.getByRole('button',{name:'水平镜像'}));
+    await user.click(screen.getAllByLabelText(/房间槽位/)[0]);
   });
 });

@@ -12,6 +12,7 @@ import type {
   CorridorTemplate,
   DesignGene,
   RoomVariant,
+  FloorVariantPlacement,
 } from "../design/designTypes";
 import type { RoomMaster } from "../design/roomSeries";
 
@@ -72,6 +73,7 @@ export interface Phase2DesignState {
   roomMaster: RoomMaster | null;
   roomVariants: RoomVariant[];
   corridorTemplate: CorridorTemplate | null;
+  floorPlacements?: FloorVariantPlacement[];
 }
 
 export interface GameState {

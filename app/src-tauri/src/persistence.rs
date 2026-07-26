@@ -406,11 +406,34 @@ fn validate_phase2(value: &Value) -> Result<String, String> {
             return Err("存档数据损坏".into());
         }
     }
+    validate_gene(&object["hotelGene"])?;
+    let variants = object["roomVariants"]
+        .as_array()
+        .ok_or_else(|| "存档数据损坏".to_string())?;
     if !object["roomVariants"].is_array() {
         return Err("存档数据损坏".into());
     }
     if let Some(master) = object.get("roomMaster") {
         if !master.is_null() && !master.is_object() {
+            return Err("存档数据损坏".into());
+        }
+        if master.is_object() {
+            let master_id = strv(master, "id")?;
+            validate_visual_tree(master)?;
+            for variant in variants {
+                if strv(variant, "masterId")? != master_id {
+                    return Err("存档数据损坏".into());
+                }
+                if ![0, 90, 180, 270].contains(&intv(variant, "rotation", 0, false)?) {
+                    return Err("存档数据损坏".into());
+                }
+                if !obj(variant, "cells")?.is_array() || !obj(variant, "overrides")?.is_array() {
+                    return Err("存档数据损坏".into());
+                }
+                validate_gene(obj(variant, "gene")?)?;
+                validate_visual_tree(variant)?;
+            }
+        } else if !variants.is_empty() {
             return Err("存档数据损坏".into());
         }
     } else {
@@ -425,14 +448,47 @@ fn validate_phase2(value: &Value) -> Result<String, String> {
     {
         return Err("视觉元数据不安全".into());
     }
-    if let Some(visual) = object.get("visual") {
-        if let Some(asset) = visual.get("assetPath").and_then(Value::as_str) {
-            if !asset.starts_with("/visuals/") {
-                return Err("视觉资源命名空间无效".into());
+    validate_visual_tree(value)?;
+    Ok(text)
+}
+
+fn validate_gene(value: &Value) -> Result<(), String> {
+    for key in ["palette", "metal", "lighting", "mood"] {
+        strv(value, key)?;
+    }
+    let materials = obj(value, "materials")?
+        .as_array()
+        .ok_or_else(|| "存档数据损坏".to_string())?;
+    if materials.is_empty()
+        || materials
+            .iter()
+            .any(|item| item.as_str().is_none_or(str::is_empty))
+    {
+        return Err("存档数据损坏".into());
+    }
+    Ok(())
+}
+
+fn validate_visual_tree(value: &Value) -> Result<(), String> {
+    match value {
+        Value::Object(map) => {
+            if let Some(asset) = map.get("assetPath").and_then(Value::as_str) {
+                if !asset.starts_with("/visuals/") || asset.contains("..") {
+                    return Err("视觉资源命名空间无效".into());
+                }
+            }
+            for child in map.values() {
+                validate_visual_tree(child)?;
             }
         }
+        Value::Array(items) => {
+            for child in items {
+                validate_visual_tree(child)?;
+            }
+        }
+        _ => {}
     }
-    Ok(text)
+    Ok(())
 }
 
 #[cfg(test)]
@@ -480,7 +536,7 @@ mod tests {
         let r = SaveRepository::new(root("phase2-roundtrip"));
         let mut g = game();
         g["phase2"] = json!({
-            "hotelGene": {"palette": ["jade"], "materials": ["wood"], "lighting": "warm", "accents": ["ink"]},
+            "hotelGene": {"palette": "jade", "materials": ["wood"], "metal":"bronze", "lighting": "warm", "mood": "quiet"},
             "roomMaster": null,
             "roomVariants": [],
             "corridorTemplate": null

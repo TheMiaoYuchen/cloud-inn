@@ -26,4 +26,20 @@ describe('phase two room editor', () => {
     await user.click(screen.getByRole('button', { name: '保存客房系列' }));
     expect(await screen.findByText('母版与 3 个房型变体已保存')).toBeInTheDocument();
   });
+
+  it('offers full editing tools and undo/redo', async()=>{
+    const user=userEvent.setup(); render(<GameProvider savePort={new InMemorySavePort()}><RoomDesignPage/></GameProvider>);
+    await screen.findByRole('button',{name:'选择'});
+    for(const name of ['墙体','门','窗']) expect(screen.getByRole('button',{name})).toBeInTheDocument();
+    const cell=screen.getByRole('button',{name:'格子 0,0'}); await user.click(cell);
+    expect(screen.getByRole('button',{name:'撤销'})).toBeEnabled(); await user.click(screen.getByRole('button',{name:'撤销'}));
+    expect(screen.getByRole('button',{name:'重做'})).toBeEnabled();
+  });
+
+  it('does not show a success notice after an invalid save', async()=>{
+    const user=userEvent.setup(); render(<GameProvider savePort={new InMemorySavePort()}><RoomDesignPage/></GameProvider>);
+    await user.click(await screen.findByRole('button',{name:'保存客房系列'}));
+    expect(await screen.findByText('客房母版名称不能为空')).toBeInTheDocument();
+    expect(screen.queryByText('母版与 3 个房型变体已保存')).not.toBeInTheDocument();
+  });
 });

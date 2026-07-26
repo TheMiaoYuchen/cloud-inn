@@ -4,10 +4,12 @@ import {
   applySelectedSync,
   createRoomMaster,
   createRoomVariants,
+  previewMasterSync,
   type RoomMaster,
   type SyncChange,
 } from "../domain/design/roomSeries";
 import { placeRoom as planRoom } from "../domain/floor/planFloor";
+import type { CorridorTemplate } from "../domain/design/designTypes";
 import type { Cell, GameState } from "../domain/game/state";
 import { assertSafeMoney } from "../domain/primitives";
 import { evaluateRoom } from "../domain/room/evaluateRoom";
@@ -68,6 +70,15 @@ export function createGameCommands(savePort: SavePort) {
       if (changedMaster.id !== phase2.roomMaster.id) {
         throw new Error("母版与客房系列不匹配");
       }
+      const legalChanges = previewMasterSync(
+        phase2.roomMaster,
+        changedMaster,
+        phase2.roomVariants,
+      );
+      const legalIds = new Set(legalChanges.map((change) => change.id));
+      if (changes.some((change) => !legalIds.has(change.id))) {
+        throw new Error("同步选项已过期，请重新预览");
+      }
       const roomMaster = createRoomMaster({
         id: changedMaster.id,
         name: changedMaster.name,
@@ -85,6 +96,21 @@ export function createGameCommands(savePort: SavePort) {
         ...state,
         phase2: { ...phase2, roomMaster, roomVariants },
       });
+    },
+
+    async chooseCorridorTemplate(state: GameState, corridorTemplate: CorridorTemplate): Promise<GameState> {
+      if (!state.phase2) throw new Error("请先创建客房系列");
+      return persist(state, { ...state, phase2: { ...state.phase2, corridorTemplate: structuredClone(corridorTemplate), floorPlacements: [] } });
+    },
+
+    async placeRoomVariant(state: GameState, input: { slotId: string; variantId: string; rotation: 0|90|180|270; mirrored: boolean }): Promise<GameState> {
+      const phase2 = state.phase2;
+      const template = phase2?.corridorTemplate;
+      if (!phase2 || !template) throw new Error("请先选择环廊模板");
+      if (!template.slots.some(slot => slot.id === input.slotId)) throw new Error("房间槽位无效");
+      if (!phase2.roomVariants.some(variant => variant.id === input.variantId)) throw new Error("客房变体无效");
+      const floorPlacements = [...(phase2.floorPlacements ?? []).filter(item => item.slotId !== input.slotId), structuredClone(input)];
+      return persist(state, { ...state, phase2: { ...phase2, floorPlacements } });
     },
 
     async saveRoomBlueprint(

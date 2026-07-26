@@ -5,6 +5,7 @@ import { AppShell } from "./AppShell";
 import { RoomDesignPage } from "../pages/RoomDesignPage";
 import { FloorPlanningPage } from "../pages/FloorPlanningPage";
 import { OperationsPage } from "../pages/OperationsPage";
+import { RoomVariantPage } from "../pages/RoomVariantPage";
 
 export function createAppRouter() {
   return createHashRouter([
@@ -15,6 +16,7 @@ export function createAppRouter() {
         { index: true, element: <HotelOverviewPage /> },
         { path: "canvas", element: <CanvasPage /> },
         { path: "design", element: <RoomDesignPage /> },
+        { path: "design/variants", element: <RoomVariantPage /> },
         { path: "floor-plan", element: <FloorPlanningPage /> },
         { path: "floor", element: <FloorPlanningPage /> },
         { path: "operations", element: <OperationsPage /> },

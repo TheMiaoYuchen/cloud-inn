@@ -167,25 +167,31 @@ export function validateCorridorTemplate(template: CorridorTemplate): CorridorVa
   const corridor = new Set(template.corridor.map(pointKey));
   const entrances = new Set(template.entrances.map(pointKey));
   const traversable = new Set([...core, ...corridor, ...entrances]);
+  const inBounds = ({x,y}:GridPoint) => Number.isInteger(x) && Number.isInteger(y) && x >= 0 && y >= 0 && x < template.width && y < template.height;
 
   if (template.width <= 0 || template.height <= 0 || !Number.isInteger(template.width) || !Number.isInteger(template.height)) {
     reasons.push("模板尺寸必须是正整数");
   }
   if (!template.core.length || !template.corridor.length) reasons.push("核心筒和走廊不能为空");
+  if ([...template.core,...template.corridor,...template.entrances].some(point=>!inBounds(point))) reasons.push("模板坐标超出边界");
   if (template.entrances.length === 0 || !template.entrances.some((entrance) => connected(entrance, core, traversable) && isAdjacentTo(entrance, corridor))) {
     reasons.push("入口未连接核心筒与走廊");
   }
 
   const occupied = new Set([...core, ...corridor]);
+  const slotIds = new Set<string>();
   for (const slot of template.slots) {
+    if (!slotIds.add(slot.id)) reasons.push(`槽位 ${slot.id} 编号重复`);
     if (!Number.isInteger(slot.width) || !Number.isInteger(slot.height) || slot.width <= 0 || slot.height <= 0) {
       reasons.push(`槽位 ${slot.id} 尺寸无效`);
       continue;
     }
     const footprint = createRoomFootprint(slot, slot);
+    if (footprint.cells.some(cell=>!inBounds(cell))) reasons.push(`槽位 ${slot.id} 超出模板边界`);
     const overlap = footprint.cells.some((cell) => occupied.has(pointKey(cell)));
     if (overlap) reasons.push(`槽位 ${slot.id} 与核心筒或走廊重叠`);
     if (!footprint.cells.some((cell) => isAdjacentTo(cell, corridor))) reasons.push(`槽位 ${slot.id} 未连接走廊`);
+    footprint.cells.forEach(cell=>occupied.add(pointKey(cell)));
   }
 
   if (template.corridor.length) {

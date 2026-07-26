@@ -58,3 +58,10 @@ export interface CorridorTemplate {
   entrances: GridPoint[];
   slots: CorridorSlot[];
 }
+
+export interface FloorVariantPlacement {
+  slotId: string;
+  variantId: string;
+  rotation: 0 | 90 | 180 | 270;
+  mirrored: boolean;
+}
