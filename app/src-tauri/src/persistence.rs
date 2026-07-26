@@ -113,7 +113,7 @@ impl SaveRepository {
     fn open(&self, save_id: &str) -> Result<Connection, String> {
         let path = self.db_path(save_id);
         fs::create_dir_all(path.parent().unwrap()).map_err(|e| e.to_string())?;
-        let conn = Connection::open(path).map_err(db_err)?;
+        let mut conn = Connection::open(path).map_err(db_err)?;
         conn.pragma_update(None, "foreign_keys", "ON")
             .map_err(db_err)?;
         conn.pragma_update(None, "journal_mode", "WAL")
@@ -129,18 +129,21 @@ impl SaveRepository {
             [],
         )
         .map_err(db_err)?;
-        migrate_legacy(&conn)?;
+        migrate_legacy(&mut conn)?;
         Ok(conn)
     }
 }
 
-fn migrate_legacy(conn: &Connection) -> Result<(), String> {
-    let has_ordinal: bool = conn
+fn migrate_legacy(conn: &mut Connection) -> Result<(), String> {
+    let tx = conn
+        .transaction_with_behavior(TransactionBehavior::Immediate)
+        .map_err(db_err)?;
+    let has_ordinal: bool = tx
         .prepare("SELECT 1 FROM pragma_table_info('room_instances') WHERE name='ordinal'")
         .map_err(db_err)?
         .exists([])
         .map_err(db_err)?;
-    let has_v2: bool = conn
+    let has_v2: bool = tx
         .query_row(
             "SELECT count(*) FROM schema_migrations WHERE version=2",
             [],
@@ -149,11 +152,10 @@ fn migrate_legacy(conn: &Connection) -> Result<(), String> {
         .map_err(db_err)?
         > 0;
     if has_ordinal && has_v2 {
-        return Ok(());
+        return tx.commit().map_err(db_err);
     }
-    let tx = conn.unchecked_transaction().map_err(db_err)?;
     if !has_ordinal {
-        tx.execute_batch("ALTER TABLE room_instances RENAME TO room_instances_legacy; CREATE UNIQUE INDEX IF NOT EXISTS room_blueprints_save_blueprint ON room_blueprints(save_id, blueprint_id); CREATE TABLE room_instances (save_id TEXT NOT NULL REFERENCES saves(save_id) ON DELETE CASCADE, instance_id TEXT NOT NULL, slot_id TEXT NOT NULL, blueprint_id TEXT NOT NULL, ordinal INTEGER NOT NULL CHECK(ordinal >= 0), committed_build_cost_cents INTEGER NOT NULL CHECK(committed_build_cost_cents >= 0), PRIMARY KEY(save_id, instance_id), UNIQUE(save_id, slot_id), FOREIGN KEY(save_id, blueprint_id) REFERENCES room_blueprints(save_id, blueprint_id) ON DELETE CASCADE); INSERT INTO room_instances(save_id,instance_id,slot_id,blueprint_id,ordinal,committed_build_cost_cents) SELECT save_id,instance_id,slot_id,blueprint_id,ROW_NUMBER() OVER (PARTITION BY save_id ORDER BY rowid)-1,committed_build_cost_cents FROM room_instances_legacy; DROP TABLE room_instances_legacy;").map_err(db_err)?;
+        tx.execute_batch("ALTER TABLE room_instances RENAME TO room_instances_legacy; CREATE UNIQUE INDEX IF NOT EXISTS room_blueprints_save_blueprint ON room_blueprints(save_id, blueprint_id); CREATE TABLE room_instances (save_id TEXT NOT NULL REFERENCES saves(save_id) ON DELETE CASCADE, instance_id TEXT NOT NULL, slot_id TEXT NOT NULL, blueprint_id TEXT NOT NULL, ordinal INTEGER NOT NULL CHECK(ordinal >= 0), committed_build_cost_cents INTEGER NOT NULL CHECK(committed_build_cost_cents >= 0), PRIMARY KEY(save_id, instance_id), UNIQUE(save_id, slot_id), UNIQUE(save_id, ordinal), FOREIGN KEY(save_id, blueprint_id) REFERENCES room_blueprints(save_id, blueprint_id) ON DELETE CASCADE); INSERT INTO room_instances(save_id,instance_id,slot_id,blueprint_id,ordinal,committed_build_cost_cents) SELECT save_id,instance_id,slot_id,blueprint_id,ROW_NUMBER() OVER (PARTITION BY save_id ORDER BY rowid)-1,committed_build_cost_cents FROM room_instances_legacy; DROP TABLE room_instances_legacy;").map_err(db_err)?;
     }
     tx.execute_batch("CREATE UNIQUE INDEX IF NOT EXISTS room_blueprints_save_blueprint ON room_blueprints(save_id, blueprint_id);").map_err(db_err)?;
     tx.execute(
@@ -472,5 +474,49 @@ mod tests {
             .unwrap()
                 == 1
         );
+    }
+    #[test]
+    fn rejects_duplicate_room_ordinals_at_database_layer() {
+        let r = SaveRepository::new(root("ordinal-unique"));
+        let g = blueprint_game(
+            1,
+            json!([
+                {"id":"r-ne","slotId":"slot-ne","roomBlueprintId":"bp-1","committedBuildCostCents":1},
+                {"id":"r-nw","slotId":"slot-nw","roomBlueprintId":"bp-1","committedBuildCostCents":2}
+            ]),
+        );
+        r.commit_game(0, g).unwrap();
+        let conn = r.open("save-1").unwrap();
+        let err = conn
+            .execute(
+                "UPDATE room_instances SET ordinal=0 WHERE instance_id='r-nw'",
+                [],
+            )
+            .unwrap_err();
+        assert!(err.to_string().contains("UNIQUE"));
+    }
+    #[test]
+    fn concurrent_legacy_open_migration_is_idempotent() {
+        let root = root("legacy-race");
+        let r = SaveRepository::new(root.clone());
+        let path = r.db_path("save-1");
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        let conn = Connection::open(&path).unwrap();
+        conn.execute_batch("CREATE TABLE schema_migrations(version INTEGER PRIMARY KEY, applied_at TEXT NOT NULL); INSERT INTO schema_migrations VALUES(1,'now'); CREATE TABLE saves(save_id TEXT PRIMARY KEY,schema_version INTEGER NOT NULL,ruleset_version TEXT NOT NULL,revision INTEGER NOT NULL,phase TEXT NOT NULL,current_day INTEGER NOT NULL,cash_cents INTEGER NOT NULL,rate_cents INTEGER NOT NULL,latest_report_json TEXT,updated_at TEXT NOT NULL); CREATE TABLE room_blueprints(save_id TEXT PRIMARY KEY,blueprint_id TEXT NOT NULL,name TEXT NOT NULL,columns_count INTEGER NOT NULL,rows_count INTEGER NOT NULL,cells_json TEXT NOT NULL,metrics_json TEXT NOT NULL,visual_json TEXT NOT NULL); CREATE TABLE room_instances(save_id TEXT NOT NULL,instance_id TEXT NOT NULL,slot_id TEXT NOT NULL,blueprint_id TEXT NOT NULL,committed_build_cost_cents INTEGER NOT NULL,PRIMARY KEY(save_id,instance_id),UNIQUE(save_id,slot_id)); CREATE TABLE daily_reports(save_id TEXT NOT NULL,game_day INTEGER NOT NULL,report_json TEXT NOT NULL,PRIMARY KEY(save_id,game_day)); INSERT INTO saves VALUES('save-1',1,'prototype-v1',1,'design',0,100,10,NULL,'now'); INSERT INTO room_blueprints VALUES('save-1','bp-1','Suite',1,1,'[]','{}','{\"status\":\"idle\"}'); INSERT INTO room_instances VALUES('save-1','r-ne','slot-ne','bp-1',1);").unwrap();
+        let barrier = std::sync::Arc::new(std::sync::Barrier::new(2));
+        let a = SaveRepository::new(root.clone());
+        let b = SaveRepository::new(root);
+        let ba = barrier.clone();
+        let ha = std::thread::spawn(move || {
+            ba.wait();
+            a.load_game("save-1")
+        });
+        let bb = barrier;
+        let hb = std::thread::spawn(move || {
+            bb.wait();
+            b.load_game("save-1")
+        });
+        assert!(ha.join().unwrap().is_ok());
+        assert!(hb.join().unwrap().is_ok());
     }
 }
