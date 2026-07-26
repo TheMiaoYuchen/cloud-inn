@@ -24,5 +24,5 @@ Use this checklist for a packaged desktop build. Record the macOS version, CPU a
 
 - macOS version: 26.5.2
 - Architecture (for example, arm64): arm64
-- Commit: 1070ce0 plus the Phase 1 acceptance fixes recorded in the next commit
+- Commit: 559d11b
 - Result / notes: PASS for the packaged debug shell, design fixture, 24㎡ metrics, save, effect-image entry, four-slot construction, and SQLite-backed state updates. The deterministic two-day close/reopen path is covered by Playwright and Rust persistence tests; the packaged app was rebuilt and launched from the current source. No API token or Base64 image payload is stored by the offline visual provider.
