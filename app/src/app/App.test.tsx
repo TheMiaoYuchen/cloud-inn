@@ -26,4 +26,15 @@ describe("App", () => {
     await user.click(screen.getByRole("link", { name: "酒店总览" }));
     expect(screen.getByRole("heading", { name: "Cloud Inn" })).toBeInTheDocument();
   });
+
+  it("disables later progress links until the saved game reaches those phases", async () => {
+    render(<App savePort={new InMemorySavePort()} />);
+
+    expect(screen.getByRole("link", { name: "设计" })).not.toHaveAttribute("aria-disabled", "true");
+    expect(screen.getByRole("link", { name: "楼层" })).toHaveAttribute("aria-disabled", "true");
+    expect(screen.getByRole("link", { name: "运营" })).toHaveAttribute("aria-disabled", "true");
+
+    await userEvent.setup().click(screen.getByRole("link", { name: "楼层" }));
+    expect(screen.getByRole("heading", { name: "Cloud Inn" })).toBeInTheDocument();
+  });
 });

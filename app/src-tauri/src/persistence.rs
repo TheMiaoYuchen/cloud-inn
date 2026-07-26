@@ -54,9 +54,9 @@ impl SaveRepository {
             reports.push(parse_json(report.map_err(db_err)?)?);
         }
         let latest_value = latest.map(parse_json).transpose()?;
-        Ok(Some(
-            json!({"schemaVersion":schema,"rulesetVersion":ruleset,"saveId":save_id,"revision":revision,"phase":phase,"currentDay":day,"cashCents":cash,"rateCents":rate,"roomBlueprint":blueprint,"floor":{"id":"prototype-floor","rooms":rooms},"reports":reports,"latestReport":latest_value}),
-        ))
+        let game = json!({"schemaVersion":schema,"rulesetVersion":ruleset,"saveId":save_id,"revision":revision,"phase":phase,"currentDay":day,"cashCents":cash,"rateCents":rate,"roomBlueprint":blueprint,"floor":{"id":"prototype-floor","rooms":rooms},"reports":reports,"latestReport":latest_value});
+        validate_game(&game)?;
+        Ok(Some(game))
     }
 
     pub fn commit_game(&self, expected_revision: i64, game: Value) -> Result<(), String> {
@@ -268,7 +268,13 @@ fn validate_game(g: &Value) -> Result<Fields, String> {
     let rate_cents = intv(g, "rateCents", 0, true)?;
     let latest_report = match g.get("latestReport") {
         Some(Value::Null) | None => None,
-        Some(v) => Some(serde_json::to_string(v).map_err(|_| "存档数据损坏".to_string())?),
+        Some(v) => {
+            let latest_day = intv(v, "day", 1, true)?;
+            if latest_day != current_day {
+                return Err("存档数据损坏".into());
+            }
+            Some(serde_json::to_string(v).map_err(|_| "存档数据损坏".to_string())?)
+        }
     };
     let blueprint = match g.get("roomBlueprint") {
         Some(Value::Null) | None => None,
@@ -291,6 +297,7 @@ fn validate_game(g: &Value) -> Result<Fields, String> {
     }
     let mut rooms = Vec::new();
     let mut slots = HashSet::new();
+    let mut instance_ids = HashSet::new();
     for v in obj(floor, "rooms")?
         .as_array()
         .ok_or_else(|| "存档数据损坏".to_string())?
@@ -301,6 +308,12 @@ fn validate_game(g: &Value) -> Result<Fields, String> {
             blueprint: strv(v, "roomBlueprintId")?,
             cost: intv(v, "committedBuildCostCents", 0, false)?,
         };
+        if rooms.len() >= 4
+            || !["slot-nw", "slot-ne", "slot-sw", "slot-se"].contains(&room.slot.as_str())
+            || !instance_ids.insert(room.id.clone())
+        {
+            return Err("存档数据损坏".into());
+        }
         if !slots.insert(room.slot.clone()) {
             return Err("存档数据损坏".into());
         }
@@ -311,18 +324,33 @@ fn validate_game(g: &Value) -> Result<Fields, String> {
     }
     let mut reports = Vec::new();
     let mut days = HashSet::new();
+    let mut previous_day = 0;
     for v in obj(g, "reports")?
         .as_array()
         .ok_or_else(|| "存档数据损坏".to_string())?
     {
-        let day = intv(v, "day", 0, false)?;
-        if !days.insert(day) {
+        let day = intv(v, "day", 1, true)?;
+        if !days.insert(day) || day != previous_day + 1 {
             return Err("日报日期重复".into());
         }
+        previous_day = day;
         reports.push((
             day,
             serde_json::to_string(v).map_err(|_| "存档数据损坏".to_string())?,
         ));
+    }
+    if current_day == 0 {
+        if !reports.is_empty() || latest_report.is_some() {
+            return Err("存档数据损坏".into());
+        }
+    } else if reports.len() as i64 != current_day
+        || previous_day != current_day
+        || latest_report.is_none()
+    {
+        return Err("存档数据损坏".into());
+    }
+    if matches!(phase.as_str(), "ready" | "open") && blueprint.is_none() {
+        return Err("存档数据损坏".into());
     }
     Ok(Fields {
         save_id,
@@ -405,7 +433,7 @@ mod tests {
         conn.execute_batch("CREATE TABLE trigger_probe(count INTEGER NOT NULL); INSERT INTO trigger_probe VALUES(0); CREATE TRIGGER fail_room BEFORE INSERT ON room_instances BEGIN UPDATE trigger_probe SET count=count+1; SELECT RAISE(ABORT, 'forced'); END;").unwrap();
         let mut next = blueprint_game(
             2,
-            json!([{"id":"room-1","slotId":"slot-1","roomBlueprintId":"bp-1","committedBuildCostCents":1}]),
+            json!([{"id":"room-1","slotId":"slot-ne","roomBlueprintId":"bp-1","committedBuildCostCents":1}]),
         );
         next["cashCents"] = json!(888);
         let error = r.commit_game(1, next).unwrap_err();
@@ -452,6 +480,82 @@ mod tests {
             json!([{"id":"r","slotId":"slot-ne","roomBlueprintId":"other","committedBuildCostCents":1}]),
         );
         assert!(r.commit_game(0, mismatch).is_err());
+    }
+
+    #[test]
+    fn rejects_unknown_slots_and_more_than_four_rooms() {
+        let r = SaveRepository::new(root("slot-validation"));
+        let invalid_slot = blueprint_game(
+            1,
+            json!([{"id":"r","slotId":"slot-center","roomBlueprintId":"bp-1","committedBuildCostCents":1}]),
+        );
+        assert!(r.commit_game(0, invalid_slot).is_err());
+
+        let rooms = (0..5)
+            .map(|i| json!({"id":format!("r-{i}"),"slotId":format!("slot-{i}"),"roomBlueprintId":"bp-1","committedBuildCostCents":1}))
+            .collect::<Vec<_>>();
+        let too_many = blueprint_game(1, json!(rooms));
+        assert!(r.commit_game(0, too_many).is_err());
+    }
+
+    #[test]
+    fn rejects_duplicate_room_instance_ids() {
+        let r = SaveRepository::new(root("room-id-validation"));
+        let duplicate = blueprint_game(
+            1,
+            json!([
+                {"id":"same","slotId":"slot-ne","roomBlueprintId":"bp-1","committedBuildCostCents":1},
+                {"id":"same","slotId":"slot-nw","roomBlueprintId":"bp-1","committedBuildCostCents":1}
+            ]),
+        );
+        assert!(r.commit_game(0, duplicate).is_err());
+    }
+
+    #[test]
+    fn rejects_ready_or_open_without_blueprint() {
+        let r = SaveRepository::new(root("phase-blueprint-validation"));
+        for phase in ["ready", "open"] {
+            let mut g = game();
+            g["phase"] = json!(phase);
+            assert!(r.commit_game(0, g).is_err());
+        }
+    }
+
+    #[test]
+    fn rejects_zero_or_out_of_order_report_days() {
+        let r = SaveRepository::new(root("report-day-validation"));
+        let mut zero = game();
+        zero["reports"] = json!([{"day":0}]);
+        assert!(r.commit_game(0, zero).is_err());
+
+        let mut out_of_order = game();
+        out_of_order["currentDay"] = json!(3);
+        out_of_order["reports"] = json!([{"day":1},{"day":3}]);
+        out_of_order["latestReport"] = json!({"day":3});
+        assert!(r.commit_game(0, out_of_order).is_err());
+    }
+
+    #[test]
+    fn rejects_latest_report_that_does_not_match_current_day() {
+        let r = SaveRepository::new(root("latest-report-validation"));
+        let mut g = game();
+        g["currentDay"] = json!(2);
+        g["reports"] = json!([{"day":1},{"day":2}]);
+        g["latestReport"] = json!({"day":1});
+        assert!(r.commit_game(0, g).is_err());
+    }
+
+    #[test]
+    fn rejects_corrupted_loaded_snapshot() {
+        let r = SaveRepository::new(root("load-validation"));
+        r.commit_game(0, game()).unwrap();
+        let conn = r.open("save-1").unwrap();
+        conn.execute(
+            "UPDATE saves SET phase='open', latest_report_json=?1",
+            [r#"{"day":1}"#],
+        )
+        .unwrap();
+        assert!(r.load_game("save-1").is_err());
     }
     #[test]
     fn preserves_room_array_order() {

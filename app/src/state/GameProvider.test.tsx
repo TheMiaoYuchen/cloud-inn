@@ -8,6 +8,52 @@ import type { SavePort } from '../application/ports/SavePort';
 import { createNewGame, type GameState } from '../domain/game/state';
 
 describe('GameProvider flow', () => {
+  it('exposes visualPending independently while a visual request is queued', async () => {
+    const port = new InMemorySavePort();
+    const initial: GameState = {
+      ...createNewGame('save-1'), revision: 1, phase: 'floor',
+      roomBlueprint: { id: 'room-type-1', name: 'Suite', columns: 8, rows: 12, cells: [], metrics: { areaSquareMeters: 24, buildCostCents: 1, suggestedRateCents: 1, businessFitBps: 1 }, visual: { status: 'idle' } },
+    };
+    await port.commit(0, initial);
+    let release!: () => void;
+    const visualProvider = { generate: async () => new Promise<{ assetPath: string }>((resolve) => { release = () => resolve({ assetPath: '/visuals/asset.svg' }); }) };
+    function Probe() { const { visualPending, commandPending, commands } = useGame(); return <><span>{visualPending ? 'visual-busy' : 'visual-idle'}</span><span>{commandPending ? 'busy' : 'idle'}</span><button onClick={() => void commands.requestVisual(visualProvider)}>request</button></>; }
+    const user = userEvent.setup();
+    render(<GameProvider savePort={port} visualProvider={visualProvider}><Probe /></GameProvider>);
+    await screen.findByText('visual-idle');
+    await user.click(screen.getByRole('button', { name: 'request' }));
+    expect(screen.getByText('visual-busy')).toBeInTheDocument();
+    expect(screen.getByText('busy')).toBeInTheDocument();
+    await act(async () => release());
+    expect(await screen.findByText('visual-idle')).toBeInTheDocument();
+  });
+  it('restores a saved room blueprint as the editor draft on bootstrap', async () => {
+    const port = new InMemorySavePort();
+    const saved: GameState = {
+      ...createNewGame('save-1'),
+      revision: 1,
+      phase: 'floor',
+      roomBlueprint: {
+        id: 'room-type-1', name: '云岫套房', columns: 8, rows: 12,
+        cells: [{ x: 1, y: 2, zone: 'bathroom' }],
+        metrics: { areaSquareMeters: 1, buildCostCents: 1, suggestedRateCents: 1, businessFitBps: 1 },
+        visual: { status: 'idle' },
+      },
+    };
+    await port.commit(0, saved);
+
+    function DraftProbe() {
+      const { draft } = useGame();
+      return <output data-testid="draft">{JSON.stringify({ name: draft.name, cells: draft.cells })}</output>;
+    }
+
+    render(<GameProvider savePort={port}><DraftProbe /></GameProvider>);
+
+    expect(await screen.findByTestId('draft')).toHaveTextContent(JSON.stringify({
+      name: '云岫套房', cells: [{ x: 1, y: 2, zone: 'bathroom' }],
+    }));
+  });
+
   it('renders design and transitions to floor', async () => {
     const port = new InMemorySavePort();
     const user = userEvent.setup();

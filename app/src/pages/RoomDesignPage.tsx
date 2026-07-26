@@ -26,11 +26,11 @@ export function RoomDesignPage() {
     <h1>设计你的第一间客房</h1>
     <button aria-label="云岫商务房" onClick={preset}>载入24㎡示例户型</button>
     <div>
-      <button aria-pressed={draft.activeZone === "bedroom"} onClick={() => setActiveZone("bedroom")}>bedroom</button>
-      <button aria-pressed={draft.activeZone === "bathroom"} onClick={() => setActiveZone("bathroom")}>bathroom</button>
-      <button aria-pressed={draft.tool === "paint"} onClick={() => selectTool("paint")}>paint</button>
-      <button aria-pressed={draft.tool === "erase"} onClick={() => selectTool("erase")}>erase</button>
-      <button aria-pressed={draft.tool === "rectangle"} onClick={() => selectTool("rectangle")}>rectangle</button>
+      <button aria-pressed={draft.activeZone === "bedroom"} onClick={() => setActiveZone("bedroom")}>卧室</button>
+      <button aria-pressed={draft.activeZone === "bathroom"} onClick={() => setActiveZone("bathroom")}>卫浴</button>
+      <button aria-pressed={draft.tool === "paint"} onClick={() => selectTool("paint")}>画笔</button>
+      <button aria-pressed={draft.tool === "erase"} onClick={() => selectTool("erase")}>橡皮</button>
+      <button aria-pressed={draft.tool === "rectangle"} onClick={() => selectTool("rectangle")}>矩形</button>
     </div>
     <input aria-label="房型名称" value={draft.name} onChange={(event) => setDraftName(event.target.value)} />
     <div className="grid" style={{ gridTemplateColumns: "repeat(8,1fr)" }}>
