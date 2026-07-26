@@ -1,0 +1,309 @@
+import { describe, expect, it } from "vitest";
+
+import { createNewGame } from "../domain/game/state";
+import type { GameState } from "../domain/game/state";
+import { prototypeConfig } from "../domain/config/prototypeConfig";
+import { createRectangle } from "../domain/room/grid";
+import { InMemorySavePort } from "../infrastructure/memory/InMemorySavePort";
+import { createGameCommands } from "./gameCommands";
+
+function prototypeCells() {
+  return [
+    ...createRectangle(0, 0, 8, 8, "bedroom"),
+    ...createRectangle(0, 8, 8, 4, "bathroom"),
+  ];
+}
+
+async function expectSavedRevision(
+  previous: GameState,
+  next: GameState,
+  store: InMemorySavePort,
+) {
+  expect(next.revision).toBe(previous.revision + 1);
+  expect(await store.load(next.saveId)).toEqual(next);
+}
+
+describe("game commands", () => {
+  it("runs design, build, open, and two-day settlement with automatic saves", async () => {
+    const store = new InMemorySavePort();
+    const commands = createGameCommands(store);
+    let state = createNewGame("save-1");
+    const cells = prototypeCells();
+
+    let previous = state;
+    state = await commands.saveRoomBlueprint(state, "云岫商务房", cells);
+    await expectSavedRevision(previous, state, store);
+    for (const slotId of ["slot-nw", "slot-ne", "slot-sw", "slot-se"]) {
+      previous = state;
+      state = await commands.placeRoom(state, slotId);
+      await expectSavedRevision(previous, state, store);
+    }
+    expect(state.cashCents).toBe(53_600_000);
+
+    previous = state;
+    state = await commands.openHotel(state);
+    await expectSavedRevision(previous, state, store);
+    previous = state;
+    state = await commands.advanceDay(state);
+    await expectSavedRevision(previous, state, store);
+    previous = state;
+    state = await commands.setRate(state, 160_000);
+    await expectSavedRevision(previous, state, store);
+    previous = state;
+    state = await commands.advanceDay(state);
+    await expectSavedRevision(previous, state, store);
+
+    expect(state.reports.map((report) => report.soldRooms)).toEqual([3, 0]);
+    expect(await store.load("save-1")).toEqual(state);
+  });
+
+  it("does not deduct cash or create a save when placement has no blueprint", async () => {
+    const store = new InMemorySavePort();
+    const commands = createGameCommands(store);
+    const state = createNewGame("save-1");
+
+    await expect(commands.placeRoom(state, "slot-nw")).rejects.toThrow(
+      "请先保存房型",
+    );
+    expect(state.cashCents).toBe(100_000_000);
+    expect(await store.load("save-1")).toBeNull();
+  });
+
+  it("trims the blueprint name and owns its configured grid cells", async () => {
+    const store = new InMemorySavePort();
+    const commands = createGameCommands(store);
+    const state = createNewGame("save-1");
+    const stateSnapshot = structuredClone(state);
+    const cells = prototypeCells();
+    const cellsSnapshot = structuredClone(cells);
+
+    const next = await commands.saveRoomBlueprint(
+      state,
+      "  云岫商务房  ",
+      cells,
+    );
+
+    expect(state).toEqual(stateSnapshot);
+    expect(cells).toEqual(cellsSnapshot);
+    expect(next).toMatchObject({
+      phase: "floor",
+      roomBlueprint: {
+        id: "room-type-1",
+        name: "云岫商务房",
+        columns: prototypeConfig.roomColumns,
+        rows: prototypeConfig.roomRows,
+        metrics: { areaSquareMeters: 24 },
+        visual: { status: "idle" },
+      },
+    });
+    expect(next.roomBlueprint?.cells).not.toBe(cells);
+    cells[0].zone = "bathroom";
+    expect(next.roomBlueprint?.cells[0].zone).toBe("bedroom");
+  });
+
+  it("rejects a blank blueprint name without changing state or saving", async () => {
+    const store = new InMemorySavePort();
+    const commands = createGameCommands(store);
+    const state = createNewGame("save-1");
+    const snapshot = structuredClone(state);
+
+    await expect(
+      commands.saveRoomBlueprint(state, "   ", prototypeCells()),
+    ).rejects.toThrow("房型名称不能为空");
+    expect(state).toEqual(snapshot);
+    expect(await store.load(state.saveId)).toBeNull();
+  });
+
+  it("rejects blueprint changes outside design without saving", async () => {
+    const store = new InMemorySavePort();
+    const commands = createGameCommands(store);
+    const designed = await commands.saveRoomBlueprint(
+      createNewGame("save-1"),
+      "初版",
+      prototypeCells(),
+    );
+    const persisted = await store.load(designed.saveId);
+
+    await expect(
+      commands.saveRoomBlueprint(designed, "改版", prototypeCells()),
+    ).rejects.toThrow("当前不能修改房型");
+    expect(await store.load(designed.saveId)).toEqual(persisted);
+  });
+
+  it("keeps persisted cash and rooms intact after duplicate or insufficient placement", async () => {
+    const store = new InMemorySavePort();
+    const commands = createGameCommands(store);
+    const designed = await commands.saveRoomBlueprint(
+      createNewGame("save-1"),
+      "云岫商务房",
+      prototypeCells(),
+    );
+    const built = await commands.placeRoom(designed, "slot-nw");
+    const snapshot = structuredClone(built);
+
+    await expect(commands.placeRoom(built, "slot-nw")).rejects.toThrow(
+      "这个位置已有客房",
+    );
+    expect(built).toEqual(snapshot);
+    expect(await store.load(built.saveId)).toEqual(snapshot);
+
+    const noCash = { ...built, cashCents: 0 };
+    await expect(commands.placeRoom(noCash, "slot-ne")).rejects.toThrow(
+      "资金不足，设计已保留",
+    );
+    expect(noCash.cashCents).toBe(0);
+    expect(await store.load(built.saveId)).toEqual(snapshot);
+  });
+
+  it("rejects an unsafe current cash value before placement arithmetic", async () => {
+    const store = new InMemorySavePort();
+    const commands = createGameCommands(store);
+    const designed = await commands.saveRoomBlueprint(
+      createNewGame("save-1"),
+      "云岫商务房",
+      prototypeCells(),
+    );
+    const persisted = await store.load(designed.saveId);
+    const unsafeCash = {
+      ...designed,
+      cashCents: Number.MAX_SAFE_INTEGER + 1,
+    };
+
+    await expect(commands.placeRoom(unsafeCash, "slot-nw")).rejects.toThrow(
+      "金额必须是非负整数分",
+    );
+    expect(await store.load(designed.saveId)).toEqual(persisted);
+  });
+
+  it.each([-1, 0, 1.5, Number.MAX_SAFE_INTEGER + 1, NaN, Infinity])(
+    "rejects invalid rate %s without saving",
+    async (rateCents) => {
+      const store = new InMemorySavePort();
+      const commands = createGameCommands(store);
+      const designed = await commands.saveRoomBlueprint(
+        createNewGame("save-1"),
+        "云岫商务房",
+        prototypeCells(),
+      );
+      const persisted = await store.load(designed.saveId);
+
+      await expect(commands.setRate(designed, rateCents)).rejects.toThrow(
+        "房价必须大于零",
+      );
+      expect(await store.load(designed.saveId)).toEqual(persisted);
+    },
+  );
+
+  it("allows rates after design and after opening", async () => {
+    const store = new InMemorySavePort();
+    const commands = createGameCommands(store);
+    let state = await commands.saveRoomBlueprint(
+      createNewGame("save-1"),
+      "云岫商务房",
+      prototypeCells(),
+    );
+    state = await commands.setRate(state, 100_000);
+    state = await commands.placeRoom(state, "slot-nw");
+    state = await commands.openHotel(state);
+    state = await commands.setRate(state, 160_000);
+
+    expect(state.phase).toBe("open");
+    expect(state.rateCents).toBe(160_000);
+    expect(await store.load(state.saveId)).toEqual(state);
+  });
+
+  it("enforces open and advance phases without duplicate commits", async () => {
+    const store = new InMemorySavePort();
+    const commands = createGameCommands(store);
+    const initial = createNewGame("save-1");
+
+    await expect(commands.openHotel(initial)).rejects.toThrow(
+      "至少建造一间客房才能开业",
+    );
+    await expect(commands.advanceDay(initial)).rejects.toThrow(
+      "酒店尚未开业",
+    );
+    expect(await store.load(initial.saveId)).toBeNull();
+
+    let opened = await commands.saveRoomBlueprint(
+      initial,
+      "云岫商务房",
+      prototypeCells(),
+    );
+    opened = await commands.placeRoom(opened, "slot-nw");
+    opened = await commands.openHotel(opened);
+    const persisted = await store.load(opened.saveId);
+
+    await expect(commands.openHotel(opened)).rejects.toThrow("当前不能开业");
+    expect(await store.load(opened.saveId)).toEqual(persisted);
+  });
+
+  it("does not mutate the state supplied to settlement", async () => {
+    const store = new InMemorySavePort();
+    const commands = createGameCommands(store);
+    let opened = await commands.saveRoomBlueprint(
+      createNewGame("save-1"),
+      "云岫商务房",
+      prototypeCells(),
+    );
+    opened = await commands.placeRoom(opened, "slot-nw");
+    opened = await commands.openHotel(opened);
+    const snapshot = structuredClone(opened);
+
+    const settled = await commands.advanceDay(opened);
+
+    expect(opened).toEqual(snapshot);
+    expect(settled.reports).toHaveLength(1);
+    expect(settled.latestReport).toBe(settled.reports[0]);
+  });
+
+  it("rejects a stale command and preserves the first divergent save", async () => {
+    const store = new InMemorySavePort();
+    const commands = createGameCommands(store);
+    const shared = createNewGame("save-1");
+
+    const first = await commands.saveRoomBlueprint(
+      shared,
+      "先保存",
+      prototypeCells(),
+    );
+    await expect(
+      commands.saveRoomBlueprint(shared, "后保存", prototypeCells()),
+    ).rejects.toThrow("存档已更新，请重新加载");
+    expect(await store.load(shared.saveId)).toEqual(first);
+  });
+});
+
+describe("InMemorySavePort", () => {
+  it("clones values on commit and load in both directions", async () => {
+    const store = new InMemorySavePort();
+    const source = createNewGame("save-1");
+    await store.commit(0, source);
+
+    source.cashCents = 1;
+    const firstLoad = await store.load(source.saveId);
+    expect(firstLoad?.cashCents).toBe(100_000_000);
+
+    if (!firstLoad) {
+      throw new Error("expected save");
+    }
+    firstLoad.floor.rooms.push({
+      id: "external-room",
+      slotId: "slot-nw",
+      roomBlueprintId: "external-blueprint",
+      committedBuildCostCents: 1,
+    });
+    expect((await store.load(source.saveId))?.floor.rooms).toEqual([]);
+  });
+
+  it("allows expected revision zero to update an existing revision-zero save", async () => {
+    const store = new InMemorySavePort();
+    const first = createNewGame("save-1");
+    await store.commit(0, first);
+    const replacement = { ...first, rateCents: 123_000 };
+
+    await store.commit(0, replacement);
+
+    expect(await store.load(first.saveId)).toEqual(replacement);
+  });
+});
