@@ -129,8 +129,39 @@ impl SaveRepository {
             [],
         )
         .map_err(db_err)?;
+        migrate_legacy(&conn)?;
         Ok(conn)
     }
+}
+
+fn migrate_legacy(conn: &Connection) -> Result<(), String> {
+    let has_ordinal: bool = conn
+        .prepare("SELECT 1 FROM pragma_table_info('room_instances') WHERE name='ordinal'")
+        .map_err(db_err)?
+        .exists([])
+        .map_err(db_err)?;
+    let has_v2: bool = conn
+        .query_row(
+            "SELECT count(*) FROM schema_migrations WHERE version=2",
+            [],
+            |r| r.get::<_, i64>(0),
+        )
+        .map_err(db_err)?
+        > 0;
+    if has_ordinal && has_v2 {
+        return Ok(());
+    }
+    let tx = conn.unchecked_transaction().map_err(db_err)?;
+    if !has_ordinal {
+        tx.execute_batch("ALTER TABLE room_instances RENAME TO room_instances_legacy; CREATE UNIQUE INDEX IF NOT EXISTS room_blueprints_save_blueprint ON room_blueprints(save_id, blueprint_id); CREATE TABLE room_instances (save_id TEXT NOT NULL REFERENCES saves(save_id) ON DELETE CASCADE, instance_id TEXT NOT NULL, slot_id TEXT NOT NULL, blueprint_id TEXT NOT NULL, ordinal INTEGER NOT NULL CHECK(ordinal >= 0), committed_build_cost_cents INTEGER NOT NULL CHECK(committed_build_cost_cents >= 0), PRIMARY KEY(save_id, instance_id), UNIQUE(save_id, slot_id), FOREIGN KEY(save_id, blueprint_id) REFERENCES room_blueprints(save_id, blueprint_id) ON DELETE CASCADE); INSERT INTO room_instances(save_id,instance_id,slot_id,blueprint_id,ordinal,committed_build_cost_cents) SELECT save_id,instance_id,slot_id,blueprint_id,ROW_NUMBER() OVER (PARTITION BY save_id ORDER BY rowid)-1,committed_build_cost_cents FROM room_instances_legacy; DROP TABLE room_instances_legacy;").map_err(db_err)?;
+    }
+    tx.execute_batch("CREATE UNIQUE INDEX IF NOT EXISTS room_blueprints_save_blueprint ON room_blueprints(save_id, blueprint_id);").map_err(db_err)?;
+    tx.execute(
+        "INSERT OR IGNORE INTO schema_migrations(version,applied_at) VALUES(2,datetime('now'))",
+        [],
+    )
+    .map_err(db_err)?;
+    tx.commit().map_err(db_err)
 }
 
 fn db_err(e: rusqlite::Error) -> String {
@@ -319,7 +350,7 @@ mod tests {
                 .unwrap()
                 .query_row::<i64, _, _>("SELECT count(*) FROM schema_migrations", [], |x| x.get(0))
                 .unwrap(),
-            1
+            2
         );
     }
     #[test]
@@ -408,5 +439,38 @@ mod tests {
         let g = blueprint_game(1, rooms);
         r.commit_game(0, g.clone()).unwrap();
         assert_eq!(r.load_game("save-1").unwrap(), Some(g));
+    }
+    #[test]
+    fn migrates_legacy_v1_schema() {
+        let root = root("legacy");
+        let r = SaveRepository::new(root.clone());
+        let path = r.db_path("save-1");
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        let conn = Connection::open(&path).unwrap();
+        conn.execute_batch("CREATE TABLE schema_migrations(version INTEGER PRIMARY KEY, applied_at TEXT NOT NULL); INSERT INTO schema_migrations VALUES(1,'now'); CREATE TABLE saves(save_id TEXT PRIMARY KEY,schema_version INTEGER NOT NULL,ruleset_version TEXT NOT NULL,revision INTEGER NOT NULL,phase TEXT NOT NULL,current_day INTEGER NOT NULL,cash_cents INTEGER NOT NULL,rate_cents INTEGER NOT NULL,latest_report_json TEXT,updated_at TEXT NOT NULL); CREATE TABLE room_blueprints(save_id TEXT PRIMARY KEY,blueprint_id TEXT NOT NULL,name TEXT NOT NULL,columns_count INTEGER NOT NULL,rows_count INTEGER NOT NULL,cells_json TEXT NOT NULL,metrics_json TEXT NOT NULL,visual_json TEXT NOT NULL); CREATE TABLE room_instances(save_id TEXT NOT NULL,instance_id TEXT NOT NULL,slot_id TEXT NOT NULL,blueprint_id TEXT NOT NULL,committed_build_cost_cents INTEGER NOT NULL,PRIMARY KEY(save_id,instance_id),UNIQUE(save_id,slot_id)); CREATE TABLE daily_reports(save_id TEXT NOT NULL,game_day INTEGER NOT NULL,report_json TEXT NOT NULL,PRIMARY KEY(save_id,game_day)); INSERT INTO saves VALUES('save-1',1,'prototype-v1',1,'design',0,100,10,NULL,'now'); INSERT INTO room_blueprints VALUES('save-1','bp-1','Suite',1,1,'[]','{}','{\"status\":\"idle\"}'); INSERT INTO room_instances VALUES('save-1','r-ne','slot-ne','bp-1',1); INSERT INTO room_instances VALUES('save-1','r-nw','slot-nw','bp-1',2);").unwrap();
+        let loaded = r.load_game("save-1").unwrap().unwrap();
+        assert_eq!(loaded["floor"]["rooms"][0]["id"], "r-ne");
+        assert_eq!(loaded["floor"]["rooms"][1]["id"], "r-nw");
+        let conn = r.open("save-1").unwrap();
+        assert!(
+            conn.query_row::<i64, _, _>(
+                "SELECT count(*) FROM schema_migrations WHERE version=2",
+                [],
+                |x| x.get(0)
+            )
+            .unwrap()
+                == 1
+        );
+        let g = blueprint_game(2, json!([]));
+        r.commit_game(1, g).unwrap();
+        assert!(
+            conn.query_row::<i64, _, _>(
+                "SELECT count(*) FROM pragma_table_info('room_instances') WHERE name='ordinal'",
+                [],
+                |x| x.get(0)
+            )
+            .unwrap()
+                == 1
+        );
     }
 }
