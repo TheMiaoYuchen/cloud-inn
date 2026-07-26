@@ -398,14 +398,19 @@ mod tests {
     #[test]
     fn rolls_back_when_room_insert_fails() {
         let r = SaveRepository::new(root("rollback"));
-        r.commit_game(0, game()).unwrap();
+        let mut prior = blueprint_game(1, json!([]));
+        prior["cashCents"] = json!(777);
+        r.commit_game(0, prior.clone()).unwrap();
         let conn = r.open("save-1").unwrap();
-        conn.execute("CREATE TRIGGER fail_room BEFORE INSERT ON room_instances BEGIN SELECT RAISE(ABORT, 'forced'); END", []).unwrap();
-        let mut g = game();
-        g["revision"] = json!(2);
-        g["floor"]["rooms"] = json!([{"id":"room-1","slotId":"slot-1","roomBlueprintId":"bp-1","committedBuildCostCents":1}]);
-        assert!(r.commit_game(1, g).is_err());
-        assert_eq!(r.load_game("save-1").unwrap(), Some(game()));
+        conn.execute_batch("CREATE TABLE trigger_probe(count INTEGER NOT NULL); INSERT INTO trigger_probe VALUES(0); CREATE TRIGGER fail_room BEFORE INSERT ON room_instances BEGIN UPDATE trigger_probe SET count=count+1; SELECT RAISE(ABORT, 'forced'); END;").unwrap();
+        let mut next = blueprint_game(
+            2,
+            json!([{"id":"room-1","slotId":"slot-1","roomBlueprintId":"bp-1","committedBuildCostCents":1}]),
+        );
+        next["cashCents"] = json!(888);
+        let error = r.commit_game(1, next).unwrap_err();
+        assert!(error.contains("forced"));
+        assert_eq!(r.load_game("save-1").unwrap(), Some(prior));
     }
     #[test]
     fn invalid_save_id_rejected() {

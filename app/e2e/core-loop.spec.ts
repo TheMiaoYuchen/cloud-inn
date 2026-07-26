@@ -30,6 +30,9 @@ test("completes the prototype hotel loop from design through day two", async ({ 
   await expect(page.getByText(/第1天 · 可售4 · 售出3/)).toBeVisible();
   await expect(page.getByText(/收入 ¥2400 · 成本 ¥770 · 净收入 ¥1630/)).toBeVisible();
 
+  await page.getByRole("button", { name: "请求视觉预览" }).click();
+  await expect(page.getByRole("img", { name: "房间视觉预览" })).toBeVisible();
+
   await page.getByRole("spinbutton", { name: "房价" }).fill("1600");
   await page.getByRole("button", { name: "更新房价" }).click();
   await page.getByRole("button", { name: "结算下一天" }).click();
