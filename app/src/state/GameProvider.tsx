@@ -16,8 +16,9 @@ export function GameProvider({ children, savePort, saveId = 'save-1', visualProv
   const [state, setState] = useState<GameState | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  useEffect(() => { let alive = true; (async () => { try { let loaded = await port.load(saveId as any); if (!loaded) { const fresh = createNewGame(saveId as any); await port.commit(0, { ...fresh, revision: 1 }); loaded = { ...fresh, revision: 1 }; } if (alive) setState(loaded); } catch (e) { if (alive) { setError(e instanceof Error ? e.message : '加载存档失败'); const mem = new InMemorySavePort(); const fresh = createNewGame(saveId as any); await mem.commit(0, { ...fresh, revision: 1 }); setState({ ...fresh, revision: 1 }); } } finally { if (alive) setLoading(false); } })(); return () => { alive = false; }; }, [port, saveId]);
-  const raw = useMemo(() => createGameCommands(port), [port]);
+  const [activePort, setActivePort] = useState<SavePort>(port);
+  useEffect(() => { let alive = true; (async () => { try { let loaded = await port.load(saveId as any); if (!loaded) { const fresh = createNewGame(saveId as any); await port.commit(0, { ...fresh, revision: 1 }); loaded = { ...fresh, revision: 1 }; } if (alive) setState(loaded); } catch (e) { const mem = new InMemorySavePort(); const fresh = createNewGame(saveId as any); await mem.commit(0, { ...fresh, revision: 1 }); if (alive) { setActivePort(mem); setError(e instanceof Error ? e.message : '加载存档失败'); setState({ ...fresh, revision: 1 }); } } finally { if (alive) setLoading(false); } })(); return () => { alive = false; }; }, [port, saveId]);
+  const raw = useMemo(() => createGameCommands(activePort), [activePort]);
   const commands = useMemo(() => Object.fromEntries(Object.entries(raw).map(([k, fn]) => [k, async (...args: any[]) => { if (!state) return; try { const next = await (fn as any)(state, ...args); setState(next); setError(null); } catch (e) { setError(e instanceof Error ? e.message : '操作失败'); } }])) as Ctx['commands'], [raw, state]);
   return <GameContext.Provider value={{ state, loading, error, commands, visualProvider: visualProvider ?? new PlaceholderVisualProvider() }}>{children}</GameContext.Provider>;
 }
