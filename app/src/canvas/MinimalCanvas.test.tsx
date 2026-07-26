@@ -16,6 +16,7 @@ interface ResizeObserverInstance {
 const pixiState = vi.hoisted(() => ({
   applications: [] as ApplicationStub[],
   init: vi.fn<() => Promise<void>>(),
+  destroy: vi.fn<() => void>(),
 }));
 
 vi.mock("pixi.js", () => ({
@@ -24,7 +25,7 @@ vi.mock("pixi.js", () => ({
     stage = { addChild: vi.fn() };
     renderer = { resize: vi.fn() };
     init = vi.fn(() => pixiState.init());
-    destroy = vi.fn();
+    destroy = vi.fn(() => pixiState.destroy());
 
     constructor() {
       pixiState.applications.push(this);
@@ -72,6 +73,7 @@ describe("MinimalCanvas", () => {
   beforeEach(() => {
     pixiState.applications.length = 0;
     pixiState.init.mockReset().mockResolvedValue(undefined);
+    pixiState.destroy.mockReset();
     resizeObservers.length = 0;
     vi.stubGlobal("ResizeObserver", ResizeObserverStub);
   });
@@ -120,6 +122,30 @@ describe("MinimalCanvas", () => {
       expect(consoleError).toHaveBeenCalledWith(
         "Failed to initialize Pixi canvas",
         error,
+      );
+    });
+    expect(pixiState.applications[0].destroy).toHaveBeenCalledOnce();
+  });
+
+  it("reports initialization and cleanup failures without rejecting", async () => {
+    const initError = new Error("Pixi initialization failed");
+    const cleanupError = new Error("Pixi cleanup failed");
+    const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
+    pixiState.init.mockRejectedValue(initError);
+    pixiState.destroy.mockImplementation(() => {
+      throw cleanupError;
+    });
+
+    render(<MinimalCanvas />);
+
+    await waitFor(() => {
+      expect(consoleError).toHaveBeenCalledWith(
+        "Failed to initialize Pixi canvas",
+        initError,
+      );
+      expect(consoleError).toHaveBeenCalledWith(
+        "Failed to clean up Pixi canvas after initialization failure",
+        cleanupError,
       );
     });
     expect(pixiState.applications[0].destroy).toHaveBeenCalledOnce();

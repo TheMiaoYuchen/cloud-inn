@@ -29,8 +29,15 @@ export function MinimalCanvas() {
           antialias: true,
         });
       } catch (error) {
-        nextApp.destroy(true, { children: true });
         console.error("Failed to initialize Pixi canvas", error);
+        try {
+          nextApp.destroy(true, { children: true });
+        } catch (cleanupError) {
+          console.error(
+            "Failed to clean up Pixi canvas after initialization failure",
+            cleanupError,
+          );
+        }
         return;
       }
 
