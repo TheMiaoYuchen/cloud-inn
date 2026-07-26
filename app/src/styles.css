@@ -1,7 +1,7 @@
 :root {
   font-family: Inter, Avenir, Helvetica, Arial, sans-serif;
-  color: #1f2621;
-  background: #f5f2ea;
+  color: #f4ecd8;
+  background: #10251f;
   font-synthesis: none;
   text-rendering: optimizeLegibility;
   -webkit-font-smoothing: antialiased;
@@ -11,6 +11,17 @@
 body {
   margin: 0;
 }
+
+.page { max-width: 1100px; margin: 0 auto; padding: 2rem; }
+button, input { font: inherit; }
+button { background: #b99452; color: #10251f; border: 0; border-radius: 8px; padding: .6rem 1rem; cursor: pointer; margin: .35rem; }
+button:disabled { opacity: .55; cursor: not-allowed; }
+.grid { display: grid; gap: 2px; max-width: 520px; margin: 1rem 0; }
+.cell { aspect-ratio: 1; padding: 0; background: #28473b; border-radius: 2px; }
+.cell.on { background: #d2ae67; }
+.floor-visual { border: 2px solid #b99452; border-radius: 50%; width: 240px; height: 150px; display: grid; place-items: center; }
+.slots { display: grid; grid-template-columns: repeat(2, minmax(180px,1fr)); gap: .6rem; }
+.preview { min-height: 120px; border: 1px dashed #b99452; padding: 1rem; margin-top: 1rem; }
 
 nav {
   display: flex;
