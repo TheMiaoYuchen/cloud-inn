@@ -114,13 +114,12 @@ impl SaveRepository {
         let path = self.db_path(save_id);
         fs::create_dir_all(path.parent().unwrap()).map_err(|e| e.to_string())?;
         let mut conn = Connection::open(path).map_err(db_err)?;
+        conn.busy_timeout(std::time::Duration::from_millis(5000))
+            .map_err(db_err)?;
         conn.pragma_update(None, "foreign_keys", "ON")
             .map_err(db_err)?;
-        conn.pragma_update(None, "journal_mode", "WAL")
-            .map_err(db_err)?;
+        retry_busy(|| conn.pragma_update(None, "journal_mode", "WAL"))?;
         conn.pragma_update(None, "synchronous", "FULL")
-            .map_err(db_err)?;
-        conn.busy_timeout(std::time::Duration::from_millis(5000))
             .map_err(db_err)?;
         conn.execute_batch(include_str!("../migrations/001_initial.sql"))
             .map_err(db_err)?;
@@ -132,6 +131,24 @@ impl SaveRepository {
         migrate_legacy(&mut conn)?;
         Ok(conn)
     }
+}
+
+fn retry_busy<T>(mut operation: impl FnMut() -> rusqlite::Result<T>) -> Result<T, String> {
+    for attempt in 0..5 {
+        match operation() {
+            Ok(value) => return Ok(value),
+            Err(rusqlite::Error::SqliteFailure(error, _))
+                if matches!(
+                    error.code,
+                    rusqlite::ErrorCode::DatabaseBusy | rusqlite::ErrorCode::DatabaseLocked
+                ) && attempt < 4 =>
+            {
+                std::thread::sleep(std::time::Duration::from_millis(10 * (attempt + 1)));
+            }
+            Err(error) => return Err(db_err(error)),
+        }
+    }
+    unreachable!()
 }
 
 fn migrate_legacy(conn: &mut Connection) -> Result<(), String> {
