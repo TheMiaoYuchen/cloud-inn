@@ -4,13 +4,13 @@ test("completes the prototype hotel loop from design through day two", async ({ 
   await page.goto("/#/design");
 
   await page.getByRole("button", { name: "云岫商务房" }).click();
-  await expect(page.getByText("面积 24㎡")).toBeVisible();
+  await expect(page.getByText("24㎡", { exact: true })).toBeVisible();
 
   const name = page.getByRole("textbox", { name: "房型名称" });
   await name.fill("云岫商务房");
   await page.getByRole("button", { name: "保存并进入楼层" }).click();
 
-  await expect(page.getByRole("heading", { name: "固定楼层槽位" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "高层酒店楼层规划" })).toBeVisible();
   await page.getByRole("link", { name: "楼层", exact: true }).click();
   await expect(page).toHaveURL(/#\/floor-plan$/);
   for (const slot of ["西北槽位", "东北槽位", "西南槽位", "东南槽位"]) {
