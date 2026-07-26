@@ -1,0 +1,20 @@
+export const prototypeConfig = {
+  rulesetVersion: "prototype-v1",
+  cellAreaSquareMeters: 0.25,
+  roomColumns: 8,
+  roomRows: 12,
+  startingCashCents: 100_000_000,
+  buildBaseCents: 2_000_000,
+  buildPerSquareMeterCents: 400_000,
+  suggestedRateBaseCents: 32_000,
+  suggestedRatePerSquareMeterCents: 2_000,
+  businessDemandPerDay: 3,
+  availableRoomCostCents: 8_000,
+  occupiedRoomCostCents: 15_000,
+  floorSlots: [
+    { id: "slot-nw", x: 0, y: 0 },
+    { id: "slot-ne", x: 8, y: 0 },
+    { id: "slot-sw", x: 0, y: 14 },
+    { id: "slot-se", x: 8, y: 14 },
+  ],
+} as const;
