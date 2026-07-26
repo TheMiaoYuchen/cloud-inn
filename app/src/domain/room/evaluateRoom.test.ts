@@ -29,6 +29,39 @@ describe("evaluateRoom", () => {
     expect(metrics.businessFitBps).toBeLessThan(8_500);
   });
 
+  it("rounds fractional business fit to the nearest basis point", () => {
+    const oddCellRoom = [
+      { x: 0, y: 0, zone: "bedroom" as const },
+      { x: 1, y: 0, zone: "bedroom" as const },
+      { x: 2, y: 0, zone: "bathroom" as const },
+    ];
+
+    const { businessFitBps } = evaluateRoom(oddCellRoom, 3, 1);
+
+    expect(businessFitBps).toBe(2_688);
+    expect(Number.isSafeInteger(businessFitBps)).toBe(true);
+  });
+
+  it("keeps extreme room fit within safe integer basis-point bounds", () => {
+    const smallestRoom = [
+      { x: 0, y: 0, zone: "bedroom" as const },
+      { x: 1, y: 0, zone: "bathroom" as const },
+    ];
+    const largestRoom = [
+      ...createRectangle(0, 0, 100, 100, "bedroom"),
+      ...createRectangle(0, 100, 100, 1, "bathroom"),
+    ];
+
+    for (const businessFitBps of [
+      evaluateRoom(smallestRoom, 2, 1).businessFitBps,
+      evaluateRoom(largestRoom, 100, 101).businessFitBps,
+    ]) {
+      expect(Number.isSafeInteger(businessFitBps)).toBe(true);
+      expect(businessFitBps).toBeGreaterThanOrEqual(0);
+      expect(businessFitBps).toBeLessThanOrEqual(10_000);
+    }
+  });
+
   it.each([
     {
       cells: createRectangle(0, 0, 2, 2, "bedroom"),

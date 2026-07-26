@@ -22,14 +22,17 @@ export function evaluateRoom(
     prototypeConfig.suggestedRateBaseCents +
       prototypeConfig.suggestedRatePerSquareMeterCents * areaSquareMeters,
   );
-  const businessFitBps = Math.max(
-    0,
-    Math.min(
-      10_000,
-      prototypeConfig.businessFitBaseBps -
-        Math.abs(
-          prototypeConfig.businessFitIdealAreaSquareMeters - areaSquareMeters,
-        ) * prototypeConfig.businessFitPenaltyPerSquareMeterBps,
+  const businessFitBps = Math.round(
+    Math.max(
+      0,
+      Math.min(
+        10_000,
+        prototypeConfig.businessFitBaseBps -
+          Math.abs(
+            prototypeConfig.businessFitIdealAreaSquareMeters -
+              areaSquareMeters,
+          ) * prototypeConfig.businessFitPenaltyPerSquareMeterBps,
+      ),
     ),
   );
 
