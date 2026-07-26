@@ -1,4 +1,4 @@
-import React, { createContext, useContext, useEffect, useMemo, useState } from 'react';
+import React, { createContext, useContext, useEffect, useMemo, useRef, useState } from 'react';
 import { createGameCommands } from '../application/gameCommands';
 import type { SavePort } from '../application/ports/SavePort';
 import type { VisualProvider } from '../application/ports/VisualProvider';
@@ -8,8 +8,16 @@ import { InMemorySavePort } from '../infrastructure/memory/InMemorySavePort';
 import { createNewGame, type Cell, type GameState } from '../domain/game/state';
 
 type Commands = ReturnType<typeof createGameCommands>;
-type Ctx = { state: GameState | null; loading: boolean; error: string | null; commands: { [K in keyof Commands]: (...args: any[]) => Promise<void> }; visualProvider: VisualProvider };
+type Ctx = { state: GameState | null; loading: boolean; commandPending: boolean; error: string | null; commands: { [K in keyof Commands]: (...args: any[]) => Promise<void> }; visualProvider: VisualProvider };
 const GameContext = createContext<Ctx | null>(null);
+type InitResult = { state: GameState; port: SavePort; warning: string | null };
+const initializations = new WeakMap<SavePort, Map<string, Promise<InitResult>>>();
+
+function initialize(port: SavePort, saveId: string) {
+  let bySave = initializations.get(port); if (!bySave) { bySave = new Map(); initializations.set(port, bySave); }
+  let task = bySave.get(saveId); if (!task) { task = (async () => { try { let state = await port.load(saveId as any); if (!state) { const fresh = createNewGame(saveId as any); state = { ...fresh, revision: 1 }; await port.commit(0, state); } return { state, port, warning: null }; } catch (e) { const fallback = new InMemorySavePort(); const fresh = { ...createNewGame(saveId as any), revision: 1 }; await fallback.commit(0, fresh); return { state: fresh, port: fallback, warning: e instanceof Error ? e.message : '加载存档失败' }; } })(); bySave.set(saveId, task); }
+  return task;
+}
 
 export function GameProvider({ children, savePort, saveId = 'save-1', visualProvider }: { children: React.ReactNode; savePort?: SavePort; saveId?: string; visualProvider?: VisualProvider }) {
   const port = useMemo(() => savePort ?? new TauriSavePort(), [savePort]);
@@ -17,10 +25,10 @@ export function GameProvider({ children, savePort, saveId = 'save-1', visualProv
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [activePort, setActivePort] = useState<SavePort>(port);
-  useEffect(() => { let alive = true; (async () => { try { let loaded = await port.load(saveId as any); if (!loaded) { const fresh = createNewGame(saveId as any); await port.commit(0, { ...fresh, revision: 1 }); loaded = { ...fresh, revision: 1 }; } if (alive) setState(loaded); } catch (e) { const mem = new InMemorySavePort(); const fresh = createNewGame(saveId as any); await mem.commit(0, { ...fresh, revision: 1 }); if (alive) { setActivePort(mem); setError(e instanceof Error ? e.message : '加载存档失败'); setState({ ...fresh, revision: 1 }); } } finally { if (alive) setLoading(false); } })(); return () => { alive = false; }; }, [port, saveId]);
-  const raw = useMemo(() => createGameCommands(activePort), [activePort]);
-  const commands = useMemo(() => Object.fromEntries(Object.entries(raw).map(([k, fn]) => [k, async (...args: any[]) => { if (!state) return; try { const next = await (fn as any)(state, ...args); setState(next); setError(null); } catch (e) { setError(e instanceof Error ? e.message : '操作失败'); } }])) as Ctx['commands'], [raw, state]);
-  return <GameContext.Provider value={{ state, loading, error, commands, visualProvider: visualProvider ?? new PlaceholderVisualProvider() }}>{children}</GameContext.Provider>;
+  const [commandPending, setCommandPending] = useState(false); const stateRef = useRef(state); stateRef.current = state; const queue = useRef(Promise.resolve());
+  useEffect(() => { let alive = true; setLoading(true); setActivePort(port); initialize(port, saveId).then(result => { if (alive) { setState(result.state); stateRef.current=result.state; setActivePort(result.port); setError(result.warning); setLoading(false); } }); return () => { alive = false; }; }, [port, saveId]);
+  const commands = useMemo(() => { const names = ['saveRoomBlueprint','placeRoom','setRate','requestVisual','openHotel','advanceDay'] as const; return Object.fromEntries(names.map(name => [name, (...args:any[]) => { setCommandPending(true); const run = queue.current.then(async()=>{ const current=stateRef.current; if(!current)return; try { const next=await (createGameCommands(activePort)[name] as any)(current,...args); stateRef.current=next; setState(next); setError(null); } catch(e){setError(e instanceof Error?e.message:'操作失败')} }); queue.current=run.finally(()=>setCommandPending(false)); return run; }])) as Ctx['commands']; }, [activePort]);
+  return <GameContext.Provider value={{ state, loading, commandPending, error, commands, visualProvider: visualProvider ?? new PlaceholderVisualProvider() }}>{children}</GameContext.Provider>;
 }
 export function useGame() { const c = useContext(GameContext); if (!c) throw new Error('GameProvider missing'); return c; }
 export type { Cell };
