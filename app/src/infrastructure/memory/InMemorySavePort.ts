@@ -11,7 +11,11 @@ export class InMemorySavePort implements SavePort {
 
   async commit(expectedRevision: number, next: GameState): Promise<void> {
     const current = this.saves.get(next.saveId);
-    if (current && current.revision !== expectedRevision) {
+    const currentRevision = current?.revision ?? 0;
+    if (
+      expectedRevision !== currentRevision ||
+      next.revision !== expectedRevision + 1
+    ) {
       throw new Error("存档已更新，请重新加载");
     }
 

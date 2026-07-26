@@ -278,7 +278,7 @@ describe("InMemorySavePort", () => {
   it("clones values on commit and load in both directions", async () => {
     const store = new InMemorySavePort();
     const source = createNewGame("save-1");
-    await store.commit(0, source);
+    await store.commit(0, { ...source, revision: 1 });
 
     source.cashCents = 1;
     const firstLoad = await store.load(source.saveId);
@@ -296,14 +296,44 @@ describe("InMemorySavePort", () => {
     expect((await store.load(source.saveId))?.floor.rooms).toEqual([]);
   });
 
-  it("allows expected revision zero to update an existing revision-zero save", async () => {
+  it("allows the first commit at expected revision zero", async () => {
     const store = new InMemorySavePort();
-    const first = createNewGame("save-1");
+    const first = { ...createNewGame("save-1"), revision: 1 };
+
     await store.commit(0, first);
-    const replacement = { ...first, rateCents: 123_000 };
 
-    await store.commit(0, replacement);
+    expect(await store.load(first.saveId)).toEqual(first);
+  });
 
-    expect(await store.load(first.saveId)).toEqual(replacement);
+  it("rejects creating a missing save from a nonzero expected revision", async () => {
+    const store = new InMemorySavePort();
+    const next = { ...createNewGame("save-1"), revision: 8 };
+
+    await expect(store.commit(7, next)).rejects.toThrow(
+      "存档已更新，请重新加载",
+    );
+    expect(await store.load("save-1")).toBeNull();
+  });
+
+  it("requires the first save revision to advance from zero", async () => {
+    const store = new InMemorySavePort();
+    const next = { ...createNewGame("save-1"), revision: 2 };
+
+    await expect(store.commit(0, next)).rejects.toThrow(
+      "存档已更新，请重新加载",
+    );
+    expect(await store.load("save-1")).toBeNull();
+  });
+
+  it("rejects non-contiguous revisions without replacing the existing save", async () => {
+    const store = new InMemorySavePort();
+    const first = { ...createNewGame("save-1"), revision: 1 };
+    await store.commit(0, first);
+    const invalid = { ...first, revision: 3, rateCents: 123_000 };
+
+    await expect(store.commit(1, invalid)).rejects.toThrow(
+      "存档已更新，请重新加载",
+    );
+    expect(await store.load("save-1")).toEqual(first);
   });
 });
