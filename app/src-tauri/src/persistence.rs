@@ -18,19 +18,20 @@ impl SaveRepository {
         let conn = self.open(save_id)?;
         let row = conn
             .query_row(
-                "SELECT schema_version,ruleset_version,revision,phase,current_day,cash_cents,rate_cents,latest_report_json FROM saves WHERE save_id=?1",
+                "SELECT schema_version,ruleset_version,revision,phase,current_day,cash_cents,rate_cents,phase2_json,latest_report_json FROM saves WHERE save_id=?1",
                 [save_id],
                 |r| {
                     Ok((
                         r.get::<_, i64>(0)?, r.get::<_, String>(1)?, r.get::<_, i64>(2)?,
                         r.get::<_, String>(3)?, r.get::<_, i64>(4)?, r.get::<_, i64>(5)?,
                         r.get::<_, i64>(6)?, r.get::<_, Option<String>>(7)?,
+                        r.get::<_, Option<String>>(8)?,
                     ))
                 },
             )
             .optional()
             .map_err(db_err)?;
-        let Some((schema, ruleset, revision, phase, day, cash, rate, latest)) = row else {
+        let Some((schema, ruleset, revision, phase, day, cash, rate, phase2, latest)) = row else {
             return Ok(None);
         };
         let blueprint = conn
@@ -54,7 +55,10 @@ impl SaveRepository {
             reports.push(parse_json(report.map_err(db_err)?)?);
         }
         let latest_value = latest.map(parse_json).transpose()?;
-        let game = json!({"schemaVersion":schema,"rulesetVersion":ruleset,"saveId":save_id,"revision":revision,"phase":phase,"currentDay":day,"cashCents":cash,"rateCents":rate,"roomBlueprint":blueprint,"floor":{"id":"prototype-floor","rooms":rooms},"reports":reports,"latestReport":latest_value});
+        let mut game = json!({"schemaVersion":schema,"rulesetVersion":ruleset,"saveId":save_id,"revision":revision,"phase":phase,"currentDay":day,"cashCents":cash,"rateCents":rate,"roomBlueprint":blueprint,"floor":{"id":"prototype-floor","rooms":rooms},"reports":reports,"latestReport":latest_value});
+        if let Some(raw) = phase2 {
+            game["phase2"] = parse_json(raw)?;
+        }
         validate_game(&game)?;
         Ok(Some(game))
     }
@@ -84,7 +88,7 @@ impl SaveRepository {
         if current != expected_revision || fields.revision != next_revision {
             return Err("存档已更新，请重新加载".to_string());
         }
-        tx.execute("INSERT INTO saves(save_id,schema_version,ruleset_version,revision,phase,current_day,cash_cents,rate_cents,latest_report_json,updated_at) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,datetime('now')) ON CONFLICT(save_id) DO UPDATE SET schema_version=excluded.schema_version,ruleset_version=excluded.ruleset_version,revision=excluded.revision,phase=excluded.phase,current_day=excluded.current_day,cash_cents=excluded.cash_cents,rate_cents=excluded.rate_cents,latest_report_json=excluded.latest_report_json,updated_at=excluded.updated_at", params![save_id, fields.schema_version, fields.ruleset, fields.revision, fields.phase, fields.current_day, fields.cash_cents, fields.rate_cents, fields.latest_report]).map_err(db_err)?;
+        tx.execute("INSERT INTO saves(save_id,schema_version,ruleset_version,revision,phase,current_day,cash_cents,rate_cents,phase2_json,latest_report_json,updated_at) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,datetime('now')) ON CONFLICT(save_id) DO UPDATE SET schema_version=excluded.schema_version,ruleset_version=excluded.ruleset_version,revision=excluded.revision,phase=excluded.phase,current_day=excluded.current_day,cash_cents=excluded.cash_cents,rate_cents=excluded.rate_cents,phase2_json=excluded.phase2_json,latest_report_json=excluded.latest_report_json,updated_at=excluded.updated_at", params![save_id, fields.schema_version, fields.ruleset, fields.revision, fields.phase, fields.current_day, fields.cash_cents, fields.rate_cents, fields.phase2, fields.latest_report]).map_err(db_err)?;
         tx.execute("DELETE FROM room_instances WHERE save_id=?1", [&save_id])
             .map_err(db_err)?;
         tx.execute("DELETE FROM room_blueprints WHERE save_id=?1", [&save_id])
@@ -129,6 +133,7 @@ impl SaveRepository {
         )
         .map_err(db_err)?;
         migrate_legacy(&mut conn)?;
+        migrate_phase2(&mut conn)?;
         Ok(conn)
     }
 }
@@ -183,6 +188,24 @@ fn migrate_legacy(conn: &mut Connection) -> Result<(), String> {
     tx.commit().map_err(db_err)
 }
 
+fn migrate_phase2(conn: &mut Connection) -> Result<(), String> {
+    let has_phase2: bool = conn
+        .prepare("SELECT 1 FROM pragma_table_info('saves') WHERE name='phase2_json'")
+        .map_err(db_err)?
+        .exists([])
+        .map_err(db_err)?;
+    if !has_phase2 {
+        conn.execute("ALTER TABLE saves ADD COLUMN phase2_json TEXT", [])
+            .map_err(db_err)?;
+    }
+    conn.execute(
+        "INSERT OR IGNORE INTO schema_migrations(version,applied_at) VALUES(3,datetime('now'))",
+        [],
+    )
+    .map_err(db_err)?;
+    Ok(())
+}
+
 fn db_err(e: rusqlite::Error) -> String {
     format!("数据库操作失败: {e}")
 }
@@ -230,6 +253,7 @@ struct Fields {
     cash_cents: i64,
     rate_cents: i64,
     latest_report: Option<String>,
+    phase2: Option<String>,
     blueprint: Option<Blueprint>,
     rooms: Vec<Room>,
     reports: Vec<(i64, String)>,
@@ -266,6 +290,10 @@ fn validate_game(g: &Value) -> Result<Fields, String> {
     let current_day = intv(g, "currentDay", 0, false)?;
     let cash_cents = intv(g, "cashCents", 0, false)?;
     let rate_cents = intv(g, "rateCents", 0, true)?;
+    let phase2 = match g.get("phase2") {
+        Some(Value::Null) | None => None,
+        Some(value) => Some(validate_phase2(value)?),
+    };
     let latest_report = match g.get("latestReport") {
         Some(Value::Null) | None => None,
         Some(v) => {
@@ -362,10 +390,49 @@ fn validate_game(g: &Value) -> Result<Fields, String> {
         cash_cents,
         rate_cents,
         latest_report,
+        phase2,
         blueprint,
         rooms,
         reports,
     })
+}
+
+fn validate_phase2(value: &Value) -> Result<String, String> {
+    let object = value
+        .as_object()
+        .ok_or_else(|| "存档数据损坏".to_string())?;
+    for key in ["hotelGene", "roomVariants", "corridorTemplate"] {
+        if !object.contains_key(key) {
+            return Err("存档数据损坏".into());
+        }
+    }
+    if !object["roomVariants"].is_array() {
+        return Err("存档数据损坏".into());
+    }
+    if let Some(master) = object.get("roomMaster") {
+        if !master.is_null() && !master.is_object() {
+            return Err("存档数据损坏".into());
+        }
+    } else {
+        return Err("存档数据损坏".into());
+    }
+    let text = serde_json::to_string(value).map_err(|_| "存档数据损坏".to_string())?;
+    let lower = text.to_ascii_lowercase();
+    if lower.contains("base64")
+        || lower.contains("api_key")
+        || lower.contains("token")
+        || lower.contains("secret")
+    {
+        return Err("视觉元数据不安全".into());
+    }
+    if let Some(visual) = object.get("visual") {
+        if let Some(asset) = visual.get("assetPath").and_then(Value::as_str) {
+            if !asset.starts_with("/visuals/") {
+                return Err("视觉资源命名空间无效".into());
+            }
+        }
+    }
+    Ok(text)
 }
 
 #[cfg(test)]
@@ -397,7 +464,7 @@ mod tests {
                 .unwrap()
                 .query_row::<i64, _, _>("SELECT count(*) FROM schema_migrations", [], |x| x.get(0))
                 .unwrap(),
-            2
+            3
         );
     }
     #[test]
@@ -406,6 +473,35 @@ mod tests {
         let g = game();
         r.commit_game(0, g.clone()).unwrap();
         assert_eq!(r.load_game("save-1").unwrap(), Some(g));
+    }
+
+    #[test]
+    fn persists_phase2_design_envelope_and_rejects_unsafe_visual_metadata() {
+        let r = SaveRepository::new(root("phase2-roundtrip"));
+        let mut g = game();
+        g["phase2"] = json!({
+            "hotelGene": {"palette": ["jade"], "materials": ["wood"], "lighting": "warm", "accents": ["ink"]},
+            "roomMaster": null,
+            "roomVariants": [],
+            "corridorTemplate": null
+        });
+        r.commit_game(0, g.clone()).unwrap();
+        assert_eq!(r.load_game("save-1").unwrap(), Some(g));
+
+        let mut unsafe_game = game();
+        unsafe_game["phase2"] = json!({
+            "hotelGene": {}, "roomMaster": null, "roomVariants": [],
+            "corridorTemplate": null, "visual": {"assetPath": "data:image/png;base64,AAAA"}
+        });
+        assert!(r.commit_game(1, unsafe_game).is_err());
+    }
+
+    #[test]
+    fn rejects_malformed_phase2_envelope() {
+        let r = SaveRepository::new(root("phase2-malformed"));
+        let mut g = game();
+        g["phase2"] = json!({"roomVariants": []});
+        assert!(r.commit_game(0, g).is_err());
     }
     #[test]
     fn stale_revision_no_partial_writes() {

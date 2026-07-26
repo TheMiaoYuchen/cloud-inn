@@ -109,6 +109,16 @@ describe("room transforms", () => {
     expect(mirrored.windows[0].side).toBe("east");
   });
 
+  it("normalizes mirrored non-origin coordinates to the room footprint", () => {
+    const draft = createRoomDraft([
+      { x: 3, y: 2, zone: "bedroom" },
+      { x: 4, y: 2, zone: "bedroom" },
+      { x: 5, y: 2, zone: "bathroom" },
+    ], 8, 12);
+    const mirrored = mirrorRoom(draft, "horizontal");
+    expect(mirrored.cells.map(({ x, y }) => [x, y])).toEqual([[0, 2], [1, 2], [2, 2]]);
+  });
+
   it("resizes only within the grid and preserves a valid footprint", () => {
     const draft = createRoomDraft(cells, 8, 12);
     const resized = resizeRoom(draft, { width: 3, height: 2 });

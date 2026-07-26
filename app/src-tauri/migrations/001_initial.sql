@@ -8,6 +8,7 @@ CREATE TABLE IF NOT EXISTS saves (
   current_day INTEGER NOT NULL CHECK(current_day >= 0),
   cash_cents INTEGER NOT NULL CHECK(cash_cents >= 0),
   rate_cents INTEGER NOT NULL CHECK(rate_cents > 0),
+  phase2_json TEXT,
   latest_report_json TEXT,
   updated_at TEXT NOT NULL
 );

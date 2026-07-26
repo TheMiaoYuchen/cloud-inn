@@ -47,18 +47,20 @@ export function mirrorRoom(draft: RoomDraft, axis: "horizontal" | "vertical"): R
   const minY = Math.min(...draft.cells.map((cell) => cell.y), 0);
   const maxX = Math.max(...draft.cells.map((cell) => cell.x), 0);
   const maxY = Math.max(...draft.cells.map((cell) => cell.y), 0);
+  const width = maxX - minX + 1;
+  const height = maxY - minY + 1;
   const map = (opening: Opening): Opening => {
     if (axis === "horizontal") {
       const side: RoomSide = opening.side === "west" ? "east" : opening.side === "east" ? "west" : opening.side;
-      return { ...opening, x: maxX + minX - opening.x, side };
+      return { ...opening, x: width - 1 - (opening.x - minX), side };
     }
     const side: RoomSide = opening.side === "north" ? "south" : opening.side === "south" ? "north" : opening.side;
-    return { ...opening, y: maxY + minY - opening.y, side };
+    return { ...opening, y: height - 1 - (opening.y - minY), side };
   };
   const mirrored: RoomDraft = {
     ...draft,
     cells: draft.cells
-      .map((cell) => ({ ...cell, ...(axis === "horizontal" ? { x: maxX + minX - cell.x } : { y: maxY + minY - cell.y }) }))
+      .map((cell) => ({ ...cell, ...(axis === "horizontal" ? { x: width - 1 - (cell.x - minX) } : { y: height - 1 - (cell.y - minY) }) }))
       .sort((a, b) => a.y - b.y || a.x - b.x),
     walls: draft.walls.map(map),
     doors: draft.doors.map(map),
