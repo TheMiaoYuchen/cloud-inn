@@ -16,6 +16,7 @@ export function createAppRouter() {
         { path: "canvas", element: <CanvasPage /> },
         { path: "design", element: <RoomDesignPage /> },
         { path: "floor-plan", element: <FloorPlanningPage /> },
+        { path: "floor", element: <FloorPlanningPage /> },
         { path: "operations", element: <OperationsPage /> },
         { path: "*", element: <Navigate to="/" replace /> },
       ],
