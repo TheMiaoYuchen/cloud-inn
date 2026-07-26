@@ -1,7 +1,7 @@
 import type { RoomBlueprint, RoomMetrics, Cell } from "../game/state";
 import { evaluateRoom } from "../room/evaluateRoom";
 import { mirrorRoom, resizeRoom, rotateRoom } from "../room/transformRoom";
-import { createRoomDraft } from "../room/editRoom";
+import { createRoomDraft, validateRoomDraft, type Opening } from "../room/editRoom";
 import type {
   DesignGene,
   RoomVariant,
@@ -12,6 +12,7 @@ export type RoomVariantKind = "king" | "twin" | "corner";
 
 export interface RoomMaster extends RoomBlueprint {
   gene: DesignGene;
+  openings: { walls: Opening[]; doors: Opening[]; windows: Opening[] };
 }
 
 export interface RoomSeriesVariant extends RoomVariant {
@@ -49,6 +50,7 @@ export function createRoomMaster(input: {
   columns: number;
   rows: number;
   gene: DesignGene;
+  openings?: { walls: Opening[]; doors: Opening[]; windows: Opening[] };
 }): RoomMaster {
   if (input.id.trim().length === 0) {
     throw new Error("客房母版编号不能为空");
@@ -57,6 +59,8 @@ export function createRoomMaster(input: {
     throw new Error("客房母版名称不能为空");
   }
   const cells = cloneCells(input.cells);
+  const openings = structuredClone(input.openings ?? {walls:[],doors:[],windows:[]});
+  if (!validateRoomDraft({...createRoomDraft(cells,input.columns,input.rows),...openings}).ok) throw new Error("客房开口无效");
   return {
     id: input.id,
     name: input.name.trim(),
@@ -66,6 +70,7 @@ export function createRoomMaster(input: {
     metrics: metricsFor(cells, input.columns, input.rows),
     visual: { status: "idle" },
     gene: cloneGene(input.gene),
+    openings,
   };
 }
 
@@ -128,6 +133,7 @@ export function createRoomVariants(master: RoomMaster): RoomSeriesVariant[] {
       overrides: transformed.overrides,
       gene: cloneGene(master.gene),
       metrics: metricsFor(transformed.cells, master.columns, master.rows),
+      openings: structuredClone(master.openings),
     };
   });
 }

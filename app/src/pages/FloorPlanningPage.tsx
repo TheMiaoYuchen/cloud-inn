@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { useGame } from '../state/GameProvider';
 import { OperationsPage } from './OperationsPage';
@@ -16,6 +16,7 @@ export function FloorPlanningPage() {
   const [mirrored,setMirrored]=useState(false);
   const template=useMemo(()=>createCorridorTemplate(templateKind),[templateKind]);
   const analysis=useMemo(()=>analyzeCorridorTemplate(template),[template]);
+  useEffect(()=>{const id=state?.phase2?.corridorTemplate?.id;if(id==='complete-ring'||id==='partial-ring')setTemplateKind(id);},[state?.phase2?.corridorTemplate?.id]);
   if(!state)return null;
   if(state.phase==='design')return <main><p>请先设计房型。</p><Link to="/design">前往设计</Link></main>;
   if(state.phase==='open')return <OperationsPage/>;

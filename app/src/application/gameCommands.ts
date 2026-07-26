@@ -11,6 +11,7 @@ import {
 import { placeRoom as planRoom } from "../domain/floor/planFloor";
 import type { CorridorTemplate } from "../domain/design/designTypes";
 import type { Cell, GameState } from "../domain/game/state";
+import type { Opening } from "../domain/room/editRoom";
 import { assertSafeMoney } from "../domain/primitives";
 import { evaluateRoom } from "../domain/room/evaluateRoom";
 import { settleDay } from "../domain/simulation/settleDay";
@@ -39,6 +40,7 @@ export function createGameCommands(savePort: SavePort) {
         name: string;
         cells: Cell[];
         gene: DesignGene;
+        openings?: { walls: Opening[]; doors: Opening[]; windows: Opening[] };
       },
     ): Promise<GameState> {
       if (state.phase !== "design") {
@@ -87,6 +89,7 @@ export function createGameCommands(savePort: SavePort) {
         columns: changedMaster.columns,
         rows: changedMaster.rows,
         gene: changedMaster.gene,
+        openings: changedMaster.openings,
       });
       const roomVariants = applySelectedSync(
         roomMaster,

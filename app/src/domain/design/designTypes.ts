@@ -1,4 +1,5 @@
 import type { Cell, RoomMetrics } from "../game/state";
+import type { Opening } from "../room/editRoom";
 
 /** Shared visual language inherited by a hotel, series, and room variant. */
 export interface DesignGene {
@@ -34,6 +35,7 @@ export interface RoomVariant {
   gene: DesignGene;
   variantKind?: "king" | "twin" | "corner";
   metrics?: RoomMetrics;
+  openings?: { walls: Opening[]; doors: Opening[]; windows: Opening[] };
 }
 
 export interface GridPoint {

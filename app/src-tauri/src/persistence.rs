@@ -339,9 +339,20 @@ fn validate_game(g: &Value) -> Result<Fields, String> {
             blueprint: strv(v, "roomBlueprintId")?,
             cost: intv(v, "committedBuildCostCents", 0, false)?,
         };
-        if rooms.len() >= 4
-            || !["slot-nw", "slot-ne", "slot-sw", "slot-se"].contains(&room.slot.as_str())
-            || !instance_ids.insert(room.id.clone())
+        let legacy_slot =
+            ["slot-nw", "slot-ne", "slot-sw", "slot-se"].contains(&room.slot.as_str());
+        let ring_slot = [
+            "north-west",
+            "north-east",
+            "east-north",
+            "east-south",
+            "south-east",
+            "south-west",
+            "west-south",
+            "west-north",
+        ]
+        .contains(&room.slot.as_str());
+        if rooms.len() >= 8 || (!legacy_slot && !ring_slot) || !instance_ids.insert(room.id.clone())
         {
             return Err("存档数据损坏".into());
         }

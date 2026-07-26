@@ -16,7 +16,7 @@ export function RoomDesignPage() {
   const [editorTool,setEditorTool]=useState<EditorTool>('paint');
   const [history,setHistory]=useState<typeof draft.cells[]>([]);
   const [future,setFuture]=useState<typeof draft.cells[]>([]);
-  const [openings,setOpenings]=useState<Array<{x:number;y:number;kind:'wall'|'door'|'window'}>>([]);
+  const [openings,setOpenings]=useState<Array<{x:number;y:number;side:'north';kind:'wall'|'door'|'window'}>>([]);
   if (loading) return <main><p>加载中…</p></main>;
   if (!state) return <main>{error && <p role="alert">{error}</p>}</main>;
   if (state.phase !== 'design') return <FloorPlanningPage />;
@@ -27,14 +27,14 @@ export function RoomDesignPage() {
   };
   const editCell = (x: number, y: number) => {
     if (editorTool === 'select') return;
-    if (editorTool === 'wall' || editorTool === 'door' || editorTool === 'window') { setOpenings(items=>[...items.filter(item=>item.x!==x||item.y!==y),{x,y,kind:editorTool}]); return; }
+    if (editorTool === 'wall' || editorTool === 'door' || editorTool === 'window') { setOpenings(items=>[...items.filter(item=>item.x!==x||item.y!==y),{x,y,side:'north',kind:editorTool}]); return; }
     setHistory(items=>[...items,structuredClone(draft.cells)]); setFuture([]);
     if (draft.tool !== 'rectangle') return applyDraftCell(x, y);
     if (!rectangleStart) return setRectangleStart({ x, y });
     applyDraftRectangle(rectangleStart.x, rectangleStart.y, x, y); setRectangleStart(null);
   };
   const saveSeries = async () => {
-    const saved = await commands.saveRoomSeries({ id: 'room-master-1', name: draft.name, cells: draft.cells, gene: STYLE_PRESETS.find(p => p.id === selectedPreset)?.gene ?? CONTEMPORARY_ORIENTAL.gene });
+    const saved = await commands.saveRoomSeries({ id: 'room-master-1', name: draft.name, cells: draft.cells, openings:{walls:openings.filter(item=>item.kind==='wall'),doors:openings.filter(item=>item.kind==='door'),windows:openings.filter(item=>item.kind==='window')}, gene: STYLE_PRESETS.find(p => p.id === selectedPreset)?.gene ?? CONTEMPORARY_ORIENTAL.gene });
     setSavedNotice(saved);
   };
   const variants = state.phase2?.roomVariants ?? [];
