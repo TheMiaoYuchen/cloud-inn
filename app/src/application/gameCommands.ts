@@ -5,6 +5,8 @@ import { assertSafeMoney } from "../domain/primitives";
 import { evaluateRoom } from "../domain/room/evaluateRoom";
 import { settleDay } from "../domain/simulation/settleDay";
 import type { SavePort } from "./ports/SavePort";
+import type { VisualProvider } from "./ports/VisualProvider";
+import { requestRoomVisual } from "./requestRoomVisual";
 
 export function createGameCommands(savePort: SavePort) {
   async function persist(
@@ -86,6 +88,18 @@ export function createGameCommands(savePort: SavePort) {
       }
 
       return persist(state, { ...state, rateCents: safeRateCents });
+    },
+
+    async requestVisual(
+      state: GameState,
+      provider: VisualProvider,
+    ): Promise<GameState> {
+      if (!state.roomBlueprint) {
+        throw new Error("请先保存房型");
+      }
+
+      const roomBlueprint = await requestRoomVisual(state.roomBlueprint, provider);
+      return persist(state, { ...state, roomBlueprint });
     },
 
     async openHotel(state: GameState): Promise<GameState> {

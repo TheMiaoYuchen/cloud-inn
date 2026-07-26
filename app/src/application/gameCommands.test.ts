@@ -6,6 +6,7 @@ import { prototypeConfig } from "../domain/config/prototypeConfig";
 import { createRectangle } from "../domain/room/grid";
 import { InMemorySavePort } from "../infrastructure/memory/InMemorySavePort";
 import { createGameCommands } from "./gameCommands";
+import type { VisualProvider } from "./ports/VisualProvider";
 
 function prototypeCells() {
   return [
@@ -24,6 +25,64 @@ async function expectSavedRevision(
 }
 
 describe("game commands", () => {
+  it("persists a successful room visual without changing economics", async () => {
+    const store = new InMemorySavePort();
+    const commands = createGameCommands(store);
+    const designed = await commands.saveRoomBlueprint(
+      createNewGame("save-1"),
+      "云岫商务房",
+      prototypeCells(),
+    );
+    const provider: VisualProvider = {
+      generate: async () => ({ assetPath: "/visuals/prototype-room.svg" }),
+    };
+    const before = structuredClone(designed);
+
+    const next = await commands.requestVisual(designed, provider);
+
+    await expectSavedRevision(designed, next, store);
+    expect(next.roomBlueprint?.visual).toEqual({
+      status: "ready",
+      assetPath: "/visuals/prototype-room.svg",
+    });
+    expect(next.roomBlueprint?.metrics).toEqual(before.roomBlueprint?.metrics);
+    expect(next.cashCents).toBe(before.cashCents);
+    expect(next.reports).toEqual(before.reports);
+    expect(next.floor.rooms).toEqual(before.floor.rooms);
+    expect(next.phase).toBe(before.phase);
+    expect(next.currentDay).toBe(before.currentDay);
+  });
+
+  it("persists a failed room visual as an error without rejecting or changing economics", async () => {
+    const store = new InMemorySavePort();
+    const commands = createGameCommands(store);
+    const designed = await commands.saveRoomBlueprint(
+      createNewGame("save-1"),
+      "云岫商务房",
+      prototypeCells(),
+    );
+    const provider: VisualProvider = {
+      generate: async () => {
+        throw new Error("服务不可用");
+      },
+    };
+    const before = structuredClone(designed);
+
+    const next = await commands.requestVisual(designed, provider);
+
+    await expectSavedRevision(designed, next, store);
+    expect(next.roomBlueprint?.visual).toEqual({
+      status: "error",
+      message: "服务不可用",
+    });
+    expect(next.roomBlueprint?.metrics).toEqual(before.roomBlueprint?.metrics);
+    expect(next.cashCents).toBe(before.cashCents);
+    expect(next.reports).toEqual(before.reports);
+    expect(next.floor.rooms).toEqual(before.floor.rooms);
+    expect(next.phase).toBe(before.phase);
+    expect(next.currentDay).toBe(before.currentDay);
+  });
+
   it("runs design, build, open, and two-day settlement with automatic saves", async () => {
     const store = new InMemorySavePort();
     const commands = createGameCommands(store);
