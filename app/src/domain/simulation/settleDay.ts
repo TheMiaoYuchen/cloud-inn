@@ -37,18 +37,28 @@ function assertValidInput(input: SettlementInput): void {
     input.areaSquareMeters <= 0 ||
     !Number.isInteger(areaInCells)
   ) {
-    throw new Error("房间面积必须是按0.25㎡递增的正有限数");
+    throw new Error(
+      `房间面积必须是按${prototypeConfig.cellAreaSquareMeters}㎡递增的正有限数`,
+    );
   }
 }
 
 export function settleDay(input: SettlementInput): DailyReport {
   assertValidInput(input);
 
-  const priceRatio = input.rateCents / input.suggestedRateCents;
-  const conversion = Math.max(0, Math.min(1, 2 - priceRatio));
-  const convertedDemand = Math.floor(
-    prototypeConfig.businessDemandPerDay * conversion,
-  );
+  const rateCents = BigInt(input.rateCents);
+  const suggestedRateCents = BigInt(input.suggestedRateCents);
+  const twiceSuggestedRateCents = 2n * suggestedRateCents;
+  const convertedDemand =
+    rateCents <= suggestedRateCents
+      ? prototypeConfig.businessDemandPerDay
+      : rateCents >= twiceSuggestedRateCents
+        ? 0
+        : Number(
+            (BigInt(prototypeConfig.businessDemandPerDay) *
+              (twiceSuggestedRateCents - rateCents)) /
+              suggestedRateCents,
+          );
   const soldRooms = Math.min(input.availableRooms, convertedDemand);
   const revenueCents = assertSafeMoney(soldRooms * input.rateCents);
   const operatingCostCents = assertSafeMoney(
@@ -61,6 +71,14 @@ export function settleDay(input: SettlementInput): DailyReport {
     input.availableRooms === 0
       ? 0
       : Math.floor((soldRooms * 10_000) / input.availableRooms);
+  const areaReason =
+    input.areaSquareMeters ===
+    prototypeConfig.businessFitIdealAreaSquareMeters
+      ? `${input.areaSquareMeters}㎡满足商务客的面积期望`
+      : input.areaSquareMeters <
+          prototypeConfig.businessFitIdealAreaSquareMeters
+        ? `${input.areaSquareMeters}㎡低于商务客的面积期望`
+        : `${input.areaSquareMeters}㎡高于商务客的面积期望`;
 
   return {
     day: input.day,
@@ -73,10 +91,10 @@ export function settleDay(input: SettlementInput): DailyReport {
     netIncomeCents,
     endingCashCents,
     reasons: [
-      `${input.areaSquareMeters}㎡满足商务客的面积期望`,
-      priceRatio === 1
+      areaReason,
+      rateCents === suggestedRateCents
         ? "房价处于建议价，需求转化正常"
-        : priceRatio >= 2
+        : rateCents >= twiceSuggestedRateCents
           ? "房价达到建议价两倍，商务需求未转化"
           : "房价变化影响了需求转化",
     ],

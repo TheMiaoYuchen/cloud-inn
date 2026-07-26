@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 
+import { prototypeConfig } from "../config/prototypeConfig";
 import { settleDay } from "./settleDay";
 
 describe("settleDay", () => {
@@ -84,6 +85,42 @@ describe("settleDay", () => {
     ).toBe("房价变化影响了需求转化");
   });
 
+  it("floors converted demand without floating-point boundary drift", () => {
+    expect(
+      settleDay({
+        ...approvedInput,
+        rateCents: 135_000,
+        suggestedRateCents: 81_000,
+      }),
+    ).toEqual({
+      day: 1,
+      availableRooms: 4,
+      soldRooms: 1,
+      occupancyBps: 2_500,
+      rateCents: 135_000,
+      revenueCents: 135_000,
+      operatingCostCents: 47_000,
+      netIncomeCents: 88_000,
+      endingCashCents: 53_688_000,
+      reasons: [
+        "24㎡满足商务客的面积期望",
+        "房价变化影响了需求转化",
+      ],
+    });
+  });
+
+  it.each([
+    [0.25, "0.25㎡低于商务客的面积期望"],
+    [24.25, "24.25㎡高于商务客的面积期望"],
+  ] as const)(
+    "describes how %s㎡ compares with the ideal business room area",
+    (areaSquareMeters, expectedReason) => {
+      expect(settleDay({ ...approvedInput, areaSquareMeters }).reasons[0]).toBe(
+        expectedReason,
+      );
+    },
+  );
+
   it.each([0, -1, 1.5, Number.MAX_SAFE_INTEGER + 1, NaN, Infinity])(
     "rejects invalid day %s",
     (day) => {
@@ -138,6 +175,27 @@ describe("settleDay", () => {
       );
     },
   );
+
+  it("uses the configured room-area increment in validation errors", () => {
+    const originalIncrement = prototypeConfig.cellAreaSquareMeters;
+    Object.defineProperty(prototypeConfig, "cellAreaSquareMeters", {
+      value: 0.5,
+      writable: true,
+      configurable: true,
+    });
+
+    try {
+      expect(() =>
+        settleDay({ ...approvedInput, areaSquareMeters: 0.25 }),
+      ).toThrow("房间面积必须是按0.5㎡递增的正有限数");
+    } finally {
+      Object.defineProperty(prototypeConfig, "cellAreaSquareMeters", {
+        value: originalIncrement,
+        writable: true,
+        configurable: true,
+      });
+    }
+  });
 
   it("rejects unsafe calculated money", () => {
     expect(() =>
