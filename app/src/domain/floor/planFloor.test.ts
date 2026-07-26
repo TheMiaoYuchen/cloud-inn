@@ -50,6 +50,23 @@ describe("placeRoom", () => {
     );
   });
 
+  it("rejects a candidate room id already used by another slot", () => {
+    const targetSlotId = prototypeConfig.floorSlots[1].id;
+    const conflictingRoom: RoomInstance = {
+      id: `room-${targetSlotId}`,
+      slotId: prototypeConfig.floorSlots[0].id,
+      roomBlueprintId: blueprint.id,
+      committedBuildCostCents: blueprint.metrics.buildCostCents,
+    };
+    const rooms = [conflictingRoom];
+    const snapshot = structuredClone(rooms);
+
+    expect(() => placeRoom(rooms, blueprint, targetSlotId)).toThrow(
+      "客房数据存在重复编号",
+    );
+    expect(rooms).toEqual(snapshot);
+  });
+
   it("rejects a slot outside the fixed build area before checking occupancy", () => {
     const invalidSlotRoom: RoomInstance = {
       id: "room-not-a-slot",
@@ -110,6 +127,49 @@ describe("removeRoom", () => {
       "找不到要移除的客房",
     );
   });
+
+  it("rejects duplicate room ids before deleting or refunding", () => {
+    const roomId = "room-duplicate";
+    const rooms: RoomInstance[] = [
+      {
+        id: roomId,
+        slotId: prototypeConfig.floorSlots[0].id,
+        roomBlueprintId: blueprint.id,
+        committedBuildCostCents: 11_600_000,
+      },
+      {
+        id: roomId,
+        slotId: prototypeConfig.floorSlots[1].id,
+        roomBlueprintId: blueprint.id,
+        committedBuildCostCents: 5_000_000,
+      },
+    ];
+    const snapshot = structuredClone(rooms);
+
+    expect(() => removeRoom(rooms, roomId)).toThrow(
+      "客房数据存在重复编号",
+    );
+    expect(rooms).toEqual(snapshot);
+  });
+
+  it.each([-1, 1.5, Number.NaN, Number.POSITIVE_INFINITY, 2 ** 53])(
+    "rejects an unsafe committed refund (%s)",
+    (committedBuildCostCents) => {
+      const room: RoomInstance = {
+        id: "room-invalid-refund",
+        slotId: prototypeConfig.floorSlots[0].id,
+        roomBlueprintId: blueprint.id,
+        committedBuildCostCents,
+      };
+      const rooms = [room];
+      const snapshot = structuredClone(rooms);
+
+      expect(() => removeRoom(rooms, room.id)).toThrow(
+        "金额必须是非负整数分",
+      );
+      expect(rooms).toEqual(snapshot);
+    },
+  );
 
   it("returns a new array without changing the input", () => {
     const slotId = prototypeConfig.floorSlots[0].id;

@@ -15,9 +15,14 @@ export function placeRoom(
     throw new Error("这个位置已有客房");
   }
 
+  const roomId = `room-${slotId}`;
+  if (rooms.some((room) => room.id === roomId)) {
+    throw new Error("客房数据存在重复编号");
+  }
+
   const costCents = assertSafeMoney(blueprint.metrics.buildCostCents);
   const room: RoomInstance = {
-    id: `room-${slotId}`,
+    id: roomId,
     slotId,
     roomBlueprintId: blueprint.id,
     committedBuildCostCents: costCents,
@@ -27,14 +32,20 @@ export function placeRoom(
 }
 
 export function removeRoom(rooms: RoomInstance[], roomId: string) {
-  const room = rooms.find(({ id }) => id === roomId);
+  const matchingRooms = rooms.filter(({ id }) => id === roomId);
 
-  if (!room) {
+  if (matchingRooms.length === 0) {
     throw new Error("找不到要移除的客房");
   }
 
+  if (matchingRooms.length > 1) {
+    throw new Error("客房数据存在重复编号");
+  }
+
+  const [room] = matchingRooms;
+  const refundCents = assertSafeMoney(room.committedBuildCostCents);
   return {
     rooms: rooms.filter(({ id }) => id !== roomId),
-    refundCents: room.committedBuildCostCents,
+    refundCents,
   };
 }
