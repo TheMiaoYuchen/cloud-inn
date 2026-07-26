@@ -70,4 +70,56 @@ describe("requestRoomVisual", () => {
 
     expect(next.visual).toEqual({ status: "error", message: "效果图生成失败" });
   });
+
+  it("isolates the provider from blueprint state", async () => {
+    const provider: VisualProvider = {
+      generate: async (room) => {
+        room.metrics.buildCostCents = 0;
+        room.cells.push({ x: 1, y: 1, zone: "bedroom" });
+        room.visual = { status: "ready", assetPath: "bad" };
+        return { assetPath: "/visuals/prototype-room.svg" };
+      },
+    };
+    const source = blueprint();
+    const sourceSnapshot = structuredClone(source);
+
+    const next = await requestRoomVisual(source, provider);
+
+    expect(source).toEqual(sourceSnapshot);
+    expect(next.metrics).toEqual(sourceSnapshot.metrics);
+    expect(next.cells).toEqual(sourceSnapshot.cells);
+    expect(next.visual).toEqual({
+      status: "ready",
+      assetPath: "/visuals/prototype-room.svg",
+    });
+  });
+
+  it.each(["", "data:text/html,<script>", "../../x", "/other/x.svg", "/visuals/../secret"]) (
+    "rejects unsafe visual asset path %s",
+    async (assetPath) => {
+      const provider: VisualProvider = {
+        generate: async () => ({ assetPath }),
+      };
+
+      const next = await requestRoomVisual(blueprint(), provider);
+
+      expect(next.visual).toEqual({
+        status: "error",
+        message: "效果图路径无效",
+      });
+    },
+  );
+
+  it("accepts visual assets under the visuals namespace", async () => {
+    const provider: VisualProvider = {
+      generate: async () => ({ assetPath: "/visuals/generated-room.svg" }),
+    };
+
+    const next = await requestRoomVisual(blueprint(), provider);
+
+    expect(next.visual).toEqual({
+      status: "ready",
+      assetPath: "/visuals/generated-room.svg",
+    });
+  });
 });
