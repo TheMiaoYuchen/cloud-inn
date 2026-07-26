@@ -1,4 +1,12 @@
 import { prototypeConfig } from "../domain/config/prototypeConfig";
+import type { DesignGene } from "../domain/design/designTypes";
+import {
+  applySelectedSync,
+  createRoomMaster,
+  createRoomVariants,
+  type RoomMaster,
+  type SyncChange,
+} from "../domain/design/roomSeries";
 import { placeRoom as planRoom } from "../domain/floor/planFloor";
 import type { Cell, GameState } from "../domain/game/state";
 import { assertSafeMoney } from "../domain/primitives";
@@ -22,6 +30,63 @@ export function createGameCommands(savePort: SavePort) {
   }
 
   return {
+    async saveRoomSeries(
+      state: GameState,
+      input: {
+        id: string;
+        name: string;
+        cells: Cell[];
+        gene: DesignGene;
+      },
+    ): Promise<GameState> {
+      if (state.phase !== "design") {
+        throw new Error("当前不能修改客房系列");
+      }
+      const roomMaster = createRoomMaster({
+        ...input,
+        columns: prototypeConfig.roomColumns,
+        rows: prototypeConfig.roomRows,
+      });
+      const phase2 = {
+        hotelGene: structuredClone(input.gene),
+        roomMaster,
+        roomVariants: createRoomVariants(roomMaster),
+        corridorTemplate: state.phase2?.corridorTemplate ?? null,
+      };
+      return persist(state, { ...state, phase2 });
+    },
+
+    async syncRoomSeries(
+      state: GameState,
+      changedMaster: RoomMaster,
+      changes: SyncChange[],
+    ): Promise<GameState> {
+      const phase2 = state.phase2;
+      if (!phase2?.roomMaster) {
+        throw new Error("请先创建客房母版");
+      }
+      if (changedMaster.id !== phase2.roomMaster.id) {
+        throw new Error("母版与客房系列不匹配");
+      }
+      const roomMaster = createRoomMaster({
+        id: changedMaster.id,
+        name: changedMaster.name,
+        cells: changedMaster.cells,
+        columns: changedMaster.columns,
+        rows: changedMaster.rows,
+        gene: changedMaster.gene,
+      });
+      const roomVariants = applySelectedSync(
+        roomMaster,
+        phase2.roomVariants,
+        changes,
+      );
+      return persist(state, {
+        ...state,
+        phase2: { ...phase2, roomMaster, roomVariants },
+      });
+    },
+
     async saveRoomBlueprint(
       state: GameState,
       name: string,

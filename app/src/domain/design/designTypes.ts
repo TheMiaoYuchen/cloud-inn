@@ -1,4 +1,4 @@
-import type { Cell } from "../game/state";
+import type { Cell, RoomMetrics } from "../game/state";
 
 /** Shared visual language inherited by a hotel, series, and room variant. */
 export interface DesignGene {
@@ -32,6 +32,8 @@ export interface RoomVariant {
   mirrored: boolean;
   overrides: RoomVariantOverride[];
   gene: DesignGene;
+  variantKind?: "king" | "twin" | "corner";
+  metrics?: RoomMetrics;
 }
 
 export interface GridPoint {
@@ -56,4 +58,3 @@ export interface CorridorTemplate {
   entrances: GridPoint[];
   slots: CorridorSlot[];
 }
-

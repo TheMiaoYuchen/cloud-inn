@@ -7,6 +7,11 @@ import { createRectangle } from "../domain/room/grid";
 import { InMemorySavePort } from "../infrastructure/memory/InMemorySavePort";
 import { createGameCommands } from "./gameCommands";
 import type { VisualProvider } from "./ports/VisualProvider";
+import { CONTEMPORARY_ORIENTAL } from "../domain/design/stylePresets";
+import {
+  previewMasterSync,
+  selectAllSyncChanges,
+} from "../domain/design/roomSeries";
 
 function prototypeCells() {
   return [
@@ -25,6 +30,62 @@ async function expectSavedRevision(
 }
 
 describe("game commands", () => {
+  it("persists a room master and its deterministic variants without changing economics", async () => {
+    const store = new InMemorySavePort();
+    const commands = createGameCommands(store);
+    const state = createNewGame("save-series");
+    const before = structuredClone(state);
+
+    const next = await commands.saveRoomSeries(state, {
+      id: "master-deluxe",
+      name: "云岫豪华客房",
+      cells: prototypeCells(),
+      gene: CONTEMPORARY_ORIENTAL.gene,
+    });
+
+    await expectSavedRevision(state, next, store);
+    expect(next.phase2?.roomMaster?.id).toBe("master-deluxe");
+    expect(next.phase2?.roomVariants.map((variant) => variant.id)).toEqual([
+      "master-deluxe-king",
+      "master-deluxe-twin",
+      "master-deluxe-corner",
+    ]);
+    expect(next.cashCents).toBe(before.cashCents);
+    expect(next.reports).toEqual(before.reports);
+    expect(next.floor).toEqual(before.floor);
+  });
+
+  it("persists only selected master synchronization changes", async () => {
+    const store = new InMemorySavePort();
+    const commands = createGameCommands(store);
+    let state = await commands.saveRoomSeries(createNewGame("save-series"), {
+      id: "master-deluxe",
+      name: "云岫豪华客房",
+      cells: prototypeCells(),
+      gene: CONTEMPORARY_ORIENTAL.gene,
+    });
+    const master = state.phase2!.roomMaster!;
+    const changedMaster = {
+      ...master,
+      gene: { ...master.gene, lighting: "3000K gallery lighting" },
+    };
+    const preview = selectAllSyncChanges(
+      previewMasterSync(master, changedMaster, state.phase2!.roomVariants),
+    ).map((change) => ({
+      ...change,
+      selected: change.variantId === "master-deluxe-king",
+    }));
+    const before = structuredClone(state);
+
+    state = await commands.syncRoomSeries(state, changedMaster, preview);
+
+    await expectSavedRevision(before, state, store);
+    expect(state.phase2?.roomVariants[0]?.gene.lighting).toBe("3000K gallery lighting");
+    expect(state.phase2?.roomVariants[1]?.gene.lighting).toBe(master.gene.lighting);
+    expect(state.cashCents).toBe(before.cashCents);
+    expect(state.reports).toEqual(before.reports);
+  });
+
   it("persists a successful room visual without changing economics", async () => {
     const store = new InMemorySavePort();
     const commands = createGameCommands(store);

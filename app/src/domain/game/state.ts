@@ -13,6 +13,7 @@ import type {
   DesignGene,
   RoomVariant,
 } from "../design/designTypes";
+import type { RoomMaster } from "../design/roomSeries";
 
 export type ZoneKind = "bedroom" | "bathroom";
 
@@ -68,6 +69,7 @@ export interface DailyReport {
 /** Optional Phase 2 envelope; absent in and compatible with Phase 1 saves. */
 export interface Phase2DesignState {
   hotelGene: DesignGene;
+  roomMaster: RoomMaster | null;
   roomVariants: RoomVariant[];
   corridorTemplate: CorridorTemplate | null;
 }
