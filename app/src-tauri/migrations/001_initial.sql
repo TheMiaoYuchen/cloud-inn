@@ -20,15 +20,18 @@ CREATE TABLE IF NOT EXISTS room_blueprints (
   cells_json TEXT NOT NULL,
   metrics_json TEXT NOT NULL,
   visual_json TEXT NOT NULL
+  ,UNIQUE(save_id, blueprint_id)
 );
 CREATE TABLE IF NOT EXISTS room_instances (
   save_id TEXT NOT NULL REFERENCES saves(save_id) ON DELETE CASCADE,
   instance_id TEXT NOT NULL,
   slot_id TEXT NOT NULL,
   blueprint_id TEXT NOT NULL,
+  ordinal INTEGER NOT NULL CHECK(ordinal >= 0),
   committed_build_cost_cents INTEGER NOT NULL CHECK(committed_build_cost_cents >= 0),
   PRIMARY KEY(save_id, instance_id),
-  UNIQUE(save_id, slot_id)
+  UNIQUE(save_id, slot_id),
+  FOREIGN KEY(save_id, blueprint_id) REFERENCES room_blueprints(save_id, blueprint_id) ON DELETE CASCADE
 );
 CREATE TABLE IF NOT EXISTS daily_reports (
   save_id TEXT NOT NULL REFERENCES saves(save_id) ON DELETE CASCADE,

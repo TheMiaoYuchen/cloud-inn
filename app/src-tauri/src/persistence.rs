@@ -1,4 +1,4 @@
-use rusqlite::{params, Connection, OptionalExtension};
+use rusqlite::{params, Connection, OptionalExtension, TransactionBehavior};
 use serde_json::{json, Value};
 use std::collections::HashSet;
 use std::fs;
@@ -38,7 +38,7 @@ impl SaveRepository {
                 Ok(json!({"id":r.get::<_,String>(0)?,"name":r.get::<_,String>(1)?,"columns":r.get::<_,i64>(2)?,"rows":r.get::<_,i64>(3)?,"cells":serde_json::from_str::<Value>(&r.get::<_,String>(4)?).map_err(|_| rusqlite::Error::InvalidQuery)?,"metrics":serde_json::from_str::<Value>(&r.get::<_,String>(5)?).map_err(|_| rusqlite::Error::InvalidQuery)?,"visual":serde_json::from_str::<Value>(&r.get::<_,String>(6)?).map_err(|_| rusqlite::Error::InvalidQuery)?}))
             }).optional().map_err(db_err)?;
         let mut rooms = Vec::new();
-        let mut stmt = conn.prepare("SELECT instance_id,slot_id,blueprint_id,committed_build_cost_cents FROM room_instances WHERE save_id=?1 ORDER BY instance_id").map_err(db_err)?;
+        let mut stmt = conn.prepare("SELECT instance_id,slot_id,blueprint_id,committed_build_cost_cents FROM room_instances WHERE save_id=?1 ORDER BY ordinal").map_err(db_err)?;
         let rows = stmt.query_map([save_id], |r| Ok(json!({"id":r.get::<_,String>(0)?,"slotId":r.get::<_,String>(1)?,"roomBlueprintId":r.get::<_,String>(2)?,"committedBuildCostCents":r.get::<_,i64>(3)?}))).map_err(db_err)?;
         for room in rows {
             rooms.push(room.map_err(db_err)?);
@@ -60,10 +60,16 @@ impl SaveRepository {
     }
 
     pub fn commit_game(&self, expected_revision: i64, game: Value) -> Result<(), String> {
+        if expected_revision < 0 {
+            return Err("存档版本无效".to_string());
+        }
         let fields = validate_game(&game)?;
         let save_id = fields.save_id.clone();
-        let conn = self.open(&save_id)?;
-        let current: Option<i64> = conn
+        let mut conn = self.open(&save_id)?;
+        let tx = conn
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(db_err)?;
+        let current: Option<i64> = tx
             .query_row(
                 "SELECT revision FROM saves WHERE save_id=?1",
                 [&save_id],
@@ -72,20 +78,22 @@ impl SaveRepository {
             .optional()
             .map_err(db_err)?;
         let current = current.unwrap_or(0);
-        if current != expected_revision || fields.revision != expected_revision + 1 {
+        let next_revision = expected_revision
+            .checked_add(1)
+            .ok_or_else(|| "存档版本无效".to_string())?;
+        if current != expected_revision || fields.revision != next_revision {
             return Err("存档已更新，请重新加载".to_string());
         }
-        let tx = conn.unchecked_transaction().map_err(db_err)?;
         tx.execute("INSERT INTO saves(save_id,schema_version,ruleset_version,revision,phase,current_day,cash_cents,rate_cents,latest_report_json,updated_at) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,datetime('now')) ON CONFLICT(save_id) DO UPDATE SET schema_version=excluded.schema_version,ruleset_version=excluded.ruleset_version,revision=excluded.revision,phase=excluded.phase,current_day=excluded.current_day,cash_cents=excluded.cash_cents,rate_cents=excluded.rate_cents,latest_report_json=excluded.latest_report_json,updated_at=excluded.updated_at", params![save_id, fields.schema_version, fields.ruleset, fields.revision, fields.phase, fields.current_day, fields.cash_cents, fields.rate_cents, fields.latest_report]).map_err(db_err)?;
+        tx.execute("DELETE FROM room_instances WHERE save_id=?1", [&save_id])
+            .map_err(db_err)?;
         tx.execute("DELETE FROM room_blueprints WHERE save_id=?1", [&save_id])
             .map_err(db_err)?;
         if let Some(bp) = fields.blueprint {
             tx.execute("INSERT INTO room_blueprints(save_id,blueprint_id,name,columns_count,rows_count,cells_json,metrics_json,visual_json) VALUES(?1,?2,?3,?4,?5,?6,?7,?8)", params![save_id,bp.id,bp.name,bp.columns,bp.rows,bp.cells,bp.metrics,bp.visual]).map_err(db_err)?;
         }
-        tx.execute("DELETE FROM room_instances WHERE save_id=?1", [&save_id])
-            .map_err(db_err)?;
-        for room in fields.rooms {
-            tx.execute("INSERT INTO room_instances(save_id,instance_id,slot_id,blueprint_id,committed_build_cost_cents) VALUES(?1,?2,?3,?4,?5)", params![save_id,room.id,room.slot,room.blueprint,room.cost]).map_err(db_err)?;
+        for (ordinal, room) in fields.rooms.into_iter().enumerate() {
+            tx.execute("INSERT INTO room_instances(save_id,instance_id,slot_id,blueprint_id,ordinal,committed_build_cost_cents) VALUES(?1,?2,?3,?4,?5,?6)", params![save_id,room.id,room.slot,room.blueprint,ordinal as i64,room.cost]).map_err(db_err)?;
         }
         tx.execute("DELETE FROM daily_reports WHERE save_id=?1", [&save_id])
             .map_err(db_err)?;
@@ -246,6 +254,9 @@ fn validate_game(g: &Value) -> Result<Fields, String> {
         if !slots.insert(room.slot.clone()) {
             return Err("存档数据损坏".into());
         }
+        if blueprint.as_ref().map(|bp| bp.id.as_str()) != Some(room.blueprint.as_str()) {
+            return Err("存档数据损坏".into());
+        }
         rooms.push(room);
     }
     let mut reports = Vec::new();
@@ -290,6 +301,13 @@ mod tests {
     }
     fn game() -> Value {
         json!({"schemaVersion":1,"rulesetVersion":"prototype-v1","saveId":"save-1","revision":1,"phase":"design","currentDay":0,"cashCents":100,"rateCents":10,"roomBlueprint":null,"floor":{"id":"prototype-floor","rooms":[]},"reports":[],"latestReport":null})
+    }
+    fn blueprint_game(revision: i64, rooms: Value) -> Value {
+        let mut g = game();
+        g["revision"] = json!(revision);
+        g["roomBlueprint"] = json!({"id":"bp-1","name":"Suite","columns":1,"rows":1,"cells":[],"metrics":{"areaSquareMeters":1,"buildCostCents":1,"suggestedRateCents":1,"businessFitBps":1},"visual":{"status":"idle"}});
+        g["floor"]["rooms"] = rooms;
+        g
     }
     #[test]
     fn creates_and_migrates_new_db() {
@@ -343,5 +361,52 @@ mod tests {
     fn invalid_save_id_rejected() {
         let r = SaveRepository::new(root("id"));
         assert!(r.load_game("../x").is_err());
+    }
+    #[test]
+    fn concurrent_revision_commits_only_one_wins() {
+        let root = root("race");
+        let first = SaveRepository::new(root.clone());
+        first.load_game("save-1").unwrap();
+        let barrier = std::sync::Arc::new(std::sync::Barrier::new(2));
+        let a = SaveRepository::new(root.clone());
+        let b = SaveRepository::new(root);
+        let ga = game();
+        let gb = game();
+        let ba = barrier.clone();
+        let ha = std::thread::spawn(move || {
+            ba.wait();
+            a.commit_game(0, ga)
+        });
+        let bb = barrier;
+        let hb = std::thread::spawn(move || {
+            bb.wait();
+            b.commit_game(0, gb)
+        });
+        let results = [ha.join().unwrap(), hb.join().unwrap()];
+        assert_eq!(results.iter().filter(|r| r.is_ok()).count(), 1);
+        assert_eq!(results.iter().filter(|r| r.is_err()).count(), 1);
+    }
+    #[test]
+    fn rejects_rooms_without_matching_blueprint() {
+        let r = SaveRepository::new(root("fk-validation"));
+        let mut no_blueprint = game();
+        no_blueprint["floor"]["rooms"] = json!([{"id":"r","slotId":"slot-ne","roomBlueprintId":"bp-1","committedBuildCostCents":1}]);
+        assert!(r.commit_game(0, no_blueprint).is_err());
+        let mismatch = blueprint_game(
+            1,
+            json!([{"id":"r","slotId":"slot-ne","roomBlueprintId":"other","committedBuildCostCents":1}]),
+        );
+        assert!(r.commit_game(0, mismatch).is_err());
+    }
+    #[test]
+    fn preserves_room_array_order() {
+        let r = SaveRepository::new(root("order"));
+        let rooms = json!([
+            {"id":"r-ne","slotId":"slot-ne","roomBlueprintId":"bp-1","committedBuildCostCents":1},
+            {"id":"r-nw","slotId":"slot-nw","roomBlueprintId":"bp-1","committedBuildCostCents":2}
+        ]);
+        let g = blueprint_game(1, rooms);
+        r.commit_game(0, g.clone()).unwrap();
+        assert_eq!(r.load_game("save-1").unwrap(), Some(g));
     }
 }
