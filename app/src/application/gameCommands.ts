@@ -34,6 +34,11 @@ import {
   type PricingContext,
 } from "../domain/operations/pricing";
 import { projectRoomOffers } from "../domain/operations/roomOffer";
+import {
+  calculateTrainingCostCents,
+  validateDepartmentConfiguration,
+  type DepartmentConfiguration,
+} from "../domain/operations/departmentCatalog";
 
 function clampBps(value: number): number {
   return Math.max(0, Math.min(10_000, Math.trunc(value)));
@@ -162,6 +167,37 @@ export function createGameCommands(savePort: SavePort) {
       return persist(state, {
         ...state,
         operations: { ...current, pricePolicies },
+      });
+    },
+
+    async configureDepartment(
+      state: GameState,
+      input: Readonly<DepartmentConfiguration>,
+    ): Promise<GameState> {
+      validateDepartmentConfiguration(input);
+      const operations = state.operations;
+      if (!operations) throw new Error("经营系统尚未初始化");
+      const previous = operations.departments[input.id];
+      if (!previous) throw new Error("部门配置不完整");
+      const trainingCostCents = calculateTrainingCostCents(
+        previous.trainingBps,
+        input.trainingBps,
+      );
+      const paidTrainingCostCents = Math.min(state.cashCents, trainingCostCents);
+      if (operations.difficulty === "management" && trainingCostCents > state.cashCents) {
+        throw new Error("现金不足以支付一次性培训费用");
+      }
+      const nextDepartment = structuredClone(input);
+      return persist(state, {
+        ...state,
+        cashCents: assertSafeMoney(state.cashCents - paidTrainingCostCents),
+        operations: {
+          ...operations,
+          departments: {
+            ...operations.departments,
+            [input.id]: nextDepartment,
+          },
+        },
       });
     },
 

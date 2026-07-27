@@ -28,6 +28,7 @@ export interface DepartmentState {
   dailyBudgetCents: number;
   trainingBps: number;
   serviceStandardBps: number;
+  leaderSpecialty?: import("./departmentCatalog").LeaderSpecialtyId;
 }
 
 export interface RoomPricePolicy {

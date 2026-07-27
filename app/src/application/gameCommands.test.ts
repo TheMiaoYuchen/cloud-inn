@@ -19,6 +19,7 @@ import {
   type PricePolicy,
 } from "../domain/operations/pricing";
 import type { SavePort } from "./ports/SavePort";
+import type { DepartmentConfiguration } from "../domain/operations/departmentCatalog";
 
 function prototypeCells() {
   return [
@@ -190,6 +191,160 @@ describe("game commands", () => {
       commands.initializeOperations(state, "expert" as never),
     ).rejects.toThrow("经营难度无效");
     expect(await store.load(state.saveId)).toBeNull();
+  });
+
+  it("requires operations initialization before configuring a department", async () => {
+    const store = new InMemorySavePort();
+    const commands = createGameCommands(store);
+    const state = createNewGame("save-department-uninitialized");
+
+    await expect(
+      commands.configureDepartment(state, {
+        id: "frontOffice",
+        staffing: 6,
+        dailyBudgetCents: 100_000,
+        trainingBps: 2_000,
+        serviceStandardBps: 6_000,
+        leaderSpecialty: "arrival-flow",
+      }),
+    ).rejects.toThrow("经营系统尚未初始化");
+    expect(await store.load(state.saveId)).toBeNull();
+  });
+
+  it("configures a department atomically and charges only incremental training", async () => {
+    const store = new InMemorySavePort();
+    const commands = createGameCommands(store);
+    let state = await commands.initializeOperations(
+      createNewGame("save-department-configure"),
+      "management",
+    );
+    const input: DepartmentConfiguration = {
+      id: "housekeeping",
+      staffing: 8,
+      dailyBudgetCents: 240_000,
+      trainingBps: 2_000,
+      serviceStandardBps: 7_000,
+      leaderSpecialty: "room-turnover",
+    };
+    const inputSnapshot = structuredClone(input);
+    const beforeCash = state.cashCents;
+
+    const configured = await commands.configureDepartment(state, input);
+
+    expect(configured.operations?.departments.housekeeping).toEqual(input);
+    expect(configured.operations?.departments.frontOffice).toEqual(
+      state.operations?.departments.frontOffice,
+    );
+    expect(configured.cashCents).toBe(beforeCash - 400_000);
+    expect(input).toEqual(inputSnapshot);
+    await expectSavedRevision(state, configured, store);
+
+    state = configured;
+    const budgetOnly = await commands.configureDepartment(state, {
+      ...input,
+      dailyBudgetCents: 300_000,
+      staffing: 12,
+    });
+    expect(budgetOnly.cashCents).toBe(state.cashCents);
+  });
+
+  it("allows an unaffordable casual daily budget without spending cash immediately", async () => {
+    const store = new InMemorySavePort();
+    const commands = createGameCommands(store);
+    const initialized = await commands.initializeOperations(
+      { ...createNewGame("save-department-casual"), cashCents: 1 },
+      "casual",
+    );
+
+    const configured = await commands.configureDepartment(initialized, {
+      id: "frontOffice",
+      staffing: 500,
+      dailyBudgetCents: 100_000_000,
+      trainingBps: 0,
+      serviceStandardBps: 10_000,
+      leaderSpecialty: "front-desk-care",
+    });
+
+    expect(configured.cashCents).toBe(1);
+    expect(configured.operations?.departments.frontOffice.dailyBudgetCents).toBe(
+      100_000_000,
+    );
+  });
+
+  it("charges casual training immediately while deferring a cash shortfall", async () => {
+    const store = new InMemorySavePort();
+    const commands = createGameCommands(store);
+    const initialized = await commands.initializeOperations(
+      { ...createNewGame("save-department-casual-training"), cashCents: 100_000 },
+      "casual",
+    );
+
+    const configured = await commands.configureDepartment(initialized, {
+      id: "frontOffice",
+      staffing: 6,
+      dailyBudgetCents: 100_000,
+      trainingBps: 2_000,
+      serviceStandardBps: 6_000,
+      leaderSpecialty: "arrival-flow",
+    });
+
+    expect(configured.cashCents).toBe(0);
+    expect(configured.operations?.departments.frontOffice.trainingBps).toBe(2_000);
+  });
+
+  it.each([
+    { kind: "invalid-department" as const },
+    { kind: "invalid-value" as const },
+    { kind: "insufficient-training-cash" as const },
+    { kind: "save-failure" as const },
+  ])("keeps department configuration atomic for $kind", async ({ kind }) => {
+    const baseStore = new InMemorySavePort();
+    const baseCommands = createGameCommands(baseStore);
+    let state = await baseCommands.initializeOperations(
+      createNewGame(`save-department-${kind}`),
+      "management",
+    );
+    if (kind === "insufficient-training-cash") {
+      state = { ...state, cashCents: 1 };
+      await baseStore.commit(state.revision, { ...state, revision: state.revision + 1 });
+      state = { ...state, revision: state.revision + 1 };
+    }
+    const snapshot = structuredClone(state);
+    const persisted = await baseStore.load(state.saveId);
+    const failingPort: SavePort = {
+      load: (saveId) => baseStore.load(saveId),
+      commit: async () => {
+        throw new Error("磁盘写入失败");
+      },
+    };
+    const commands = kind === "save-failure"
+      ? createGameCommands(failingPort)
+      : baseCommands;
+    const valid: DepartmentConfiguration = {
+      id: "housekeeping",
+      staffing: 8,
+      dailyBudgetCents: 240_000,
+      trainingBps: 2_000,
+      serviceStandardBps: 7_000,
+      leaderSpecialty: "room-turnover",
+    };
+    const attempted = kind === "invalid-department"
+      ? { ...valid, id: "spa" as never }
+      : kind === "invalid-value"
+        ? { ...valid, trainingBps: 10_001 }
+        : valid;
+
+    await expect(commands.configureDepartment(state, attempted)).rejects.toThrow(
+      kind === "invalid-department"
+        ? "部门不存在"
+        : kind === "invalid-value"
+          ? "培训水平"
+          : kind === "insufficient-training-cash"
+            ? "现金不足以支付一次性培训费用"
+            : "磁盘写入失败",
+    );
+    expect(state).toEqual(snapshot);
+    expect(await baseStore.load(state.saveId)).toEqual(persisted);
   });
 
   it("sets a validated policy and toggles automatic pricing as a manual lock", async () => {
