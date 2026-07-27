@@ -21,6 +21,21 @@ describe("settleOperationsDay", () => {
     expect(result.operations.offerUpgrades[legacy.roomOfferId]).toEqual(legacy);
   });
 
+  it("does not infer renovation from a legacy upgrade whose ID collides with a renovation kind", () => {
+    const input = createApprovedSettlementInput();
+    const legacy = {
+      roomOfferId: input.offers[0].id,
+      upgradeId: "workspace",
+      level: 1,
+    };
+    input.operations.offerUpgrades[legacy.roomOfferId] = legacy;
+
+    const result = settleOperationsDay(input);
+
+    expect(result.operations.offerUpgrades[legacy.roomOfferId]).toEqual(legacy);
+    expect(result.report.availableRooms).toBe(input.offers.length);
+  });
+
   it("keeps a renovating offer closed for the settled day and deterministically decrements closure", () => {
     const input = createApprovedSettlementInput();
     input.offers = [input.offers[0]];

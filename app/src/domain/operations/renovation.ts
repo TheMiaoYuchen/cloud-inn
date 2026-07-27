@@ -119,11 +119,11 @@ function clampBps(value: number): number {
 export function roomOfferRenovationKind(
   upgrade: Readonly<RoomOfferUpgrade>,
 ): UpgradeKind | null {
-  if (upgrade.kind !== undefined && !isUpgradeKind(upgrade.kind)) {
+  if (upgrade.kind === undefined) return null;
+  if (!isUpgradeKind(upgrade.kind)) {
     throw new Error("已保存的改造类型无效");
   }
-  const kind = upgrade.kind ?? (isUpgradeKind(upgrade.upgradeId) ? upgrade.upgradeId : null);
-  if (kind === null) return null;
+  const kind = upgrade.kind;
   if (upgrade.kind !== undefined && upgrade.upgradeId !== kind) {
     throw new Error("已保存的改造编号与类型不一致");
   }
@@ -133,6 +133,11 @@ export function roomOfferRenovationKind(
 function validatePersistedUpgrade(upgrade: Readonly<RoomOfferUpgrade>): UpgradeKind | null {
   const kind = roomOfferRenovationKind(upgrade);
   if (kind === null) return null;
+  if (
+    upgrade.remainingClosureDays === undefined
+    || upgrade.committedDay === undefined
+    || upgrade.costCents === undefined
+  ) throw new Error("已保存的改造记录不完整");
   const rule = ruleFor(kind, upgrade.level);
   if (
     upgrade.remainingClosureDays !== undefined
@@ -243,6 +248,7 @@ export function projectRoomOfferUpgrade(
       kind: request.kind,
       level: request.level,
       remainingClosureDays: rule.closureDays,
+      committedDay: 0,
       costCents: rule.costCents,
     },
   };
@@ -301,6 +307,7 @@ export function previewRoomOfferUpgrade(
       kind: request.kind,
       level: request.level,
       remainingClosureDays: rule.closureDays,
+      committedDay: 0,
       costCents: rule.costCents,
     },
   };

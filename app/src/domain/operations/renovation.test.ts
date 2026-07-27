@@ -162,6 +162,9 @@ describe("room-offer renovation", () => {
     [{ costCents: Number.NaN }, "成本"],
     [{ upgradeId: "view" }, "编号"],
     [{ roomOfferId: "offer:other" }, "键"],
+    [{ remainingClosureDays: undefined }, "完整"],
+    [{ committedDay: undefined }, "完整"],
+    [{ costCents: undefined }, "完整"],
   ] as const)("rejects malformed persisted upgrade data %#", (override, message) => {
     const operations = createOperationsState();
     const base = offer();
@@ -203,6 +206,20 @@ describe("room-offer renovation", () => {
     expect(validateRoomOfferUpgrades([base], operations)).toBeUndefined();
     expect(applyRoomOfferUpgrades(base, operations)).toEqual(base);
     expect(operations.offerUpgrades).toEqual(snapshot);
+  });
+
+  it("does not infer renovation from a legacy record with a colliding upgrade ID", () => {
+    const operations = createOperationsState();
+    const base = offer();
+    operations.offerUpgrades[base.id] = {
+      roomOfferId: base.id,
+      upgradeId: "workspace",
+      level: 1,
+    };
+
+    expect(validateRoomOfferUpgrades([base], operations)).toBeUndefined();
+    expect(applyRoomOfferUpgrades(base, operations)).toEqual(base);
+    expect(() => validateRoomOfferUpgrade(base, operations, request("workspace"))).not.toThrow();
   });
 
   it("explains business workspace and high-net-worth view/privacy score gains", () => {

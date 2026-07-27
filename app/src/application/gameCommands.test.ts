@@ -27,6 +27,11 @@ import {
   ROOM_RENOVATION_SAFETY_LOAN_ID,
 } from "../domain/operations/finance";
 import type { RoomOfferUpgradeRequest } from "../domain/operations/renovation";
+import { projectRoomOffers } from "../domain/operations/roomOffer";
+import { matchGuest } from "../domain/operations/matchGuest";
+import { getGuestSegment } from "../domain/operations/segmentCatalog";
+import { settleOperationsDay } from "../domain/operations/settleOperationsDay";
+import { createApprovedOperations } from "../domain/operations/operationsFixtures";
 
 function prototypeCells() {
   return [
@@ -99,6 +104,62 @@ describe("game commands", () => {
     const renovated = await fixture.commands.renovateRoomOffer(state, request);
     expect(renovated.operations?.offerUpgrades[legacy.roomOfferId]).toEqual(legacy);
     expect(renovated.operations?.offerUpgrades[`${request.roomOfferId}:workspace`]).toBeDefined();
+  });
+
+  it("ignores a colliding legacy upgrade ID while previewing and preserves it when renovating", async () => {
+    const fixture = await openedOperations("save-renovation-legacy-collision", "management");
+    const offerId = "offer:room-slot-nw:room-type-1";
+    const legacy = { roomOfferId: offerId, upgradeId: "workspace", level: 1 };
+    const state = {
+      ...fixture.state,
+      operations: { ...fixture.state.operations!, offerUpgrades: { [offerId]: legacy } },
+    };
+
+    const renovated = await fixture.commands.renovateRoomOffer(state, {
+      roomOfferId: offerId,
+      kind: "workspace",
+      level: 1,
+    });
+
+    expect(renovated.operations?.offerUpgrades[offerId]).toEqual(legacy);
+    expect(renovated.operations?.offerUpgrades[`${offerId}:workspace`]?.kind).toBe("workspace");
+  });
+
+  it("matches renovation preview at the persisted effective nightly price used by settlement", async () => {
+    const fixture = await openedOperations("save-renovation-effective-price", "management");
+    const offerId = "offer:room-slot-nw:room-type-1";
+    const policy = fixture.state.operations!.pricePolicies[offerId] as PricePolicy;
+    const effectiveNightlyRate = 1;
+    const state = {
+      ...fixture.state,
+      operations: {
+        ...createApprovedOperations(),
+        pricePolicies: {
+          ...fixture.state.operations!.pricePolicies,
+          [offerId]: { ...policy, nightlyRateCents: effectiveNightlyRate },
+        },
+      },
+    };
+    const preview = previewRoomRenovation(state, {
+      roomOfferId: offerId,
+      kind: "workspace",
+      level: 1,
+    });
+    const direct = matchGuest(getGuestSegment("business"), {
+      ...projectRoomOffers(state).find(({ id }) => id === offerId)!,
+      nightlyRateCents: effectiveNightlyRate,
+    });
+    const settled = settleOperationsDay({
+      day: 1,
+      cashCents: state.cashCents,
+      operations: state.operations!,
+      offers: projectRoomOffers(state),
+    });
+
+    expect(preview.beforeOffer.nightlyRateCents).toBe(effectiveNightlyRate);
+    expect(preview.segments.find(({ segmentId }) => segmentId === "business")?.before).toEqual(direct);
+    expect(settled.report.bookings?.find((booking) => booking.offerId === offerId)?.rateCents)
+      .toBe(effectiveNightlyRate);
   });
 
   it("atomically commits a management renovation, full cost, closure, and stable compound key", async () => {
@@ -179,6 +240,73 @@ describe("game commands", () => {
     })).rejects.toThrow("磁盘写入失败");
     expect(fixture.state).toEqual(snapshot);
     expect(await fixture.store.load(fixture.state.saveId)).toEqual(persisted);
+  });
+
+  it("atomically rejects replacing a room variant after its stable offer has renovation history", async () => {
+    const store = new InMemorySavePort();
+    const commands = createGameCommands(store);
+    let state = await commands.saveRoomSeries(createNewGame("save-renovation-variant-lock"), {
+      id: "master-renovated",
+      name: "装修锁定客房",
+      cells: prototypeCells(),
+      gene: CONTEMPORARY_ORIENTAL.gene,
+    });
+    state = await commands.saveRoomBlueprint(state, "装修锁定客房", prototypeCells());
+    state = await commands.chooseCorridorTemplate(state, createCorridorTemplate("complete-ring"));
+    state = await commands.placeRoomVariant(state, {
+      slotId: "north-west",
+      variantId: "master-renovated-king",
+      rotation: 0,
+      mirrored: false,
+    });
+    state = await commands.openHotel(state);
+    state = await commands.initializeOperations(state, "management");
+    state = await commands.renovateRoomOffer(state, {
+      roomOfferId: "offer:room-north-west:master-renovated-king",
+      kind: "workspace",
+      level: 1,
+    });
+    const snapshot = structuredClone(state);
+    const persisted = await store.load(state.saveId);
+
+    await expect(commands.placeRoomVariant(state, {
+      slotId: "north-west",
+      variantId: "master-renovated-twin",
+      rotation: 0,
+      mirrored: false,
+    })).rejects.toThrow("改造");
+    expect(state).toEqual(snapshot);
+    expect(await store.load(state.saveId)).toEqual(persisted);
+  });
+
+  it("preserves existing room-variant replacement behavior when no renovation exists", async () => {
+    const store = new InMemorySavePort();
+    const commands = createGameCommands(store);
+    let state = await commands.saveRoomSeries(createNewGame("save-variant-no-renovation"), {
+      id: "master-replaceable",
+      name: "可替换客房",
+      cells: prototypeCells(),
+      gene: CONTEMPORARY_ORIENTAL.gene,
+    });
+    state = await commands.saveRoomBlueprint(state, "可替换客房", prototypeCells());
+    state = await commands.chooseCorridorTemplate(state, createCorridorTemplate("complete-ring"));
+    state = await commands.placeRoomVariant(state, {
+      slotId: "north-west",
+      variantId: "master-replaceable-king",
+      rotation: 0,
+      mirrored: false,
+    });
+
+    const replaced = await commands.placeRoomVariant(state, {
+      slotId: "north-west",
+      variantId: "master-replaceable-twin",
+      rotation: 0,
+      mirrored: false,
+    });
+
+    expect(replaced.phase2?.floorPlacements?.find(({ slotId }) => slotId === "north-west")?.variantId)
+      .toBe("master-replaceable-twin");
+    await expectSavedRevision(state, replaced, store);
   });
 
   it("takes an explicit validated loan atomically and credits cash", async () => {

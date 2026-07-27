@@ -53,6 +53,7 @@ import {
 import {
   previewRoomOfferUpgrade,
   roomOfferUpgradeKey,
+  roomOfferRenovationKind,
   validateRoomOfferUpgrades,
   type RoomOfferUpgradeRequest,
   type RoomRenovationPreview,
@@ -66,8 +67,18 @@ export function previewRoomRenovation(
   if (!operations) throw new Error("经营系统尚未初始化");
   const offers = projectRoomOffers(state);
   validateRoomOfferUpgrades(offers, operations);
-  const offer = offers.find(({ id }) => id === input.roomOfferId);
-  if (!offer) throw new Error("客房产品不存在");
+  const baseOffer = offers.find(({ id }) => id === input.roomOfferId);
+  if (!baseOffer) throw new Error("客房产品不存在");
+  const policy = operations.pricePolicies[baseOffer.id];
+  if (policy && policy.roomOfferId !== baseOffer.id) throw new Error("房价策略客房产品不匹配");
+  if (policy && "baseRateCents" in policy) validatePricePolicy(policy as PricePolicy);
+  if (policy && (!Number.isSafeInteger(policy.nightlyRateCents) || policy.nightlyRateCents < 0)) {
+    throw new Error("当前房价必须是非负整数分");
+  }
+  const offer = {
+    ...baseOffer,
+    nightlyRateCents: policy?.nightlyRateCents ?? baseOffer.nightlyRateCents,
+  };
   return previewRoomOfferUpgrade(offer, operations, input);
 }
 
@@ -558,11 +569,22 @@ export function createGameCommands(savePort: SavePort) {
       if (!slot) throw new Error("房间槽位无效");
       const variant = phase2.roomVariants.find(item => item.id === input.variantId);
       if (!variant?.metrics || !state.roomBlueprint) throw new Error("客房变体无效");
+      const existingRoom = state.floor.rooms.find(room=>room.slotId===input.slotId);
+      if (existingRoom && state.operations) {
+        const existingOfferIds = new Set(
+          projectRoomOffers(state)
+            .filter(({ sourceRoomId }) => sourceRoomId === existingRoom.id)
+            .map(({ id }) => id),
+        );
+        const hasRenovation = Object.values(state.operations.offerUpgrades).some((upgrade) =>
+          roomOfferRenovationKind(upgrade) !== null && existingOfferIds.has(upgrade.roomOfferId),
+        );
+        if (hasRenovation) throw new Error("客房产品已有改造记录，不支持换型");
+      }
       const footprint = getTransformedRoomSize(variant.cells, input.rotation);
       if (footprint.width > slot.width || footprint.height > slot.height) {
         throw new Error(`客房尺寸 ${footprint.width}×${footprint.height} 超出槽位 ${slot.width}×${slot.height}`);
       }
-      const existingRoom = state.floor.rooms.find(room=>room.slotId===input.slotId);
       const refundedCash = state.cashCents + (existingRoom?.committedBuildCostCents ?? 0);
       if (refundedCash < variant.metrics.buildCostCents) throw new Error("资金不足，设计已保留");
       const floorPlacements = [...(phase2.floorPlacements ?? []).filter(item => item.slotId !== input.slotId), structuredClone(input)];
