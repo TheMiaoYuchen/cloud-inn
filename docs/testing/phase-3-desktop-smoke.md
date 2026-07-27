@@ -1,28 +1,33 @@
 # Phase 3 Desktop Smoke
 
-## Environment
+## Recorded environment
 
-- Host: macOS (recorded with `sw_vers -productVersion`), architecture from `uname -m`.
-- Commit under test: `7c70913` (update to the Task 11 commit when running the smoke).
-- Expected app artifacts: `app/src-tauri/target/release/bundle/macos/Cloud Inn.app` and `app/src-tauri/target/release/bundle/dmg/Cloud Inn_<version>_aarch64.dmg` (or `x86_64` on Intel).
+- macOS: `26.5.2`
+- Architecture: `arm64`
+- Source commit before this acceptance update: `5d2c721b8a39dd4106b91c75878723a75286f70c`
+- Build command: `npm run tauri -- build --debug --bundles app,dmg --ci --no-sign`
+- Debug app: `app/src-tauri/target/debug/bundle/macos/Cloud Inn.app`
+- Debug DMG: `app/src-tauri/target/debug/bundle/dmg/Cloud Inn_0.1.0_aarch64.dmg`
 
-## Commands
+## Acceptance status
 
-```sh
-cd app
-npm run tauri build
-npm run test:e2e -- e2e/phase3-operations.spec.ts
-```
+| Check | Status | Evidence |
+| --- | --- | --- |
+| Debug frontend and Tauri application build | PASS | Build command completed and emitted both recorded bundle paths. |
+| Phase 2 hotel to casual operations initialization | PASS | `phase3-operations.spec.ts` drives the visible browser workflow. |
+| Six guest segments, pricing explanation and saved manual rate | PASS | Browser verifies all six cards, current rate, and reload. |
+| Housekeeping leader and staffing capacity | PASS | Browser saves and reloads `高效清扫` with four staff. |
+| Workspace renovation preview and commit | PASS | Browser verifies before/after workspace text, segment reasons, and closure notice. |
+| 4x automatic one-day settlement | PASS | Injected 500 ms game-day configuration advances without manual settlement in under five seconds. |
+| Offline catch-up cap and duplicate protection | PASS | Browser rewinds only the persisted checkpoint, reloads through `GameProvider`, observes exactly seven catch-up days, then reloads again without day duplication. |
+| Day 7 weekly report and day 30 monthly close | PASS | Browser observes week one before continuing and month one at day 30. |
+| Quit/reopen native app restoration | NOT RUN | Browser reload persistence passed; native process quit/reopen still requires manual desktop execution. |
+| Visual-provider-offline desktop behavior | NOT RUN | Requires a manual native run with the visual provider unavailable; operations must remain usable while the retryable visual error is shown. |
 
-DMG build is intentionally pending for Task 11 unless the local Rust/Tauri toolchain is already installed; record the generated path and checksum when it is run.
+The two `NOT RUN` checks are final desktop gates and must be completed before shipping the DMG.
 
-## Manual smoke checklist
+## Native manual gate
 
-1. Open the app, load the Phase 2 hotel, visit `运营`, and choose `启用完整经营` with `casual` difficulty.
-2. Confirm six guest segments render, save one pricing policy, assign a housekeeping leader, and increase staffing capacity.
-3. Preview then commit a room renovation; verify before/after fit, reason text, and closure notice.
-4. Start operations, settle one day, then settle through day 7 and confirm the weekly report.
-5. Continue through day 30 and confirm the monthly close, cash, reputation, debt, unlocks, leader, renovation, closure, report counts, and checkpoint.
-6. Quit and reopen the app. The day-30 close and persisted reports/checkpoint must be restored without a duplicate day.
-7. Disable the visual provider or run offline. A readable retryable visual error is expected; operations and settlement remain available.
-
+1. Open `Cloud Inn.app` or mount the recorded DMG and launch the app.
+2. Initialize operations, settle at least one day, then quit the process and reopen it; confirm the day, cash and report are restored.
+3. Run without the visual provider/network and request a visual; confirm a readable retryable error while operations and settlement remain available.

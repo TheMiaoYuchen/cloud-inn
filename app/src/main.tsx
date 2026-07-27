@@ -5,9 +5,10 @@ import { createRuntimeSavePort } from "./runtimeSavePort";
 import "./styles.css";
 
 const savePort = createRuntimeSavePort("__TAURI_INTERNALS__" in window);
+const testDayMs = Number(window.localStorage.getItem("cloud-inn:e2e-day-ms"));
 
 createRoot(document.getElementById("root")!).render(
   <StrictMode>
-    <App savePort={savePort} />
+    <App savePort={savePort} millisecondsPerGameDay={Number.isSafeInteger(testDayMs) && testDayMs > 0 ? testDayMs : undefined} />
   </StrictMode>,
 );

@@ -32,6 +32,16 @@ describe("useOperationsClock", () => {
     expect(OPERATIONS_DAY_INTERVAL_MS).toEqual({ 1: 60_000, 2: 30_000, 4: 15_000 });
   });
 
+  it("uses an injected game-day duration while preserving the selected speed", async () => {
+    const advance = vi.fn(async () => undefined);
+    renderHook(() => useOperationsClock({ speed: 4, advance, nowMs: () => 7, millisecondsPerGameDay: 400 }));
+
+    await act(async () => vi.advanceTimersByTimeAsync(99));
+    expect(advance).not.toHaveBeenCalled();
+    await act(async () => vi.advanceTimersByTimeAsync(1));
+    expect(advance).toHaveBeenCalledWith(7);
+  });
+
   it("does not schedule while paused", async () => {
     const advance = vi.fn(async () => undefined);
     renderHook(() => useOperationsClock({ speed: 0, advance, nowMs: () => 1 }));

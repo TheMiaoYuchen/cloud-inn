@@ -13,6 +13,7 @@ export interface OperationsClockOptions {
   advance: (nowMs: number) => Promise<unknown>;
   nowMs?: () => number;
   onError?: (error: unknown) => void;
+  millisecondsPerGameDay?: number;
 }
 
 export function useOperationsClock({
@@ -20,6 +21,7 @@ export function useOperationsClock({
   advance,
   nowMs = Date.now,
   onError,
+  millisecondsPerGameDay,
 }: OperationsClockOptions): void {
   const advanceRef = useRef(advance);
   const nowRef = useRef(nowMs);
@@ -39,10 +41,10 @@ export function useOperationsClock({
         .then(() => advanceRef.current(nowRef.current()))
         .catch((error) => errorRef.current?.(error))
         .finally(() => { inFlightRef.current = false; });
-    }, OPERATIONS_DAY_INTERVAL_MS[speed]);
+    }, millisecondsPerGameDay ? millisecondsPerGameDay / speed : OPERATIONS_DAY_INTERVAL_MS[speed]);
     return () => {
       alive = false;
       window.clearInterval(timer);
     };
-  }, [speed]);
+  }, [speed, millisecondsPerGameDay]);
 }

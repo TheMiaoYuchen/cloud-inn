@@ -2,7 +2,9 @@ import { expect, test } from "@playwright/test";
 
 test.describe("Phase 3 operations acceptance", () => {
   test.setTimeout(120_000);
-  test("runs the browser closed loop through the 30-day close and restores it", async ({ page }) => {
+  test("runs the browser closed loop through the 30-day close and restores it", async ({ page: initialPage }) => {
+    let page = initialPage;
+    await page.addInitScript(() => localStorage.setItem("cloud-inn:e2e-day-ms", "500"));
     await page.goto("/#/design");
 
     // Build a Phase 2 hotel using the same accessible controls a desktop user sees.
@@ -23,8 +25,12 @@ test.describe("Phase 3 operations acceptance", () => {
 
     const baseRate = page.getByRole("spinbutton", { name: "基础价（元）" });
     await baseRate.fill("1800");
+    await page.getByRole("spinbutton", { name: "最高价（元）" }).fill("2000");
+    const automaticPricing = page.getByRole("checkbox", { name: "自动定价" });
+    await automaticPricing.click();
+    await expect(automaticPricing).not.toBeChecked();
     await page.getByRole("button", { name: "保存房价策略" }).click();
-    await expect(page.getByRole("region", { name: "房价策略" })).toContainText("建议价");
+    await expect(page.getByRole("region", { name: "房价策略" })).toContainText("当前价 ¥1,800");
 
     const departments = page.getByRole("region", { name: "部门管理" });
     await departments.getByRole("tab", { name: "客房部" }).click();
@@ -37,20 +43,43 @@ test.describe("Phase 3 operations acceptance", () => {
     await renovation.getByRole("combobox", { name: "改造项目" }).selectOption("workspace");
     await renovation.getByRole("button", { name: "预览改造" }).click();
     await expect(renovation).toContainText("客群匹配变化");
+    await expect(renovation).toContainText(/改造前：办公 \d+(?:\.\d+)?%/);
+    await expect(renovation).toContainText(/改造后：办公 \d+(?:\.\d+)?%/);
     await renovation.getByRole("button", { name: "确认改造" }).click();
     await expect(renovation).toContainText("改造已安排");
 
     await page.getByRole("button", { name: "4 倍速" }).click();
-    await page.getByRole("button", { name: "推进一天" }).click();
+    await expect(page.getByText(/营业日 1 \/ 30/)).toBeVisible({ timeout: 4_000 });
     await page.getByRole("button", { name: "暂停" }).click();
-    await expect(page.getByText(/营业日 1 \/ 30/)).toBeVisible();
 
-    // A reload exercises the persisted checkpoint and bounded offline catch-up.
-    await page.reload();
+    // Rewind only the persisted checkpoint; the application performs real bounded catch-up on reload.
+    await page.evaluate(() => {
+      const key = "cloud-inn:save:save-1";
+      const saved = JSON.parse(localStorage.getItem(key)!);
+      saved.game.operations.lastOfflineCheckpointMs = Date.now() - 20 * 500;
+      localStorage.setItem(key, JSON.stringify(saved));
+    });
+    await page.waitForTimeout(200);
+    await page.evaluate(() => {
+      const key = "cloud-inn:save:save-1";
+      const saved = JSON.parse(localStorage.getItem(key)!);
+      saved.game.operations.lastOfflineCheckpointMs = Date.now() - 20 * 500;
+      localStorage.setItem(key, JSON.stringify(saved));
+    });
+    const offlinePage = await page.context().newPage();
+    await page.close();
+    await offlinePage.goto("/#/operations");
+    page = offlinePage;
     await expect(page.getByRole("heading", { name: "云岫经营中心" })).toBeVisible();
+    await expect(page.getByText("本次离线补算 7 天")).toBeVisible();
+    await expect(page.getByText("营业日 8 / 30")).toBeVisible();
+    await expect(page.getByText(/第 1 周/)).toBeVisible();
     await expect(page.getByText(/检查点：已记录/)).toBeVisible();
 
-    for (let day = 2; day <= 30; day += 1) {
+    await page.reload();
+    await expect(page.getByText("营业日 8 / 30")).toBeVisible();
+
+    for (let day = 9; day <= 30; day += 1) {
       await page.getByRole("button", { name: "推进一天" }).click();
       await expect(page.getByText(new RegExp(`营业日 ${day} / 30`))).toBeVisible();
     }
@@ -66,5 +95,9 @@ test.describe("Phase 3 operations acceptance", () => {
     await expect(page.getByRole("main")).toContainText("第 1 月");
     await expect(page.getByRole("main")).toContainText("离线结算最多 7 天");
     expect(snapshot).toContain("第 1 月");
+    await expect(page.getByRole("region", { name: "房价策略" })).toContainText("当前价 ¥1,800");
+    await page.getByRole("region", { name: "部门管理" }).getByRole("tab", { name: "客房部" }).click();
+    await expect(page.getByRole("combobox", { name: "负责人专长" })).toHaveValue("room-turnover");
+    await expect(page.getByRole("spinbutton", { name: "员工人数" })).toHaveValue("4");
   });
 });
