@@ -4,7 +4,7 @@
 
 - macOS: `26.5.2`
 - Architecture: `arm64`
-- Source commit before this acceptance update: `5d2c721b8a39dd4106b91c75878723a75286f70c`
+- Source commit before the restoration proof update: `55194a46263e599d3c5cdb06582e35b44d0b2745`
 - Build command: `npm run tauri -- build --debug --bundles app,dmg --ci --no-sign`
 - Debug app: `app/src-tauri/target/debug/bundle/macos/Cloud Inn.app`
 - Debug DMG: `app/src-tauri/target/debug/bundle/dmg/Cloud Inn_0.1.0_aarch64.dmg`

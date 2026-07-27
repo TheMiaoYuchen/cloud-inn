@@ -45,8 +45,13 @@ test.describe("Phase 3 operations acceptance", () => {
     await expect(renovation).toContainText("客群匹配变化");
     await expect(renovation).toContainText(/改造前：办公 \d+(?:\.\d+)?%/);
     await expect(renovation).toContainText(/改造后：办公 \d+(?:\.\d+)?%/);
+    const renovationText = await renovation.innerText();
+    const beforeWorkspace = Number(renovationText.match(/改造前：办公 (\d+(?:\.\d+)?)%/)?.[1]);
+    const afterWorkspace = Number(renovationText.match(/改造后：办公 (\d+(?:\.\d+)?)%/)?.[1]);
+    expect(afterWorkspace).toBeGreaterThan(beforeWorkspace);
+    await expect(renovation).toContainText(/商务差旅：\+\d+(?:\.\d+)?% workspace-fit/);
     await renovation.getByRole("button", { name: "确认改造" }).click();
-    await expect(renovation).toContainText("改造已安排");
+    await expect(renovation).toContainText("办公空间改造 1 级已安排 · 剩余停业 2 天");
 
     await page.getByRole("button", { name: "4 倍速" }).click();
     await expect(page.getByText(/营业日 1 \/ 30/)).toBeVisible({ timeout: 4_000 });
@@ -88,13 +93,20 @@ test.describe("Phase 3 operations acceptance", () => {
     await expect(page.getByRole("main")).toContainText("周报");
     await expect(page.getByRole("main")).toContainText("月结");
 
-    const snapshot = await page.getByRole("main").innerText();
+    const visibleState = async () => ({
+      summary: await page.getByRole("region", { name: "经营结果" }).innerText(),
+      reports: await page.getByRole("region", { name: "经营报告时间线" }).locator(".timeline-heading").innerText(),
+      rate: await page.getByRole("region", { name: "房价策略" }).locator(".context-strip").innerText(),
+      unlocks: await page.getByText(/已解锁内容：/).innerText(),
+      renovation: await page.getByText(/办公空间改造 1 级/).innerText(),
+    });
+    const beforeReload = await visibleState();
     await page.reload();
     await expect(page.getByText("营业日 30 / 30")).toBeVisible();
     await expect(page.getByText("30 日经营周期已完成")).toBeVisible();
     await expect(page.getByRole("main")).toContainText("第 1 月");
     await expect(page.getByRole("main")).toContainText("离线结算最多 7 天");
-    expect(snapshot).toContain("第 1 月");
+    expect(await visibleState()).toEqual(beforeReload);
     await expect(page.getByRole("region", { name: "房价策略" })).toContainText("当前价 ¥1,800");
     await page.getByRole("region", { name: "部门管理" }).getByRole("tab", { name: "客房部" }).click();
     await expect(page.getByRole("combobox", { name: "负责人专长" })).toHaveValue("room-turnover");
