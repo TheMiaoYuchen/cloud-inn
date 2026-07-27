@@ -15,6 +15,8 @@ import {
 import { createCorridorTemplate } from "../domain/floor/corridorTemplate";
 import { createOperationsState } from "../domain/operations/createOperationsState";
 import {
+  effectiveRate,
+  seasonForGameDay,
   validatePricePolicy,
   type PricePolicy,
 } from "../domain/operations/pricing";
@@ -1484,6 +1486,85 @@ describe("game commands", () => {
     expect(await store.load(state.saveId)).toEqual(settled);
   });
 
+  it("recomputes automatic pricing from the prior day and settles bookings at the persisted effective rate", async () => {
+    const fixture = await openedOperations("save-automatic-settlement-rate", "casual");
+    const offerId = "offer:room-slot-nw:room-type-1";
+    const policy = fixture.state.operations?.pricePolicies[offerId] as PricePolicy;
+    const state = {
+      ...fixture.state,
+      operations: {
+        ...createApprovedOperations(),
+        pricePolicies: { [offerId]: policy },
+      },
+    };
+
+    const firstDay = await fixture.commands.advanceDay(state, 10_000);
+    const firstReport = firstDay.operations!.dailyReports[0];
+    const availableRooms = firstReport.availableRooms ?? 0;
+    const soldRooms = firstReport.soldRooms ?? 0;
+    const totalDemand = firstReport.segments.reduce(
+      (total, segment) => total + segment.demand,
+      0,
+    );
+    const expectedSecondDayRate = effectiveRate(policy, {
+      season: seasonForGameDay(firstDay.currentDay),
+      trailingSevenDayOccupancyBps: firstReport.occupancyBps ?? 0,
+      segmentDemandBps: Math.min(
+        10_000,
+        Math.trunc((totalDemand * 10_000) / firstDay.floor.rooms.length),
+      ),
+      reputationBps: firstDay.operations!.reputationBps,
+      remainingInventoryBps: availableRooms === 0
+        ? 5_000
+        : Math.trunc(((availableRooms - soldRooms) * 10_000) / availableRooms),
+    });
+    expect(expectedSecondDayRate).not.toBe(policy.nightlyRateCents);
+
+    const secondDay = await fixture.commands.advanceDay(firstDay, 20_000);
+    const secondReport = secondDay.operations!.dailyReports[1];
+    const booking = secondReport.bookings?.find(({ offerId: id }) => id === offerId);
+    const segment = secondReport.segments.find(
+      ({ segmentId }) => segmentId === booking?.segmentId,
+    );
+
+    expect(booking?.rateCents).toBe(expectedSecondDayRate);
+    expect(segment?.averageRateCents).toBe(expectedSecondDayRate);
+    expect(secondReport.revenueCents).toBe(expectedSecondDayRate);
+    expect((secondDay.operations!.pricePolicies[offerId] as PricePolicy).nightlyRateCents)
+      .toBe(expectedSecondDayRate);
+    expect(secondDay.operations?.lastOfflineCheckpointMs).toBe(20_000);
+    expect(await fixture.store.load(secondDay.saveId)).toEqual(secondDay);
+  });
+
+  it("keeps a manually locked persisted rate unchanged during settlement", async () => {
+    const fixture = await openedOperations("save-manual-settlement-rate", "casual");
+    const offerId = "offer:room-slot-nw:room-type-1";
+    const automatic = fixture.state.operations?.pricePolicies[offerId] as PricePolicy;
+    const manualRateCents = 70_000;
+    const state = {
+      ...fixture.state,
+      operations: {
+        ...createApprovedOperations(),
+        pricePolicies: {
+          [offerId]: {
+            ...automatic,
+            automaticPricing: false,
+            nightlyRateCents: manualRateCents,
+          },
+        },
+      },
+    };
+
+    const settled = await fixture.commands.advanceDay(state, 10_000);
+    const booking = settled.operations?.dailyReports[0].bookings?.find(
+      ({ offerId: id }) => id === offerId,
+    );
+
+    expect(booking?.rateCents).toBe(manualRateCents);
+    expect((settled.operations!.pricePolicies[offerId] as PricePolicy).nightlyRateCents)
+      .toBe(manualRateCents);
+  });
+
   it("does not partially apply operations settlement when its single commit fails", async () => {
     const store = new InMemorySavePort();
     const baseCommands = createGameCommands(store);
@@ -1495,6 +1576,27 @@ describe("game commands", () => {
     state = await baseCommands.placeRoom(state, "slot-nw");
     state = await baseCommands.openHotel(state);
     state = await baseCommands.initializeOperations(state, "casual");
+    const offerId = "offer:room-slot-nw:room-type-1";
+    const policy = state.operations!.pricePolicies[offerId] as PricePolicy;
+    state = {
+      ...state,
+      reports: [{
+        day: 1,
+        availableRooms: 1,
+        soldRooms: 1,
+        occupancyBps: 10_000,
+        rateCents: policy.nightlyRateCents,
+        revenueCents: policy.nightlyRateCents,
+        operatingCostCents: 0,
+        netIncomeCents: policy.nightlyRateCents,
+        endingCashCents: state.cashCents,
+        reasons: [],
+      }],
+      operations: {
+        ...createApprovedOperations(),
+        pricePolicies: { [offerId]: policy },
+      },
+    };
     const snapshot = structuredClone(state);
     const persisted = await store.load(state.saveId);
     const commands = createGameCommands({
@@ -1506,6 +1608,8 @@ describe("game commands", () => {
 
     await expect(commands.advanceDay(state, 10_000)).rejects.toThrow("磁盘写入失败");
     expect(state).toEqual(snapshot);
+    expect((state.operations!.pricePolicies[offerId] as PricePolicy).nightlyRateCents)
+      .toBe(policy.nightlyRateCents);
     expect(await store.load(state.saveId)).toEqual(persisted);
   });
 

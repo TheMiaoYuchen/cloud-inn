@@ -33,7 +33,7 @@ import {
   type PricePolicy,
   type PricingContext,
 } from "../domain/operations/pricing";
-import { projectRoomOffers } from "../domain/operations/roomOffer";
+import { projectRoomOffers, type RoomOffer } from "../domain/operations/roomOffer";
 import {
   calculateTrainingCostCents,
   validateDepartmentConfiguration,
@@ -174,6 +174,41 @@ function asPricePolicy(
   return defaultPolicy(roomOfferId, existing?.nightlyRateCents ?? legacyRateCents, context);
 }
 
+function operationsWithCurrentAutomaticRates(
+  state: Readonly<GameState>,
+  offers: ReadonlyArray<Readonly<RoomOffer>>,
+): OperationsState {
+  const operations = state.operations;
+  if (!operations) throw new Error("经营系统尚未初始化");
+  const context = pricingContext(state);
+  const pricePolicies = { ...operations.pricePolicies };
+
+  for (const offer of offers) {
+    const existing = pricePolicies[offer.id];
+    if (!existing) continue;
+    if (existing.roomOfferId !== offer.id) throw new Error("房价策略客房产品不匹配");
+    if (
+      "baseRateCents" in existing
+      && "minRateCents" in existing
+      && "maxRateCents" in existing
+      && "automaticPricing" in existing
+    ) {
+      const policy = existing as PricePolicy;
+      validatePricePolicy(policy);
+      pricePolicies[offer.id] = policy.automaticPricing
+        ? { ...policy, nightlyRateCents: effectiveRate(policy, context) }
+        : { ...policy };
+    } else {
+      if (!Number.isSafeInteger(existing.nightlyRateCents) || existing.nightlyRateCents < 0) {
+        throw new Error("当前房价必须是非负整数分");
+      }
+      pricePolicies[offer.id] = { ...existing };
+    }
+  }
+
+  return { ...operations, pricePolicies };
+}
+
 const MAX_OPERATIONS_DAY = 30;
 
 export function createGameCommands(savePort: SavePort) {
@@ -207,11 +242,13 @@ export function createGameCommands(savePort: SavePort) {
       operations.lastOfflineCheckpointMs !== null
       && nowMs < operations.lastOfflineCheckpointMs
     ) throw new Error("离线检查点不能倒退");
+    const offers = projectRoomOffers(state);
+    const pricedOperations = operationsWithCurrentAutomaticRates(state, offers);
     const settled = settleOperationsDay({
       day: state.currentDay + 1,
       cashCents: state.cashCents,
-      operations,
-      offers: projectRoomOffers(state),
+      operations: pricedOperations,
+      offers,
     });
     const periodic = projectPeriodicReports(settled.operations);
     const nextOperations: OperationsState = {
