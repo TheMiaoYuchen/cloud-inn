@@ -1,4 +1,5 @@
 import type { GuestSegmentId } from "../operations/operationsTypes";
+import type { StableId } from "../building/buildingTypes";
 
 export type PublicSpaceType =
   | "sky-lobby"
@@ -17,12 +18,12 @@ export type PublicSpaceType =
 export interface PublicSpaceCell {
   x: number;
   y: number;
-  zoneId: string;
+  zoneId: StableId;
 }
 
 export interface PublicSpacePlacedItem {
-  id: string;
-  catalogItemId: string;
+  id: StableId;
+  catalogItemId: StableId;
   x: number;
   y: number;
   width: number;
@@ -31,7 +32,7 @@ export interface PublicSpacePlacedItem {
 }
 
 export interface PublicSpaceBlueprint {
-  id: string;
+  id: StableId;
   type: PublicSpaceType;
   name: string;
   columns: number;
@@ -42,10 +43,10 @@ export interface PublicSpaceBlueprint {
 }
 
 export interface PublicSpaceInstance {
-  id: string;
-  floorId: string;
-  localPlacementId: string;
-  blueprintId: string;
+  id: StableId;
+  floorId: StableId;
+  localPlacementId: StableId;
+  blueprintId: StableId;
   type: PublicSpaceType;
   committedBuildCostCents: number;
 }
@@ -58,14 +59,52 @@ export interface FacilitySegmentInput {
   dailyDemand: number;
 }
 
+export interface FacilityPolicy {
+  positioningId: StableId;
+  priceBandId: StableId;
+  capacity: number;
+  openingPolicyId: StableId;
+  serviceBudgetCents: number;
+  signatureOfferingId?: StableId;
+}
+
+export interface FacilityMenuSelection {
+  menuStructureId: StableId;
+  selectedItemIds: StableId[];
+}
+
+export interface FacilitySignatureOffering {
+  id: StableId;
+  kind: "dish" | "drink" | "service-package";
+  developmentCostCents: number;
+  unitCostCents: number;
+  segmentAppealBps: Record<GuestSegmentId, number>;
+  reputationBps: number;
+}
+
+export interface FacilityDailyResult {
+  day: number;
+  visits: number;
+  revenueCents: number;
+  operatingCostCents: number;
+  utilizationBps: number;
+  satisfactionDeltaBps: number;
+  appealDeltaBps: number;
+  reasonCodes: StableId[];
+}
+
 export interface FacilityState {
-  id: string;
+  id: StableId;
   type: PublicSpaceType;
-  publicSpaceInstanceId: string;
+  publicSpaceInstanceId: StableId;
   status: FacilityStatus;
   enabled: boolean;
   capacity: number;
   dailyOperatingCostCents: number;
   segmentInputs: Record<GuestSegmentId, FacilitySegmentInput>;
-  selectedChoiceIds: string[];
+  policy: FacilityPolicy | null;
+  menuSelection: FacilityMenuSelection | null;
+  selectedSignatureOfferingId: StableId | null;
+  developedOfferingIds: StableId[];
+  dailyResults: FacilityDailyResult[];
 }

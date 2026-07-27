@@ -14,6 +14,7 @@ import {
   type PublicSpaceType,
 } from "../domain/facilities/facilityTypes";
 import { createNewGame, type GameState } from "../domain/game/state";
+import { createRoomMaster } from "../domain/design/roomSeries";
 import {
   GUEST_SEGMENT_IDS,
   type GuestSegmentId,
@@ -42,7 +43,9 @@ const OPERATING_FACILITY_TYPES = new Set<PublicSpaceType>(
 const PUBLIC_SPACE_PLACEMENTS = FACILITY_TYPES.map((type, index) => ({
   type,
   floorNumber: 2 + Math.min(Math.floor(index / 4), 2),
-  localPlacementId: `space:${String((index % 4) + 1).padStart(2, "0")}`,
+  localPlacementId: assertStableId(
+    `space:${String((index % 4) + 1).padStart(2, "0")}`,
+  ),
 }));
 
 function compareStableIds(left: string, right: string): number {
@@ -72,11 +75,22 @@ function createSegmentInputs(): FacilityState["segmentInputs"] {
 
 function createGuestTemplate(): ScaleFloorTemplate {
   return {
-    id: "template:guest:dense-ring",
+    id: assertStableId("template:guest:dense-ring"),
     use: "guest",
+    columns: 24,
+    rows: 60,
+    cellAreaSquareMeters: 1,
     roomPlacements: Array.from({ length: 10 }, (_, index) => ({
-      id: `placement:${String(index + 1).padStart(3, "0")}`,
-      roomBlueprintId: "room-blueprint:standard-king",
+      id: assertStableId(
+        `placement:${String(index + 1).padStart(3, "0")}`,
+      ),
+      roomBlueprintId: assertStableId("room-blueprint:standard-king"),
+      anchorX: index % 2 === 0 ? 0 : 16,
+      anchorY: Math.floor(index / 2) * 12,
+      width: 8,
+      height: 12,
+      rotation: index % 2 === 0 ? 0 : 180,
+      mirrored: index % 2 !== 0,
     })),
     publicSpaceSlots: [],
   };
@@ -113,10 +127,10 @@ function createFloors(guestTemplate: ScaleFloorTemplate): HotelFloor[] {
       use,
       templateId:
         floorNumber === 4
-          ? "template:facility:upper"
+          ? assertStableId("template:facility:upper")
           : use === "guest"
             ? guestTemplate.id
-            : `template:${use}:standard`,
+            : assertStableId(`template:${use}:standard`),
       purchased: true,
       rooms: rooms.sort((left, right) => compareStableIds(left.id, right.id)),
       publicSpaceInstanceIds: [],
@@ -152,7 +166,7 @@ function createPublicSpaceRecords(floors: HotelFloor[]): {
         name: type,
         columns: 8,
         rows: 8,
-        cells: [{ x: 0, y: 0, zoneId: "zone:guest" }],
+        cells: [{ x: 0, y: 0, zoneId: assertStableId("zone:guest") }],
         placedItems: [],
         committedBuildCostCents: 5_000_000 + index * 100_000,
       });
@@ -173,7 +187,25 @@ function createPublicSpaceRecords(floors: HotelFloor[]): {
         capacity: 20 + index * 5,
         dailyOperatingCostCents: 50_000 + index * 2_500,
         segmentInputs: createSegmentInputs(),
-        selectedChoiceIds: [`choice:${type}:standard`],
+        policy: {
+          positioningId: assertStableId(`positioning:${type}:standard`),
+          priceBandId: assertStableId("price-band:premium"),
+          capacity: 20 + index * 5,
+          openingPolicyId: assertStableId("opening-policy:daily"),
+          serviceBudgetCents: 50_000 + index * 2_500,
+          signatureOfferingId: assertStableId(`offering:${type}:signature`),
+        },
+        menuSelection: {
+          menuStructureId: assertStableId(`menu:${type}:standard`),
+          selectedItemIds: [],
+        },
+        selectedSignatureOfferingId: assertStableId(
+          `offering:${type}:signature`,
+        ),
+        developedOfferingIds: [
+          assertStableId(`offering:${type}:signature`),
+        ],
+        dailyResults: [],
       });
 
       floors.find((floor) => floor.id === floorId)?.publicSpaceInstanceIds.push(
@@ -213,26 +245,38 @@ function createPhase4State(): ContentScaleState {
   const floorTemplates = stableRecord<ScaleFloorTemplate>([
     guestTemplate,
     {
-      id: "template:entrance:standard",
+      id: assertStableId("template:entrance:standard"),
       use: "entrance",
+      columns: 24,
+      rows: 24,
+      cellAreaSquareMeters: 1,
       roomPlacements: [],
       publicSpaceSlots: [],
     },
     {
-      id: "template:facility:standard",
+      id: assertStableId("template:facility:standard"),
       use: "facility",
+      columns: 24,
+      rows: 24,
+      cellAreaSquareMeters: 1,
       roomPlacements: [],
       publicSpaceSlots: createPublicSpaceSlots(3),
     },
     {
-      id: "template:facility:upper",
+      id: assertStableId("template:facility:upper"),
       use: "facility",
+      columns: 24,
+      rows: 24,
+      cellAreaSquareMeters: 1,
       roomPlacements: [],
       publicSpaceSlots: createPublicSpaceSlots(4),
     },
     {
-      id: "template:sky-lobby:standard",
+      id: assertStableId("template:sky-lobby:standard"),
       use: "sky-lobby",
+      columns: 24,
+      rows: 24,
+      cellAreaSquareMeters: 1,
       roomPlacements: [],
       publicSpaceSlots: createPublicSpaceSlots(2),
     },
@@ -241,7 +285,7 @@ function createPhase4State(): ContentScaleState {
   return {
     rulesetVersion: "content-scale-v1",
     building: {
-      templateId: "building-template:first-tower",
+      templateId: assertStableId("building-template:first-tower"),
       entranceFloorId: floors[0].id,
       skyLobbyFloorIds: [floors[1].id],
       purchasedFloorIds: floors.map((floor) => floor.id),
@@ -253,16 +297,18 @@ function createPhase4State(): ContentScaleState {
     publicSpaces: instances,
     facilities,
     catalogProgress: {
-      unlockedIds: FACILITY_TYPES.map((type) => `facility:${type}`).sort(),
+      unlockedIds: FACILITY_TYPES.map((type) =>
+        assertStableId(`facility:${type}`),
+      ).sort(),
       discoveredMarketEntryIds: GUEST_SEGMENT_IDS.map(
-        (segmentId) => `market:${segmentId}`,
+        (segmentId) => assertStableId(`market:${segmentId}`),
       ).sort(),
     },
     recentFlowSnapshot: {
       day: 0,
       visibleFloorId: floors[4].id,
       events: Array.from({ length: 12 }, (_, index) => ({
-        id: `flow:${String(index + 1).padStart(3, "0")}`,
+        id: assertStableId(`flow:${String(index + 1).padStart(3, "0")}`),
         kind: index % 3 === 0 ? "staff" : "guest",
         fromId: floors[4 + (index % 12)].id,
         toId: floors[1].id,
@@ -272,9 +318,42 @@ function createPhase4State(): ContentScaleState {
   };
 }
 
+function createAcceptanceRoomMaster() {
+  return createRoomMaster({
+    id: assertStableId("room-blueprint:standard-king"),
+    name: "Standard King",
+    columns: 8,
+    rows: 12,
+    cells: Array.from({ length: 8 * 12 }, (_, index) => ({
+      x: index % 8,
+      y: Math.floor(index / 8),
+      zone: index % 8 >= 6 ? ("bathroom" as const) : ("bedroom" as const),
+    })),
+    gene: {
+      palette: "cloud-neutral",
+      materials: ["oak", "linen"],
+      metal: "brushed-brass",
+      lighting: "warm",
+      mood: "calm",
+    },
+  });
+}
+
 export function createPhase4AcceptanceState(saveId: SaveId): GameState {
   return {
     ...createNewGame(saveId),
+    phase2: {
+      hotelGene: {
+        palette: "cloud-neutral",
+        materials: ["oak", "linen"],
+        metal: "brushed-brass",
+        lighting: "warm",
+        mood: "calm",
+      },
+      roomMaster: createAcceptanceRoomMaster(),
+      roomVariants: [],
+      corridorTemplate: null,
+    },
     phase4: createPhase4State(),
   };
 }

@@ -54,66 +54,75 @@ export function assertPublicSpaceCount(value: number): PublicSpaceCount {
 }
 
 export interface ScaleRoomInstance {
-  id: string;
-  floorId: string;
-  localPlacementId: string;
-  roomBlueprintId: string;
-  variantId?: string;
+  id: StableId;
+  floorId: StableId;
+  localPlacementId: StableId;
+  roomBlueprintId: StableId;
+  variantId?: StableId;
   committedBuildCostCents: number;
 }
 
 export interface HotelFloor {
-  id: string;
+  id: StableId;
   floorNumber: number;
   use: FloorUse;
-  templateId: string;
+  templateId: StableId;
   purchased: boolean;
   rooms: ScaleRoomInstance[];
-  publicSpaceInstanceIds: string[];
+  publicSpaceInstanceIds: StableId[];
 }
 
 export interface ScaleRoomPlacement {
-  id: string;
-  roomBlueprintId: string;
-  variantId?: string;
+  id: StableId;
+  roomBlueprintId: StableId;
+  variantId?: StableId;
+  anchorX: number;
+  anchorY: number;
+  width: number;
+  height: number;
+  rotation: 0 | 90 | 180 | 270;
+  mirrored: boolean;
 }
 
 export interface ScalePublicSpaceSlot {
-  id: string;
+  id: StableId;
   permittedTypes: PublicSpaceInstance["type"][];
 }
 
 export interface ScaleFloorTemplate {
-  id: string;
+  id: StableId;
   use: FloorUse;
+  columns: number;
+  rows: number;
+  cellAreaSquareMeters: 1;
   roomPlacements: ScaleRoomPlacement[];
   publicSpaceSlots: ScalePublicSpaceSlot[];
 }
 
 export interface TowerBuildingState {
-  templateId: string;
-  entranceFloorId: string;
-  skyLobbyFloorIds: string[];
-  purchasedFloorIds: string[];
+  templateId: StableId;
+  entranceFloorId: StableId;
+  skyLobbyFloorIds: StableId[];
+  purchasedFloorIds: StableId[];
   availableExpansionFloorNumbers: number[];
 }
 
 export interface CatalogProgress {
-  unlockedIds: string[];
-  discoveredMarketEntryIds: string[];
+  unlockedIds: StableId[];
+  discoveredMarketEntryIds: StableId[];
 }
 
 export interface FlowEvent {
-  id: string;
+  id: StableId;
   kind: "guest" | "staff" | "service";
-  fromId: string;
-  toId: string;
+  fromId: StableId;
+  toId: StableId;
   count: number;
 }
 
 export interface FlowSnapshot {
   day: number;
-  visibleFloorId: string;
+  visibleFloorId: StableId;
   events: FlowEvent[];
 }
 
