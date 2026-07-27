@@ -232,11 +232,14 @@ describe('Phase 3 operations center', () => {
     expect(within(renovation).getByText(/停业 2 天/)).toBeInTheDocument();
     expect(within(renovation).getByText(/客群匹配变化/)).toBeInTheDocument();
     await user.selectOptions(within(renovation).getByRole('combobox', { name: '改造项目' }), 'privacy');
+    expect(within(renovation).queryByText(/改造前/)).not.toBeInTheDocument();
     await user.click(within(renovation).getByRole('button', { name: '预览改造' }));
     expect(within(renovation).getByText(/改造前：.*私密性/)).toBeInTheDocument();
     expect(within(renovation).getByText(/改造后：.*私密性/)).toBeInTheDocument();
     await user.click(within(renovation).getByRole('button', { name: '确认改造' }));
-    expect(await within(renovation).findByText('改造已安排，施工期间该产品暂停销售')).toBeInTheDocument();
+    expect(await within(renovation).findByText('私密性改造 1 级已安排 · 剩余停业 2 天')).toBeInTheDocument();
+    await user.selectOptions(within(renovation).getByRole('combobox', { name: '改造项目' }), 'view');
+    expect(within(renovation).queryByText(/已安排/)).not.toBeInTheDocument();
   });
 
   it('shows timeline, offline checkpoint and deterministic time controls through day thirty', async () => {
@@ -254,9 +257,10 @@ describe('Phase 3 operations center', () => {
     const user = userEvent.setup();
     render(<GameProvider savePort={await portWith(state)} saveId={state.saveId} nowMs={() => checkpoint}><OperationsPage /></GameProvider>);
     const timeline = await screen.findByRole('region', { name: '经营报告时间线' });
-    for (const text of ['日报', '周报', '月结', '原因：价格流失', '行动：调整房价']) {
+    for (const text of ['原因：价格流失', '行动：调整房价']) {
       expect(within(timeline).getByText(text, { exact: false })).toBeInTheDocument();
     }
+    for (const heading of ['日报', '周报', '月结']) expect(within(timeline).getByRole('heading', { name: heading })).toBeInTheDocument();
     expect(within(timeline).getAllByText('结果：商务差旅表现最佳')).toHaveLength(2);
     expect(screen.getByText('离线结算最多 7 天')).toBeInTheDocument();
     expect(screen.getByText(/检查点.*已记录/)).toBeInTheDocument();
