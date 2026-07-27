@@ -271,7 +271,7 @@ describe("game commands", () => {
     );
   });
 
-  it("charges casual training immediately while deferring a cash shortfall", async () => {
+  it("covers casual training cash shortfall with a deterministic safety loan", async () => {
     const store = new InMemorySavePort();
     const commands = createGameCommands(store);
     const initialized = await commands.initializeOperations(
@@ -290,6 +290,55 @@ describe("game commands", () => {
 
     expect(configured.cashCents).toBe(0);
     expect(configured.operations?.departments.frontOffice.trainingBps).toBe(2_000);
+    expect(configured.operations?.loans).toEqual([{
+      id: "safety-loan:department-training",
+      principalCents: 300_000,
+      outstandingCents: 300_000,
+      dailyInterestBps: 10,
+      minimumPaymentCents: 3_000,
+    }]);
+    await expectSavedRevision(initialized, configured, store);
+
+    const fundedAgain = await commands.configureDepartment(configured, {
+      ...configured.operations!.departments.frontOffice,
+      trainingBps: 3_000,
+    });
+    expect(fundedAgain.cashCents).toBe(0);
+    expect(fundedAgain.operations?.loans).toEqual([{
+      id: "safety-loan:department-training",
+      principalCents: 500_000,
+      outstandingCents: 500_000,
+      dailyInterestBps: 10,
+      minimumPaymentCents: 5_000,
+    }]);
+  });
+
+  it("keeps casual safety-loan financing atomic when saving fails", async () => {
+    const store = new InMemorySavePort();
+    const baseCommands = createGameCommands(store);
+    const state = await baseCommands.initializeOperations(
+      { ...createNewGame("save-department-casual-loan-failure"), cashCents: 1 },
+      "casual",
+    );
+    const snapshot = structuredClone(state);
+    const persisted = await store.load(state.saveId);
+    const commands = createGameCommands({
+      load: (saveId) => store.load(saveId),
+      commit: async () => {
+        throw new Error("磁盘写入失败");
+      },
+    });
+
+    await expect(commands.configureDepartment(state, {
+      id: "housekeeping",
+      staffing: 8,
+      dailyBudgetCents: 240_000,
+      trainingBps: 2_000,
+      serviceStandardBps: 7_000,
+      leaderSpecialty: "room-turnover",
+    })).rejects.toThrow("磁盘写入失败");
+    expect(state).toEqual(snapshot);
+    expect(await store.load(state.saveId)).toEqual(persisted);
   });
 
   it.each([

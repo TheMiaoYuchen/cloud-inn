@@ -40,6 +40,36 @@ import {
   type DepartmentConfiguration,
 } from "../domain/operations/departmentCatalog";
 
+const DEPARTMENT_TRAINING_SAFETY_LOAN_ID = "safety-loan:department-training";
+
+function financeCasualTrainingShortfall(
+  operations: Readonly<OperationsState>,
+  shortfallCents: number,
+): OperationsState["loans"] {
+  if (shortfallCents === 0) return operations.loans;
+  const existingIndex = operations.loans.findIndex(
+    ({ id }) => id === DEPARTMENT_TRAINING_SAFETY_LOAN_ID,
+  );
+  const existing = existingIndex < 0 ? undefined : operations.loans[existingIndex];
+  const principalCents = assertSafeMoney(
+    (existing?.principalCents ?? 0) + shortfallCents,
+  );
+  const outstandingCents = assertSafeMoney(
+    (existing?.outstandingCents ?? 0) + shortfallCents,
+  );
+  const safetyLoan = {
+    id: DEPARTMENT_TRAINING_SAFETY_LOAN_ID,
+    principalCents,
+    outstandingCents,
+    dailyInterestBps: 10,
+    minimumPaymentCents: Math.max(1, Math.trunc(outstandingCents / 100)),
+  };
+  if (existingIndex < 0) return [...operations.loans, safetyLoan];
+  return operations.loans.map((loan, index) =>
+    index === existingIndex ? safetyLoan : loan
+  );
+}
+
 function clampBps(value: number): number {
   return Math.max(0, Math.min(10_000, Math.trunc(value)));
 }
@@ -187,12 +217,19 @@ export function createGameCommands(savePort: SavePort) {
       if (operations.difficulty === "management" && trainingCostCents > state.cashCents) {
         throw new Error("现金不足以支付一次性培训费用");
       }
+      const trainingShortfallCents = operations.difficulty === "casual"
+        ? trainingCostCents - paidTrainingCostCents
+        : 0;
       const nextDepartment = structuredClone(input);
       return persist(state, {
         ...state,
         cashCents: assertSafeMoney(state.cashCents - paidTrainingCostCents),
         operations: {
           ...operations,
+          loans: financeCasualTrainingShortfall(
+            operations,
+            trainingShortfallCents,
+          ),
           departments: {
             ...operations.departments,
             [input.id]: nextDepartment,
