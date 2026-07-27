@@ -131,6 +131,23 @@ function asPricePolicy(
   return defaultPolicy(roomOfferId, existing?.nightlyRateCents ?? legacyRateCents, context);
 }
 
+function withReconciledPricePolicies(state: GameState): GameState {
+  const operations = state.operations;
+  if (!operations) return state;
+
+  const context = pricingContextForState(state);
+  const pricePolicies: OperationsState["pricePolicies"] = {};
+  for (const offer of projectRoomOffers(state)) {
+    pricePolicies[offer.id] = operations.pricePolicies[offer.id]
+      ?? defaultPolicy(offer.id, offer.nightlyRateCents, context);
+  }
+
+  return {
+    ...state,
+    operations: { ...operations, pricePolicies },
+  };
+}
+
 function operationsWithCurrentAutomaticRates(
   state: Readonly<GameState>,
   offers: ReadonlyArray<Readonly<RoomOffer>>,
@@ -584,7 +601,14 @@ export function createGameCommands(savePort: SavePort) {
       const floorPlacements = [...(phase2.floorPlacements ?? []).filter(item => item.slotId !== input.slotId), structuredClone(input)];
       const room = { id:`room-${input.slotId}`, slotId:input.slotId, roomBlueprintId:state.roomBlueprint.id, committedBuildCostCents:variant.metrics.buildCostCents };
       const rooms=[...state.floor.rooms.filter(item=>item.slotId!==input.slotId),room];
-      return persist(state, { ...state, phase:rooms.length?'ready':'floor', cashCents:refundedCash-variant.metrics.buildCostCents, floor:{...state.floor,rooms}, phase2: { ...phase2, floorPlacements } });
+      const changed: GameState = {
+        ...state,
+        phase: rooms.length ? "ready" : "floor",
+        cashCents: refundedCash - variant.metrics.buildCostCents,
+        floor: { ...state.floor, rooms },
+        phase2: { ...phase2, floorPlacements },
+      };
+      return persist(state, withReconciledPricePolicies(changed));
     },
 
     async saveRoomBlueprint(
@@ -651,12 +675,13 @@ export function createGameCommands(savePort: SavePort) {
         throw new Error("资金不足，设计已保留");
       }
       const cashCents = assertSafeMoney(currentCashCents - placed.costCents);
-      return persist(state, {
+      const changed: GameState = {
         ...state,
         phase: placed.rooms.length > 0 ? "ready" : "floor",
         cashCents,
         floor: { ...state.floor, rooms: placed.rooms },
-      });
+      };
+      return persist(state, withReconciledPricePolicies(changed));
     },
 
     async setRate(state: GameState, rateCents: number): Promise<GameState> {

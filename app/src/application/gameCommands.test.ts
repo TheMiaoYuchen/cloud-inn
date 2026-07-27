@@ -580,6 +580,94 @@ describe("game commands", () => {
     expect(again.operations?.difficulty).toBe("management");
   });
 
+  it("reconciles price policies when a legacy room is added after operations initialization", async () => {
+    const store = new InMemorySavePort();
+    const commands = createGameCommands(store);
+    let state = await commands.saveRoomBlueprint(
+      createNewGame("save-pricing-legacy-add-after-init"),
+      "云岫商务房",
+      prototypeCells(),
+    );
+    state = await commands.placeRoom(state, "slot-nw");
+    state = await commands.initializeOperations(state, "management");
+    const existingOfferId = "offer:room-slot-nw:room-type-1";
+    const existingPolicy = {
+      ...(state.operations?.pricePolicies[existingOfferId] as PricePolicy),
+      automaticPricing: false,
+      nightlyRateCents: 90_000,
+    };
+    state = {
+      ...state,
+      operations: {
+        ...state.operations!,
+        reputationBps: 7_321,
+        pricePolicies: { [existingOfferId]: existingPolicy },
+      },
+    };
+    await store.commit(state.revision, { ...state, revision: state.revision + 1 });
+    state = { ...state, revision: state.revision + 1 };
+
+    const placed = await commands.placeRoom(state, "slot-ne");
+    const newOfferId = "offer:room-slot-ne:room-type-1";
+    const newPolicy = placed.operations?.pricePolicies[newOfferId] as PricePolicy;
+
+    expect(Object.keys(placed.operations?.pricePolicies ?? {})).toEqual([
+      existingOfferId,
+      newOfferId,
+    ]);
+    expect(placed.operations?.pricePolicies[existingOfferId]).toEqual(existingPolicy);
+    expect(placed.operations?.reputationBps).toBe(7_321);
+    expect(() => validatePricePolicy(newPolicy)).not.toThrow();
+    expect(newPolicy).toMatchObject({
+      roomOfferId: newOfferId,
+      baseRateCents: state.rateCents,
+      automaticPricing: true,
+    });
+    await expectSavedRevision(state, placed, store);
+  });
+
+  it("reconciles price policies when a Phase 2 room is replaced after operations initialization", async () => {
+    const store = new InMemorySavePort();
+    const commands = createGameCommands(store);
+    let state = await commands.saveRoomSeries(createNewGame("save-pricing-variant-replace-after-init"), {
+      id: "master-price-replace",
+      name: "可换型客房",
+      cells: prototypeCells(),
+      gene: CONTEMPORARY_ORIENTAL.gene,
+    });
+    state = await commands.saveRoomBlueprint(state, "可换型客房", prototypeCells());
+    state = await commands.chooseCorridorTemplate(state, createCorridorTemplate("complete-ring"));
+    state = await commands.placeRoomVariant(state, {
+      slotId: "north-west",
+      variantId: "master-price-replace-king",
+      rotation: 0,
+      mirrored: false,
+    });
+    state = await commands.initializeOperations(state, "management");
+    const oldOfferId = "offer:room-north-west:master-price-replace-king";
+
+    const replaced = await commands.placeRoomVariant(state, {
+      slotId: "north-west",
+      variantId: "master-price-replace-twin",
+      rotation: 0,
+      mirrored: false,
+    });
+    const newOfferId = "offer:room-north-west:master-price-replace-twin";
+    const newPolicy = replaced.operations?.pricePolicies[newOfferId] as PricePolicy;
+
+    expect(Object.keys(replaced.operations?.pricePolicies ?? {})).toEqual([newOfferId]);
+    expect(replaced.operations?.pricePolicies[oldOfferId]).toBeUndefined();
+    expect(() => validatePricePolicy(newPolicy)).not.toThrow();
+    expect(newPolicy).toMatchObject({
+      roomOfferId: newOfferId,
+      baseRateCents: state.rateCents,
+      automaticPricing: true,
+    });
+    expect({ ...replaced.operations, pricePolicies: state.operations?.pricePolicies })
+      .toEqual(state.operations);
+    await expectSavedRevision(state, replaced, store);
+  });
+
   it("normalizes restored policy IDs and removes policies for offers no longer available", async () => {
     const store = new InMemorySavePort();
     const commands = createGameCommands(store);
