@@ -62,6 +62,9 @@ export function validatePricePolicy(policy: Readonly<PricePolicy>): void {
   assertPositiveMoney(policy.baseRateCents);
   assertPositiveMoney(policy.minRateCents);
   assertPositiveMoney(policy.maxRateCents);
+  if (!Number.isSafeInteger(policy.nightlyRateCents) || policy.nightlyRateCents < 0) {
+    throw new Error("当前房价必须是非负整数分");
+  }
   if (
     policy.minRateCents > policy.baseRateCents ||
     policy.baseRateCents > policy.maxRateCents

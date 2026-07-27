@@ -89,11 +89,15 @@ function defaultPolicy(
   baseRateCents: number,
   context: Readonly<PricingContext>,
 ): PricePolicy {
+  const doubledBaseRate = BigInt(baseRateCents) * 2n;
+  const maximumSafeRate = BigInt(Number.MAX_SAFE_INTEGER);
   const policy: PricePolicy = {
     roomOfferId,
     baseRateCents,
     minRateCents: Math.max(1, Math.trunc(baseRateCents / 2)),
-    maxRateCents: assertSafeMoney(baseRateCents * 2),
+    maxRateCents: Number(
+      doubledBaseRate > maximumSafeRate ? maximumSafeRate : doubledBaseRate,
+    ),
     automaticPricing: true,
     nightlyRateCents: baseRateCents,
   };
@@ -113,7 +117,10 @@ function asPricePolicy(
     "maxRateCents" in existing &&
     "automaticPricing" in existing
   ) {
-    const policy = existing as PricePolicy;
+    const policy: PricePolicy = {
+      ...(existing as PricePolicy),
+      roomOfferId,
+    };
     validatePricePolicy(policy);
     return { ...policy, nightlyRateCents: effectiveRate(policy, context) };
   }
@@ -143,10 +150,10 @@ export function createGameCommands(savePort: SavePort) {
       }
       const current = state.operations ?? createOperationsState(difficulty);
       const context = pricingContext({ ...state, operations: current });
-      const pricePolicies = { ...current.pricePolicies };
+      const pricePolicies: OperationsState["pricePolicies"] = {};
       for (const roomOfferId of offerIds(state)) {
         pricePolicies[roomOfferId] = asPricePolicy(
-          pricePolicies[roomOfferId],
+          current.pricePolicies[roomOfferId],
           roomOfferId,
           state.rateCents,
           context,

@@ -38,6 +38,15 @@ describe("explainable room pricing", () => {
     );
   });
 
+  it.each([Number.NaN, 1.5, -1, Number.MAX_SAFE_INTEGER + 1])(
+    "rejects invalid persisted nightly rate %s",
+    (nightlyRateCents) => {
+      expect(() =>
+        validatePricePolicy({ ...policy, nightlyRateCents }),
+      ).toThrow("当前房价必须是非负整数分");
+    },
+  );
+
   it.each([
     { minRateCents: 110_000 },
     { maxRateCents: 90_000 },

@@ -14,7 +14,10 @@ import {
 } from "../domain/design/roomSeries";
 import { createCorridorTemplate } from "../domain/floor/corridorTemplate";
 import { createOperationsState } from "../domain/operations/createOperationsState";
-import type { PricePolicy } from "../domain/operations/pricing";
+import {
+  validatePricePolicy,
+  type PricePolicy,
+} from "../domain/operations/pricing";
 import type { SavePort } from "./ports/SavePort";
 
 function prototypeCells() {
@@ -88,6 +91,52 @@ describe("game commands", () => {
     expect(again.operations?.difficulty).toBe("management");
   });
 
+  it("normalizes restored policy IDs and removes policies for offers no longer available", async () => {
+    const store = new InMemorySavePort();
+    const commands = createGameCommands(store);
+    let state = await commands.saveRoomBlueprint(
+      createNewGame("save-pricing-restored"),
+      "云岫商务房",
+      prototypeCells(),
+    );
+    state = await commands.placeRoom(state, "slot-nw");
+    const offerId = "offer:room-slot-nw:room-type-1";
+    const restoredPolicy: PricePolicy = {
+      roomOfferId: "offer:corrupt:mismatch",
+      baseRateCents: 90_000,
+      minRateCents: 70_000,
+      maxRateCents: 120_000,
+      automaticPricing: false,
+      nightlyRateCents: 90_000,
+    };
+    state = {
+      ...state,
+      operations: {
+        ...createOperationsState("management"),
+        reputationBps: 7_500,
+        pricePolicies: {
+          [offerId]: restoredPolicy,
+          "offer:stale:removed-room": {
+            ...restoredPolicy,
+            roomOfferId: "offer:stale:removed-room",
+          },
+        },
+      },
+    };
+    await store.commit(state.revision, { ...state, revision: state.revision + 1 });
+
+    const initialized = await commands.initializeOperations({
+      ...state,
+      revision: state.revision + 1,
+    });
+
+    expect(initialized.operations?.pricePolicies).toEqual({
+      [offerId]: { ...restoredPolicy, roomOfferId: offerId },
+    });
+    expect(initialized.operations?.reputationBps).toBe(7_500);
+    expect(initialized.operations?.difficulty).toBe("management");
+  });
+
   it("uses a legacy blueprint offer when operations starts before room placement", async () => {
     const store = new InMemorySavePort();
     const commands = createGameCommands(store);
@@ -102,6 +151,34 @@ describe("game commands", () => {
     expect(Object.keys(initialized.operations?.pricePolicies ?? {})).toEqual([
       "offer:legacy:room-type-1",
     ]);
+  });
+
+  it("initializes a valid policy when the legacy rate is near the safe integer limit", async () => {
+    const store = new InMemorySavePort();
+    const commands = createGameCommands(store);
+    const designed = await commands.saveRoomBlueprint(
+      createNewGame("save-pricing-large-rate"),
+      "云岫商务房",
+      prototypeCells(),
+    );
+    const largeRate = Number.MAX_SAFE_INTEGER - 1;
+    const state = { ...designed, rateCents: largeRate };
+    await store.commit(designed.revision, {
+      ...state,
+      revision: designed.revision + 1,
+    });
+
+    const initialized = await commands.initializeOperations({
+      ...state,
+      revision: designed.revision + 1,
+    });
+    const policy = initialized.operations?.pricePolicies[
+      "offer:legacy:room-type-1"
+    ] as PricePolicy;
+
+    expect(() => validatePricePolicy(policy)).not.toThrow();
+    expect(policy.maxRateCents).toBe(Number.MAX_SAFE_INTEGER);
+    expect(policy.baseRateCents).toBe(largeRate);
   });
 
   it("rejects an invalid operations difficulty without saving", async () => {
