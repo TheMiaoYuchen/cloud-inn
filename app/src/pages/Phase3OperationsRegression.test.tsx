@@ -238,6 +238,39 @@ describe('Phase 3 operations center', () => {
       .toBeUndefined();
   });
 
+  it('invalidates renovation evidence when switching room offers before confirmation', async () => {
+    const state = multiOfferState();
+    const port = await portWith(state);
+    const user = userEvent.setup();
+    render(<GameProvider savePort={port} saveId={state.saveId} nowMs={() => checkpoint}><OperationsPage /></GameProvider>);
+    const offerPicker = await screen.findByRole('combobox', { name: '客房产品' });
+    let renovation = screen.getByRole('region', { name: '客房改造' });
+
+    expect(within(renovation).getByText('offer:room-slot-nw:room-type-1')).toBeInTheDocument();
+    await user.click(within(renovation).getByRole('button', { name: '预览改造' }));
+    expect(await within(renovation).findByText(/改造前/)).toBeInTheDocument();
+    expect(within(renovation).getByRole('button', { name: '确认改造' })).toBeInTheDocument();
+
+    await user.selectOptions(offerPicker, 'offer:room-slot-ne:room-type-1');
+    renovation = screen.getByRole('region', { name: '客房改造' });
+    expect(within(renovation).getByText('offer:room-slot-ne:room-type-1')).toBeInTheDocument();
+    expect(within(renovation).queryByText(/改造前/)).not.toBeInTheDocument();
+    expect(within(renovation).queryByRole('button', { name: '确认改造' })).not.toBeInTheDocument();
+
+    await user.click(within(renovation).getByRole('button', { name: '预览改造' }));
+    await user.click(await within(renovation).findByRole('button', { name: '确认改造' }));
+    expect(await within(renovation).findByText(/已安排/)).toBeInTheDocument();
+    const renovated = await port.load(state.saveId);
+    expect(renovated?.operations?.offerUpgrades['offer:room-slot-ne:room-type-1:workspace'])
+      .toMatchObject({ roomOfferId: 'offer:room-slot-ne:room-type-1' });
+    expect(renovated?.operations?.offerUpgrades['offer:room-slot-nw:room-type-1:workspace'])
+      .toBeUndefined();
+
+    await user.selectOptions(offerPicker, 'offer:room-slot-nw:room-type-1');
+    renovation = screen.getByRole('region', { name: '客房改造' });
+    expect(within(renovation).queryByText(/已安排/)).not.toBeInTheDocument();
+  });
+
   it('updates all department levers and persists them across reload', async () => {
     const state = activeState(true);
     const port = await portWith(state);
