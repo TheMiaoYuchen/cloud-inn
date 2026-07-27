@@ -1072,8 +1072,15 @@ fn validate_operations_daily(
     let mut segment_ids = HashSet::new();
     let mut segment_revenue = Vec::new();
     let mut segment_sold = Vec::new();
-    for segment in operations_array(value, "segments")? {
+    let segments = operations_array(value, "segments")?;
+    if segments.len() != OPERATIONS_SEGMENTS.len() {
+        return Err("经营存档数据损坏".into());
+    }
+    for (index, segment) in segments.iter().enumerate() {
         let id = operations_one_of(segment, "segmentId", &OPERATIONS_SEGMENTS)?;
+        if id != OPERATIONS_SEGMENTS[index] {
+            return Err("经营存档数据损坏".into());
+        }
         if !segment_ids.insert(id) {
             return Err("经营存档数据损坏".into());
         }
@@ -1685,7 +1692,14 @@ mod tests {
     fn operations_daily(day: i64) -> Value {
         json!({
             "day":day,
-            "segments":[{"segmentId":"business","demand":2,"soldRooms":1,"averageRateCents":1000,"revenueCents":1000,"satisfactionBps":5000 + day}],
+            "segments":[
+                {"segmentId":"business","demand":2,"soldRooms":1,"averageRateCents":1000,"revenueCents":1000,"satisfactionBps":5000 + day},
+                {"segmentId":"couple","demand":0,"soldRooms":0,"averageRateCents":0,"revenueCents":0,"satisfactionBps":5000},
+                {"segmentId":"family","demand":0,"soldRooms":0,"averageRateCents":0,"revenueCents":0,"satisfactionBps":5000},
+                {"segmentId":"leisure","demand":0,"soldRooms":0,"averageRateCents":0,"revenueCents":0,"satisfactionBps":5000},
+                {"segmentId":"high-net-worth","demand":0,"soldRooms":0,"averageRateCents":0,"revenueCents":0,"satisfactionBps":5000},
+                {"segmentId":"cultural-experience","demand":0,"soldRooms":0,"averageRateCents":0,"revenueCents":0,"satisfactionBps":5000}
+            ],
             "revenueCents":1000,"operatingCostCents":100,"financeCostCents":10,"netIncomeCents":890,
             "endingCashCents":1_000_000 + day,"reputationBps":5000 + day,
             "availableRooms":2,"soldRooms":1,"occupancyBps":5000,
@@ -2084,6 +2098,48 @@ mod tests {
             let mut malformed = full_operations_game();
             mutate(&mut malformed);
             assert!(validate_game(&malformed).is_err(), "{label}");
+        }
+    }
+
+    #[test]
+    fn operations_reject_incomplete_daily_segment_catalogs() {
+        let cases = vec![
+            ("empty", json!([])),
+            (
+                "one valid",
+                json!([{"segmentId":"business","demand":0,"soldRooms":0,"averageRateCents":0,"revenueCents":0,"satisfactionBps":5000}]),
+            ),
+            (
+                "missing one",
+                json!([
+                    {"segmentId":"business","demand":0,"soldRooms":0,"averageRateCents":0,"revenueCents":0,"satisfactionBps":5000},
+                    {"segmentId":"couple","demand":0,"soldRooms":0,"averageRateCents":0,"revenueCents":0,"satisfactionBps":5000},
+                    {"segmentId":"family","demand":0,"soldRooms":0,"averageRateCents":0,"revenueCents":0,"satisfactionBps":5000},
+                    {"segmentId":"leisure","demand":0,"soldRooms":0,"averageRateCents":0,"revenueCents":0,"satisfactionBps":5000},
+                    {"segmentId":"high-net-worth","demand":0,"soldRooms":0,"averageRateCents":0,"revenueCents":0,"satisfactionBps":5000}
+                ]),
+            ),
+        ];
+        for (label, segments) in cases {
+            let mut report = operations_daily(1);
+            report["segments"] = segments;
+            report["revenueCents"] = json!(0);
+            report["roomRevenueCents"] = json!(0);
+            report["netIncomeCents"] = json!(-110);
+            report["soldRooms"] = json!(0);
+            report["occupancyBps"] = json!(0);
+            let mut operations = minimal_operations();
+            operations["dailyReports"] = json!([report]);
+            operations["reputationBps"] = json!(5001);
+            operations["maximumReputationBps"] = json!(5001);
+            let mut state = game();
+            state["currentDay"] = json!(1);
+            state["cashCents"] = json!(1_000_001);
+            state["reports"] = json!([{"day":1}]);
+            state["latestReport"] = json!({"day":1});
+            state["operations"] = operations;
+
+            assert!(validate_game(&state).is_err(), "{label}");
         }
     }
 

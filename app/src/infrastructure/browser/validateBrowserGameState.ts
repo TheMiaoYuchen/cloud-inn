@@ -163,12 +163,15 @@ type DailyTotals = {
 function validateDailyReport(raw: unknown, currentDay: number): DailyTotals {
   const report = operationsObject(raw, "经营日报");
   const day = integer(report.day, "经营日报日期", 1, 30);
+  const segments = operationsArray(report.segments, "客群日报");
+  if (segments.length !== SEGMENTS.length) operationsError("日报客群目录不完整");
   const segmentIds = new Set<string>();
   const segmentRevenue: number[] = [];
   const segmentSoldValues: number[] = [];
-  for (const rawSegment of operationsArray(report.segments, "客群日报")) {
+  for (const [index, rawSegment] of segments.entries()) {
     const segment = operationsObject(rawSegment, "客群日报");
     const id = oneOf(segment.segmentId, SEGMENTS, "客群编号");
+    if (id !== SEGMENTS[index]) operationsError("日报客群顺序无效");
     if (segmentIds.has(id)) operationsError("日报客群重复");
     segmentIds.add(id);
     integer(segment.demand, "客群需求");

@@ -10,14 +10,14 @@ import { validateBrowserGameState } from "./validateBrowserGameState";
 function daily(day: number): OperationsDailyReport {
   return {
     day,
-    segments: [{
-      segmentId: "business",
+    segments: GUEST_SEGMENT_IDS.map((segmentId) => segmentId === "business" ? {
+      segmentId,
       demand: 2,
       soldRooms: 1,
       averageRateCents: 1_000,
       revenueCents: 1_000,
       satisfactionBps: 5_000 + day,
-    }],
+    } : zeroSegment(segmentId)),
     revenueCents: 1_000,
     operatingCostCents: 100,
     financeCostCents: 10,
@@ -36,6 +36,17 @@ function daily(day: number): OperationsDailyReport {
     bookings: [{ segmentId: "business", roomId: "room-1", offerId: "offer-1", rateCents: 1_000 }],
     reputationDeltaBps: 1,
     discoveredNeeds: [{ id: `need-${day}`, segmentId: "business", kind: "service", discoveredDay: day, strengthBps: 100 }],
+  };
+}
+
+function zeroSegment(segmentId: (typeof GUEST_SEGMENT_IDS)[number]) {
+  return {
+    segmentId,
+    demand: 0,
+    soldRooms: 0,
+    averageRateCents: 0,
+    revenueCents: 0,
+    satisfactionBps: 5_000,
   };
 }
 
@@ -192,6 +203,36 @@ describe("browser operations persistence validation", () => {
     operations.maximumReputationBps = report.reputationBps;
     const state: GameState = {
       ...createNewGame("duplicate-segment"),
+      revision: 1,
+      currentDay: 1,
+      cashCents: report.endingCashCents,
+      reports: [legacy],
+      latestReport: legacy,
+      operations,
+    };
+
+    expect(() => validateBrowserGameState(state, state.saveId)).toThrow("经营存档");
+  });
+
+  it.each([
+    ["empty", []],
+    ["one valid", [zeroSegment("business")]],
+    ["missing one", GUEST_SEGMENT_IDS.slice(0, -1).map(zeroSegment)],
+  ])("rejects an incomplete %s daily segment catalog", (_label, segments) => {
+    const report = daily(1);
+    report.segments = segments;
+    report.revenueCents = 0;
+    report.roomRevenueCents = 0;
+    report.netIncomeCents = -110;
+    report.soldRooms = 0;
+    report.occupancyBps = 0;
+    const legacy = legacyReport(report);
+    const operations = createOperationsState();
+    operations.dailyReports = [report];
+    operations.reputationBps = report.reputationBps;
+    operations.maximumReputationBps = report.reputationBps;
+    const state: GameState = {
+      ...createNewGame("incomplete-segments"),
       revision: 1,
       currentDay: 1,
       cashCents: report.endingCashCents,
