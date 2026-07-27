@@ -24,6 +24,101 @@ import {
   type DesignVisualProvider,
 } from "./designVisualQueue";
 import type { PersistedDesignVisuals } from "../domain/game/state";
+import { createOperationsState } from "../domain/operations/createOperationsState";
+import type { Difficulty, OperationsState } from "../domain/operations/operationsTypes";
+import {
+  effectiveRate,
+  seasonForGameDay,
+  validatePricePolicy,
+  type PricePolicy,
+  type PricingContext,
+} from "../domain/operations/pricing";
+import { projectRoomOffers } from "../domain/operations/roomOffer";
+
+function clampBps(value: number): number {
+  return Math.max(0, Math.min(10_000, Math.trunc(value)));
+}
+
+function pricingContext(state: Readonly<GameState>): PricingContext {
+  const recentReports = state.reports.slice(-7);
+  const availableRooms = recentReports.reduce(
+    (total, report) => total + report.availableRooms,
+    0,
+  );
+  const soldRooms = recentReports.reduce(
+    (total, report) => total + report.soldRooms,
+    0,
+  );
+  const occupancyBps = availableRooms === 0
+    ? 5_000
+    : Math.trunc((soldRooms * 10_000) / availableRooms);
+  const latestReport = recentReports[recentReports.length - 1];
+  const remainingInventoryBps = !latestReport || latestReport.availableRooms === 0
+    ? 5_000
+    : Math.trunc(
+        ((latestReport.availableRooms - latestReport.soldRooms) * 10_000) /
+          latestReport.availableRooms,
+      );
+  const operationsReports = state.operations?.dailyReports.slice(-7) ?? [];
+  const totalDemand = operationsReports.reduce(
+    (total, report) =>
+      total + report.segments.reduce((dayTotal, segment) => dayTotal + segment.demand, 0),
+    0,
+  );
+  const demandCapacity = state.floor.rooms.length * operationsReports.length;
+
+  return {
+    season: seasonForGameDay(state.currentDay),
+    trailingSevenDayOccupancyBps: clampBps(occupancyBps),
+    segmentDemandBps: demandCapacity === 0
+      ? 5_000
+      : clampBps(Math.trunc((totalDemand * 10_000) / demandCapacity)),
+    reputationBps: clampBps(state.operations?.reputationBps ?? 5_000),
+    remainingInventoryBps: clampBps(remainingInventoryBps),
+  };
+}
+
+function offerIds(state: Readonly<GameState>): string[] {
+  const projected = projectRoomOffers(state).map(({ id }) => id);
+  if (projected.length > 0) return projected;
+  return state.roomBlueprint ? [`offer:legacy:${state.roomBlueprint.id}`] : [];
+}
+
+function defaultPolicy(
+  roomOfferId: string,
+  baseRateCents: number,
+  context: Readonly<PricingContext>,
+): PricePolicy {
+  const policy: PricePolicy = {
+    roomOfferId,
+    baseRateCents,
+    minRateCents: Math.max(1, Math.trunc(baseRateCents / 2)),
+    maxRateCents: assertSafeMoney(baseRateCents * 2),
+    automaticPricing: true,
+    nightlyRateCents: baseRateCents,
+  };
+  return { ...policy, nightlyRateCents: effectiveRate(policy, context) };
+}
+
+function asPricePolicy(
+  existing: OperationsState["pricePolicies"][string] | undefined,
+  roomOfferId: string,
+  legacyRateCents: number,
+  context: Readonly<PricingContext>,
+): PricePolicy {
+  if (
+    existing &&
+    "baseRateCents" in existing &&
+    "minRateCents" in existing &&
+    "maxRateCents" in existing &&
+    "automaticPricing" in existing
+  ) {
+    const policy = existing as PricePolicy;
+    validatePricePolicy(policy);
+    return { ...policy, nightlyRateCents: effectiveRate(policy, context) };
+  }
+  return defaultPolicy(roomOfferId, existing?.nightlyRateCents ?? legacyRateCents, context);
+}
 
 export function createGameCommands(savePort: SavePort) {
   async function persist(
@@ -39,6 +134,91 @@ export function createGameCommands(savePort: SavePort) {
   }
 
   return {
+    async initializeOperations(
+      state: GameState,
+      difficulty: Difficulty = "casual",
+    ): Promise<GameState> {
+      if (difficulty !== "casual" && difficulty !== "management") {
+        throw new Error("经营难度无效");
+      }
+      const current = state.operations ?? createOperationsState(difficulty);
+      const context = pricingContext({ ...state, operations: current });
+      const pricePolicies = { ...current.pricePolicies };
+      for (const roomOfferId of offerIds(state)) {
+        pricePolicies[roomOfferId] = asPricePolicy(
+          pricePolicies[roomOfferId],
+          roomOfferId,
+          state.rateCents,
+          context,
+        );
+      }
+      return persist(state, {
+        ...state,
+        operations: { ...current, pricePolicies },
+      });
+    },
+
+    async setRoomPricePolicy(
+      state: GameState,
+      input: Readonly<PricePolicy>,
+    ): Promise<GameState> {
+      validatePricePolicy(input);
+      const operations = state.operations;
+      if (!operations) throw new Error("经营系统尚未初始化");
+      if (!offerIds(state).includes(input.roomOfferId)) {
+        throw new Error("客房产品不存在");
+      }
+      const policy: PricePolicy = {
+        ...structuredClone(input),
+        nightlyRateCents: effectiveRate(input, pricingContext(state)),
+      };
+      return persist(state, {
+        ...state,
+        operations: {
+          ...operations,
+          pricePolicies: {
+            ...operations.pricePolicies,
+            [policy.roomOfferId]: policy,
+          },
+        },
+      });
+    },
+
+    async setAutomaticPricing(
+      state: GameState,
+      roomOfferId: string,
+      automaticPricing: boolean,
+    ): Promise<GameState> {
+      const operations = state.operations;
+      if (!operations) throw new Error("经营系统尚未初始化");
+      if (!offerIds(state).includes(roomOfferId)) throw new Error("客房产品不存在");
+      if (typeof automaticPricing !== "boolean") throw new Error("自动定价开关无效");
+      const existing = operations.pricePolicies[roomOfferId];
+      if (!existing) throw new Error("房价策略不存在");
+      const current = asPricePolicy(
+        existing,
+        roomOfferId,
+        state.rateCents,
+        pricingContext(state),
+      );
+      const policy: PricePolicy = {
+        ...current,
+        automaticPricing,
+        nightlyRateCents: current.baseRateCents,
+      };
+      policy.nightlyRateCents = effectiveRate(policy, pricingContext(state));
+      return persist(state, {
+        ...state,
+        operations: {
+          ...operations,
+          pricePolicies: {
+            ...operations.pricePolicies,
+            [roomOfferId]: policy,
+          },
+        },
+      });
+    },
+
     async saveRoomSeries(
       state: GameState,
       input: {

@@ -13,6 +13,9 @@ import {
   selectAllSyncChanges,
 } from "../domain/design/roomSeries";
 import { createCorridorTemplate } from "../domain/floor/corridorTemplate";
+import { createOperationsState } from "../domain/operations/createOperationsState";
+import type { PricePolicy } from "../domain/operations/pricing";
+import type { SavePort } from "./ports/SavePort";
 
 function prototypeCells() {
   return [
@@ -31,6 +34,199 @@ async function expectSavedRevision(
 }
 
 describe("game commands", () => {
+  it("initializes operations once with policies for placed offers and preserves existing operations", async () => {
+    const store = new InMemorySavePort();
+    const commands = createGameCommands(store);
+    let state = await commands.saveRoomBlueprint(
+      createNewGame("save-pricing-init"),
+      "云岫商务房",
+      prototypeCells(),
+    );
+    state = await commands.placeRoom(state, "slot-nw");
+    state = await commands.placeRoom(state, "slot-ne");
+
+    const initialized = await commands.initializeOperations(state, "management");
+    const policies = initialized.operations?.pricePolicies as Record<string, PricePolicy>;
+    expect(initialized.operations).toMatchObject({
+      difficulty: "management",
+      reputationBps: 5_000,
+      maximumReputationBps: 5_000,
+    });
+    expect(Object.keys(policies)).toEqual([
+      "offer:room-slot-nw:room-type-1",
+      "offer:room-slot-ne:room-type-1",
+    ]);
+    expect(policies["offer:room-slot-nw:room-type-1"]).toEqual({
+      roomOfferId: "offer:room-slot-nw:room-type-1",
+      baseRateCents: state.rateCents,
+      minRateCents: 40_000,
+      maxRateCents: 160_000,
+      automaticPricing: true,
+      nightlyRateCents: 80_000,
+    });
+
+    const customized = {
+      ...initialized,
+      operations: {
+        ...initialized.operations!,
+        reputationBps: 7_777,
+        unlockedContent: ["kept"],
+      },
+    };
+    await store.commit(initialized.revision, {
+      ...customized,
+      revision: initialized.revision + 1,
+    });
+    const persistedCustomized = {
+      ...customized,
+      revision: initialized.revision + 1,
+    };
+    const again = await commands.initializeOperations(persistedCustomized);
+
+    expect(again.operations?.reputationBps).toBe(7_777);
+    expect(again.operations?.unlockedContent).toEqual(["kept"]);
+    expect(again.operations?.difficulty).toBe("management");
+  });
+
+  it("uses a legacy blueprint offer when operations starts before room placement", async () => {
+    const store = new InMemorySavePort();
+    const commands = createGameCommands(store);
+    const designed = await commands.saveRoomBlueprint(
+      createNewGame("save-pricing-legacy"),
+      "云岫商务房",
+      prototypeCells(),
+    );
+
+    const initialized = await commands.initializeOperations(designed);
+
+    expect(Object.keys(initialized.operations?.pricePolicies ?? {})).toEqual([
+      "offer:legacy:room-type-1",
+    ]);
+  });
+
+  it("rejects an invalid operations difficulty without saving", async () => {
+    const store = new InMemorySavePort();
+    const commands = createGameCommands(store);
+    const state = createNewGame("save-pricing-difficulty");
+
+    await expect(
+      commands.initializeOperations(state, "expert" as never),
+    ).rejects.toThrow("经营难度无效");
+    expect(await store.load(state.saveId)).toBeNull();
+  });
+
+  it("sets a validated policy and toggles automatic pricing as a manual lock", async () => {
+    const store = new InMemorySavePort();
+    const commands = createGameCommands(store);
+    let state = await commands.saveRoomBlueprint(
+      createNewGame("save-pricing-policy"),
+      "云岫商务房",
+      prototypeCells(),
+    );
+    state = await commands.placeRoom(state, "slot-nw");
+    state = await commands.initializeOperations(state);
+    const offerId = "offer:room-slot-nw:room-type-1";
+    const nextPolicy: PricePolicy = {
+      roomOfferId: offerId,
+      baseRateCents: 110_000,
+      minRateCents: 90_000,
+      maxRateCents: 150_000,
+      automaticPricing: true,
+      nightlyRateCents: 1,
+    };
+
+    state = await commands.setRoomPricePolicy(state, nextPolicy);
+    expect((state.operations?.pricePolicies[offerId] as PricePolicy).nightlyRateCents).toBe(
+      110_000,
+    );
+    const locked = await commands.setAutomaticPricing(state, offerId, false);
+    expect(locked.operations?.pricePolicies[offerId]).toEqual({
+      ...nextPolicy,
+      automaticPricing: false,
+      nightlyRateCents: 110_000,
+    });
+    await expectSavedRevision(state, locked, store);
+  });
+
+  it("derives automatic pricing from trailing seven reports, reputation, and remaining inventory", async () => {
+    const store = new InMemorySavePort();
+    const commands = createGameCommands(store);
+    let state = await commands.saveRoomBlueprint(
+      createNewGame("save-pricing-context"),
+      "云岫商务房",
+      prototypeCells(),
+    );
+    state = await commands.placeRoom(state, "slot-nw");
+    state = {
+      ...state,
+      currentDay: 30,
+      reports: Array.from({ length: 8 }, (_, index) => ({
+        day: 23 + index,
+        availableRooms: 10,
+        soldRooms: index === 0 ? 0 : 8,
+        occupancyBps: index === 0 ? 0 : 8_000,
+        rateCents: 80_000,
+        revenueCents: 0,
+        operatingCostCents: 0,
+        netIncomeCents: 0,
+        endingCashCents: state.cashCents,
+        reasons: [],
+      })),
+      operations: {
+        ...createOperationsState(),
+        reputationBps: 6_000,
+      },
+    };
+    await store.commit(state.revision, { ...state, revision: state.revision + 1 });
+    state = { ...state, revision: state.revision + 1 };
+
+    const initialized = await commands.initializeOperations(state);
+    const offerId = "offer:room-slot-nw:room-type-1";
+    const current = initialized.operations?.pricePolicies[offerId] as PricePolicy;
+
+    expect(current.nightlyRateCents).toBe(96_800);
+  });
+
+  it.each([
+    { kind: "invalid-policy" as const },
+    { kind: "missing-offer" as const },
+    { kind: "save-failure" as const },
+  ])("keeps memory and persistence atomic for $kind", async ({ kind }) => {
+    const baseStore = new InMemorySavePort();
+    const baseCommands = createGameCommands(baseStore);
+    let state = await baseCommands.saveRoomBlueprint(
+      createNewGame(`save-pricing-${kind}`),
+      "云岫商务房",
+      prototypeCells(),
+    );
+    state = await baseCommands.placeRoom(state, "slot-nw");
+    state = await baseCommands.initializeOperations(state);
+    const snapshot = structuredClone(state);
+    const persisted = await baseStore.load(state.saveId);
+    const offerId = "offer:room-slot-nw:room-type-1";
+    const valid = state.operations?.pricePolicies[offerId] as PricePolicy;
+    const failingPort: SavePort = {
+      load: (saveId) => baseStore.load(saveId),
+      commit: async () => {
+        throw new Error("磁盘写入失败");
+      },
+    };
+    const commands = kind === "save-failure" ? createGameCommands(failingPort) : baseCommands;
+    const attempted = kind === "invalid-policy"
+      ? { ...valid, minRateCents: valid.baseRateCents + 1 }
+      : { ...valid, roomOfferId: kind === "missing-offer" ? "missing" : offerId };
+
+    await expect(commands.setRoomPricePolicy(state, attempted)).rejects.toThrow(
+      kind === "invalid-policy"
+        ? "最低价、基础价和最高价顺序无效"
+        : kind === "missing-offer"
+          ? "客房产品不存在"
+          : "磁盘写入失败",
+    );
+    expect(state).toEqual(snapshot);
+    expect(await baseStore.load(state.saveId)).toEqual(persisted);
+  });
+
   it.each(["rooms", "placements"] as const)(
     "rejects corridor template switching when paid construction remains in %s",
     async (evidence) => {
