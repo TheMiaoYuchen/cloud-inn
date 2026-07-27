@@ -37,6 +37,7 @@ function validateReports(
   const seen = new Set<number>();
   reports.forEach((report, index) => {
     safeInteger(report.day, "日报日期");
+    if (report.day <= 0) throw new Error("日报日期必须是正安全整数");
     if (seen.has(report.day)) throw new Error("日报日期必须唯一");
     seen.add(report.day);
     if (index > 0 && report.day !== reports[index - 1].day + 1) {
@@ -103,6 +104,8 @@ export function aggregateWeeklyReport(
   validateReports(reports, 7, "周报");
   const startDay = reports[0].day;
   const endDay = reports[reports.length - 1].day;
+  if ((startDay - 1) % 7 !== 0) throw new Error("周报日期窗口必须按七天对齐");
+  if (endDay > 30) throw new Error("周报不能超过第 30 日经营终点");
   return {
     week: Math.trunc((startDay - 1) / 7) + 1,
     startDay,
@@ -117,6 +120,8 @@ export function aggregateMonthlyClose(
   validateReports(reports, 30, "月结");
   const startDay = reports[0].day;
   const endDay = reports[reports.length - 1].day;
+  if ((startDay - 1) % 30 !== 0) throw new Error("月结日期窗口必须按三十天对齐");
+  if (endDay > 30) throw new Error("月结不能超过第 30 日经营终点");
   const totals = commonTotals(reports);
   return {
     month: Math.trunc((startDay - 1) / 30) + 1,

@@ -142,6 +142,8 @@ function asPricePolicy(
   return defaultPolicy(roomOfferId, existing?.nightlyRateCents ?? legacyRateCents, context);
 }
 
+const MAX_OPERATIONS_DAY = 30;
+
 export function createGameCommands(savePort: SavePort) {
   async function persist(
     current: GameState,
@@ -167,6 +169,7 @@ export function createGameCommands(savePort: SavePort) {
     }
     const operations = state.operations;
     if (!operations) throw new Error("经营系统尚未初始化");
+    if (state.currentDay >= MAX_OPERATIONS_DAY) throw new Error("经营模拟已到第 30 日终点");
     assertNowMs(nowMs, "日结时间");
     if (
       operations.lastOfflineCheckpointMs !== null
@@ -182,6 +185,7 @@ export function createGameCommands(savePort: SavePort) {
     const nextOperations: OperationsState = {
       ...settled.operations,
       ...periodic,
+      timeSpeed: settled.report.day === MAX_OPERATIONS_DAY ? 0 : settled.operations.timeSpeed,
       lastOfflineCheckpointMs: nowMs,
     };
     return {
@@ -254,6 +258,9 @@ export function createGameCommands(savePort: SavePort) {
       if (!operations) throw new Error("经营系统尚未初始化");
       if (speed !== 0 && speed !== 1 && speed !== 2 && speed !== 4) {
         throw new Error("时间速度仅支持 0、1、2、4");
+      }
+      if (state.currentDay >= MAX_OPERATIONS_DAY && speed !== 0) {
+        throw new Error("经营模拟已到第 30 日终点");
       }
       return persist(state, {
         ...state,
@@ -673,8 +680,10 @@ export function createGameCommands(savePort: SavePort) {
       }
       assertNowMs(nowMs, "批量日结时间");
       if (requestedDays === 0) return state;
+      const daysToSettle = Math.min(requestedDays, Math.max(0, MAX_OPERATIONS_DAY - state.currentDay));
+      if (daysToSettle === 0) throw new Error("经营模拟已到第 30 日终点");
       let projected = state;
-      for (let index = 0; index < requestedDays; index += 1) {
+      for (let index = 0; index < daysToSettle; index += 1) {
         projected = projectOperationsDay(projected, nowMs);
       }
       return persist(state, projected);
@@ -692,10 +701,22 @@ export function createGameCommands(savePort: SavePort) {
       if (checkpoint === null) {
         return persist(state, {
           ...state,
-          operations: { ...operations, lastOfflineCheckpointMs: nowMs },
+          operations: {
+            ...operations,
+            timeSpeed: state.currentDay >= MAX_OPERATIONS_DAY ? 0 : operations.timeSpeed,
+            lastOfflineCheckpointMs: nowMs,
+          },
         });
       }
       if (nowMs < checkpoint) throw new Error("离线检查点不能倒退");
+      if (state.currentDay > MAX_OPERATIONS_DAY) throw new Error("经营日不能超过第 30 日终点");
+      if (state.currentDay === MAX_OPERATIONS_DAY) {
+        if (operations.timeSpeed === 0 && checkpoint === nowMs) return state;
+        return persist(state, {
+          ...state,
+          operations: { ...operations, timeSpeed: 0, lastOfflineCheckpointMs: nowMs },
+        });
+      }
       const days = offlineDaysForElapsed(nowMs - checkpoint, millisecondsPerGameDay);
       if (days === 0 || state.phase !== "open" || !state.roomBlueprint) {
         if (checkpoint === nowMs) return state;
@@ -704,8 +725,15 @@ export function createGameCommands(savePort: SavePort) {
           operations: { ...operations, lastOfflineCheckpointMs: nowMs },
         });
       }
+      const daysToSettle = Math.min(days, Math.max(0, MAX_OPERATIONS_DAY - state.currentDay));
+      if (daysToSettle === 0) {
+        return persist(state, {
+          ...state,
+          operations: { ...operations, timeSpeed: 0, lastOfflineCheckpointMs: nowMs },
+        });
+      }
       let projected = state;
-      for (let index = 0; index < days; index += 1) {
+      for (let index = 0; index < daysToSettle; index += 1) {
         projected = projectOperationsDay(projected, nowMs);
       }
       return persist(state, projected);

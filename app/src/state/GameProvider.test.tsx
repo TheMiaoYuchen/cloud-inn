@@ -7,6 +7,7 @@ import { RoomDesignPage } from '../pages/RoomDesignPage';
 import type { SavePort } from '../application/ports/SavePort';
 import { createNewGame, type GameState } from '../domain/game/state';
 import { createOperationsState } from '../domain/operations/createOperationsState';
+import { StrictMode } from 'react';
 
 afterEach(() => vi.useRealTimers());
 
@@ -251,5 +252,75 @@ describe('GameProvider flow', () => {
     render(<GameProvider savePort={port} saveId={initial.saveId} nowMs={() => 500}><Probe /></GameProvider>);
     expect(await screen.findByText('1:500')).toBeInTheDocument();
     expect((await port.load(initial.saveId))?.revision).toBe(2);
+  });
+
+  it('deduplicates StrictMode startup with one clock read, load, and offline commit', async () => {
+    const backing = new InMemorySavePort();
+    const operations = createOperationsState();
+    operations.lastOfflineCheckpointMs = 1_000;
+    const initial: GameState = {
+      ...createNewGame('save-strict-startup'), revision: 1, phase: 'open', operations,
+      roomBlueprint: { id: 'room-type-1', name: 'Suite', columns: 8, rows: 12, cells: [], metrics: { areaSquareMeters: 24, buildCostCents: 1, suggestedRateCents: 1, businessFitBps: 1 }, visual: { status: 'idle' } },
+      floor: { id: 'prototype-floor', rooms: [{ id: 'room-slot-nw', slotId: 'slot-nw', roomBlueprintId: 'room-type-1', committedBuildCostCents: 1 }] },
+    };
+    await backing.commit(0, initial);
+    let loads = 0;
+    let commits = 0;
+    const port: SavePort = {
+      load: async (saveId) => { loads += 1; return backing.load(saveId); },
+      commit: async (revision, next) => { commits += 1; await backing.commit(revision, next); },
+    };
+    const nowMs = vi.fn()
+      .mockReturnValueOnce(61_000)
+      .mockReturnValueOnce(62_000);
+    function Probe() {
+      const { state, error } = useGame();
+      return <output>{`${state?.currentDay}:${state?.operations?.lastOfflineCheckpointMs}:${error ?? 'ok'}`}</output>;
+    }
+
+    render(<StrictMode><GameProvider savePort={port} saveId={initial.saveId} nowMs={nowMs}><Probe /></GameProvider></StrictMode>);
+
+    expect(await screen.findByText('1:61000:ok')).toBeInTheDocument();
+    expect(nowMs).toHaveBeenCalledTimes(1);
+    expect(loads).toBe(1);
+    expect(commits).toBe(1);
+  });
+
+  it('isolates pending and queued commands from a newly selected save', async () => {
+    const roomBlueprint: GameState['roomBlueprint'] = {
+      id: 'room-type-1', name: 'Suite', columns: 8, rows: 12, cells: [],
+      metrics: { areaSquareMeters: 24, buildCostCents: 1, suggestedRateCents: 1, businessFitBps: 1 },
+      visual: { status: 'idle' },
+    };
+    const saves = {
+      'save-generation-a': { ...createNewGame('save-generation-a'), revision: 1, phase: 'floor' as const, roomBlueprint, rateCents: 100 },
+      'save-generation-b': { ...createNewGame('save-generation-b'), revision: 1, phase: 'floor' as const, roomBlueprint, rateCents: 900 },
+    };
+    let release!: () => void;
+    let commits = 0;
+    const port: SavePort = {
+      load: async (saveId) => structuredClone(saves[saveId as keyof typeof saves]),
+      commit: async () => {
+        commits += 1;
+        if (commits === 1) await new Promise<void>((resolve) => { release = resolve; });
+      },
+    };
+    function Probe() {
+      const { state, error, commands } = useGame();
+      return <><output>{`${state?.saveId}:${state?.rateCents}:${error ?? 'ok'}`}</output><button onClick={() => { void commands.setRate(200); void commands.setRate(300); }}>queue-a</button></>;
+    }
+    const user = userEvent.setup();
+    const view = render(<GameProvider savePort={port} saveId="save-generation-a"><Probe /></GameProvider>);
+    await screen.findByText('save-generation-a:100:ok');
+    await user.click(screen.getByRole('button', { name: 'queue-a' }));
+    expect(commits).toBe(1);
+
+    view.rerender(<GameProvider savePort={port} saveId="save-generation-b"><Probe /></GameProvider>);
+    expect(await screen.findByText('save-generation-b:900:ok')).toBeInTheDocument();
+    await act(async () => release());
+    await act(async () => {});
+
+    expect(screen.getByText('save-generation-b:900:ok')).toBeInTheDocument();
+    expect(commits).toBe(1);
   });
 });

@@ -107,4 +107,32 @@ describe("useOperationsClock", () => {
     expect(advance).toHaveBeenCalledTimes(1);
     expect(vi.getTimerCount()).toBe(0);
   });
+
+  it("reports a synchronous advance error, unlocks, and retries on the next interval", async () => {
+    const error = new Error("sync failure");
+    const advance = vi.fn(() => { throw error; });
+    const onError = vi.fn();
+    renderHook(() => useOperationsClock({ speed: 4, advance, nowMs: () => 1, onError }));
+
+    await act(async () => vi.advanceTimersByTimeAsync(15_000));
+    expect(onError).toHaveBeenCalledWith(error);
+    await act(async () => vi.advanceTimersByTimeAsync(15_000));
+
+    expect(advance).toHaveBeenCalledTimes(2);
+    expect(onError).toHaveBeenCalledTimes(2);
+  });
+
+  it("reports a rejected advance, unlocks, and retries on the next interval", async () => {
+    const error = new Error("async failure");
+    const advance = vi.fn(async () => { throw error; });
+    const onError = vi.fn();
+    renderHook(() => useOperationsClock({ speed: 4, advance, nowMs: () => 1, onError }));
+
+    await act(async () => vi.advanceTimersByTimeAsync(15_000));
+    expect(onError).toHaveBeenCalledWith(error);
+    await act(async () => vi.advanceTimersByTimeAsync(15_000));
+
+    expect(advance).toHaveBeenCalledTimes(2);
+    expect(onError).toHaveBeenCalledTimes(2);
+  });
 });

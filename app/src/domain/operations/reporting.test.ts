@@ -129,4 +129,25 @@ describe("operations reporting", () => {
 
     expect(() => aggregateWeeklyReport(reports)).toThrow("安全整数");
   });
+
+  it.each([
+    [Array.from({ length: 7 }, (_, index) => daily(index)), "正"],
+    [Array.from({ length: 7 }, (_, index) => daily(index + 2)), "对齐"],
+  ] as const)("rejects a non-positive or misaligned weekly window %#", (reports, message) => {
+    expect(() => aggregateWeeklyReport(reports)).toThrow(message);
+  });
+
+  it("rejects a monthly window not aligned to days 1 through 30", () => {
+    const reports = Array.from({ length: 30 }, (_, index) => daily(index + 2));
+
+    expect(() => aggregateMonthlyClose(reports)).toThrow("对齐");
+  });
+
+  it("rejects report windows beyond the day-30 operating horizon", () => {
+    const week = Array.from({ length: 7 }, (_, index) => daily(index + 29));
+    const month = Array.from({ length: 30 }, (_, index) => daily(index + 31));
+
+    expect(() => aggregateWeeklyReport(week)).toThrow("30");
+    expect(() => aggregateMonthlyClose(month)).toThrow("30");
+  });
 });

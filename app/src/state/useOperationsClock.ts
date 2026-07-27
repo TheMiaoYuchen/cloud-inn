@@ -12,18 +12,22 @@ export interface OperationsClockOptions {
   speed: OperationsState["timeSpeed"];
   advance: (nowMs: number) => Promise<unknown>;
   nowMs?: () => number;
+  onError?: (error: unknown) => void;
 }
 
 export function useOperationsClock({
   speed,
   advance,
   nowMs = Date.now,
+  onError,
 }: OperationsClockOptions): void {
   const advanceRef = useRef(advance);
   const nowRef = useRef(nowMs);
+  const errorRef = useRef(onError);
   const inFlightRef = useRef(false);
   advanceRef.current = advance;
   nowRef.current = nowMs;
+  errorRef.current = onError;
 
   useEffect(() => {
     if (speed === 0) return;
@@ -31,9 +35,10 @@ export function useOperationsClock({
     const timer = window.setInterval(() => {
       if (!alive || inFlightRef.current) return;
       inFlightRef.current = true;
-      Promise.resolve(advanceRef.current(nowRef.current())).finally(() => {
-        inFlightRef.current = false;
-      });
+      Promise.resolve()
+        .then(() => advanceRef.current(nowRef.current()))
+        .catch((error) => errorRef.current?.(error))
+        .finally(() => { inFlightRef.current = false; });
     }, OPERATIONS_DAY_INTERVAL_MS[speed]);
     return () => {
       alive = false;

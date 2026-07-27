@@ -1417,6 +1417,118 @@ describe("game commands", () => {
     await expect(commands.checkpointOfflineTime(state, 999)).rejects.toThrow("倒退");
   });
 
+  it("caps a batch at day 30 and atomically pauses operations time", async () => {
+    const store = new InMemorySavePort();
+    const commands = createGameCommands(store);
+    let state = await commands.saveRoomBlueprint(createNewGame("save-day-30-batch"), "云岫商务房", prototypeCells());
+    state = await commands.placeRoom(state, "slot-nw");
+    state = await commands.openHotel(state);
+    state = await commands.initializeOperations(state);
+    state = await commands.setTimeSpeed(state, 4);
+
+    const finished = await commands.advanceOperationsDays(state, 31, 31_000);
+
+    expect(finished.currentDay).toBe(30);
+    expect(finished.operations?.dailyReports).toHaveLength(30);
+    expect(finished.operations?.monthlyCloses).toHaveLength(1);
+    expect(finished.operations?.timeSpeed).toBe(0);
+    expect(finished.operations?.lastOfflineCheckpointMs).toBe(31_000);
+    expect(finished.revision).toBe(state.revision + 1);
+  });
+
+  it("rejects a single operations advance after day 30 without saving", async () => {
+    const store = new InMemorySavePort();
+    const commands = createGameCommands(store);
+    let state = await commands.saveRoomBlueprint(createNewGame("save-day-30-manual"), "云岫商务房", prototypeCells());
+    state = await commands.placeRoom(state, "slot-nw");
+    state = await commands.openHotel(state);
+    state = await commands.initializeOperations(state);
+    state = await commands.advanceOperationsDays(state, 30, 30_000);
+    const persisted = await store.load(state.saveId);
+
+    await expect(commands.advanceDay(state, 31_000)).rejects.toThrow("30");
+    expect(await store.load(state.saveId)).toEqual(persisted);
+  });
+
+  it("caps offline settlement at day 30 and pauses time", async () => {
+    const store = new InMemorySavePort();
+    const commands = createGameCommands(store);
+    let state = await commands.saveRoomBlueprint(createNewGame("save-day-30-offline"), "云岫商务房", prototypeCells());
+    state = await commands.placeRoom(state, "slot-nw");
+    state = await commands.openHotel(state);
+    state = await commands.initializeOperations(state);
+    state = await commands.setTimeSpeed(state, 4);
+    state = await commands.advanceOperationsDays(state, 28, 28_000);
+    state = await commands.checkpointOfflineTime(state, 30_000);
+
+    const finished = await commands.settleOffline(state, 10 * 60_000 + 30_000, 60_000);
+
+    expect(finished.currentDay).toBe(30);
+    expect(finished.operations?.dailyReports).toHaveLength(30);
+    expect(finished.operations?.timeSpeed).toBe(0);
+    expect(finished.operations?.lastOfflineCheckpointMs).toBe(630_000);
+  });
+
+  it("normalizes a restored day-30 speed to paused even with zero elapsed time", async () => {
+    const store = new InMemorySavePort();
+    const commands = createGameCommands(store);
+    let state = await commands.saveRoomBlueprint(createNewGame("save-day-30-restored"), "云岫商务房", prototypeCells());
+    state = await commands.placeRoom(state, "slot-nw");
+    state = await commands.openHotel(state);
+    state = await commands.initializeOperations(state);
+    state = await commands.advanceOperationsDays(state, 30, 30_000);
+    const restored = {
+      ...state,
+      operations: { ...state.operations!, timeSpeed: 4 as const },
+    };
+    await store.commit(state.revision, { ...restored, revision: state.revision + 1 });
+    const persisted = { ...restored, revision: state.revision + 1 };
+
+    const normalized = await commands.settleOffline(persisted, 30_000, 60_000);
+
+    expect(normalized.currentDay).toBe(30);
+    expect(normalized.operations?.timeSpeed).toBe(0);
+    expect(normalized.operations?.lastOfflineCheckpointMs).toBe(30_000);
+  });
+
+  it("rejects resuming time after day 30 without saving", async () => {
+    const store = new InMemorySavePort();
+    const commands = createGameCommands(store);
+    let state = await commands.saveRoomBlueprint(createNewGame("save-day-30-speed"), "云岫商务房", prototypeCells());
+    state = await commands.placeRoom(state, "slot-nw");
+    state = await commands.openHotel(state);
+    state = await commands.initializeOperations(state);
+    state = await commands.advanceOperationsDays(state, 30, 30_000);
+    const persisted = await store.load(state.saveId);
+
+    await expect(commands.setTimeSpeed(state, 4)).rejects.toThrow("30");
+    expect(await store.load(state.saveId)).toEqual(persisted);
+  });
+
+  it("pauses a restored day-30 save while creating its first checkpoint", async () => {
+    const store = new InMemorySavePort();
+    const commands = createGameCommands(store);
+    let state = await commands.saveRoomBlueprint(createNewGame("save-day-30-no-checkpoint"), "云岫商务房", prototypeCells());
+    state = await commands.placeRoom(state, "slot-nw");
+    state = await commands.openHotel(state);
+    state = await commands.initializeOperations(state);
+    state = await commands.advanceOperationsDays(state, 30, 30_000);
+    const restored = {
+      ...state,
+      operations: { ...state.operations!, timeSpeed: 4 as const, lastOfflineCheckpointMs: null },
+    };
+    await store.commit(state.revision, { ...restored, revision: state.revision + 1 });
+
+    const normalized = await commands.settleOffline(
+      { ...restored, revision: state.revision + 1 },
+      40_000,
+      60_000,
+    );
+
+    expect(normalized.operations?.timeSpeed).toBe(0);
+    expect(normalized.operations?.lastOfflineCheckpointMs).toBe(40_000);
+  });
+
   it("rejects a stale command and preserves the first divergent save", async () => {
     const store = new InMemorySavePort();
     const commands = createGameCommands(store);
