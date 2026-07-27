@@ -131,15 +131,32 @@ function asPricePolicy(
   return defaultPolicy(roomOfferId, existing?.nightlyRateCents ?? legacyRateCents, context);
 }
 
-function withReconciledPricePolicies(state: GameState): GameState {
+function withReconciledPricePolicies(
+  previous: Readonly<GameState>,
+  state: GameState,
+): GameState {
   const operations = state.operations;
   if (!operations) return state;
 
   const context = pricingContextForState(state);
   const pricePolicies: OperationsState["pricePolicies"] = {};
-  for (const offer of projectRoomOffers(state)) {
-    pricePolicies[offer.id] = operations.pricePolicies[offer.id]
-      ?? defaultPolicy(offer.id, offer.nightlyRateCents, context);
+  const offers = projectRoomOffers(state);
+  const placeholderId = previous.roomBlueprint
+    ? `offer:legacy:${previous.roomBlueprint.id}`
+    : null;
+  const placeholder = placeholderId
+    ? operations.pricePolicies[placeholderId]
+    : undefined;
+  const migratedOfferId = projectRoomOffers(previous).length === 0 && placeholder
+    ? offers[0]?.id
+    : undefined;
+
+  for (const offer of offers) {
+    const existing = operations.pricePolicies[offer.id];
+    pricePolicies[offer.id] = existing
+      ?? (offer.id === migratedOfferId
+        ? asPricePolicy(placeholder, offer.id, offer.nightlyRateCents, context)
+        : defaultPolicy(offer.id, offer.nightlyRateCents, context));
   }
 
   return {
@@ -608,7 +625,7 @@ export function createGameCommands(savePort: SavePort) {
         floor: { ...state.floor, rooms },
         phase2: { ...phase2, floorPlacements },
       };
-      return persist(state, withReconciledPricePolicies(changed));
+      return persist(state, withReconciledPricePolicies(state, changed));
     },
 
     async saveRoomBlueprint(
@@ -681,7 +698,7 @@ export function createGameCommands(savePort: SavePort) {
         cashCents,
         floor: { ...state.floor, rooms: placed.rooms },
       };
-      return persist(state, withReconciledPricePolicies(changed));
+      return persist(state, withReconciledPricePolicies(state, changed));
     },
 
     async setRate(state: GameState, rateCents: number): Promise<GameState> {

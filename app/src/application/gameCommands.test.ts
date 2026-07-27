@@ -730,6 +730,102 @@ describe("game commands", () => {
     ]);
   });
 
+  it("migrates a customized legacy placeholder policy to the first concrete room offer", async () => {
+    const store = new InMemorySavePort();
+    const commands = createGameCommands(store);
+    let state = await commands.saveRoomBlueprint(
+      createNewGame("save-pricing-placeholder-migration"),
+      "云岫商务房",
+      prototypeCells(),
+    );
+    state = await commands.initializeOperations(state, "management");
+    const placeholderId = "offer:legacy:room-type-1";
+    const customized: PricePolicy = {
+      roomOfferId: placeholderId,
+      baseRateCents: 135_000,
+      minRateCents: 95_000,
+      maxRateCents: 180_000,
+      automaticPricing: false,
+      nightlyRateCents: 135_000,
+    };
+    state = await commands.setRoomPricePolicy(state, customized);
+
+    const placed = await commands.placeRoom(state, "slot-nw");
+    const concreteId = "offer:room-slot-nw:room-type-1";
+
+    expect(placed.operations?.pricePolicies).toEqual({
+      [concreteId]: { ...customized, roomOfferId: concreteId },
+    });
+    await expectSavedRevision(state, placed, store);
+  });
+
+  it("normalizes a legacy-shaped placeholder policy when the first concrete room is placed", async () => {
+    const store = new InMemorySavePort();
+    const commands = createGameCommands(store);
+    let state = await commands.saveRoomBlueprint(
+      createNewGame("save-pricing-legacy-shaped-placeholder"),
+      "云岫商务房",
+      prototypeCells(),
+    );
+    state = await commands.initializeOperations(state);
+    const placeholderId = "offer:legacy:room-type-1";
+    state = {
+      ...state,
+      operations: {
+        ...state.operations!,
+        pricePolicies: {
+          [placeholderId]: { roomOfferId: placeholderId, nightlyRateCents: 123_456 },
+        },
+      },
+    };
+    await store.commit(state.revision, { ...state, revision: state.revision + 1 });
+    state = { ...state, revision: state.revision + 1 };
+
+    const placed = await commands.placeRoom(state, "slot-nw");
+    const concreteId = "offer:room-slot-nw:room-type-1";
+    const policy = placed.operations?.pricePolicies[concreteId] as PricePolicy;
+
+    expect(Object.keys(placed.operations?.pricePolicies ?? {})).toEqual([concreteId]);
+    expect(() => validatePricePolicy(policy)).not.toThrow();
+    expect(policy).toMatchObject({
+      roomOfferId: concreteId,
+      baseRateCents: 123_456,
+      automaticPricing: true,
+      nightlyRateCents: 123_456,
+    });
+    await expectSavedRevision(state, placed, store);
+  });
+
+  it("keeps placeholder migration state and storage unchanged when room placement saving fails", async () => {
+    const store = new InMemorySavePort();
+    const baseCommands = createGameCommands(store);
+    let state = await baseCommands.saveRoomBlueprint(
+      createNewGame("save-pricing-placeholder-migration-failure"),
+      "云岫商务房",
+      prototypeCells(),
+    );
+    state = await baseCommands.initializeOperations(state, "management");
+    const placeholderId = "offer:legacy:room-type-1";
+    state = await baseCommands.setRoomPricePolicy(state, {
+      roomOfferId: placeholderId,
+      baseRateCents: 135_000,
+      minRateCents: 95_000,
+      maxRateCents: 180_000,
+      automaticPricing: false,
+      nightlyRateCents: 135_000,
+    });
+    const snapshot = structuredClone(state);
+    const persisted = await store.load(state.saveId);
+    const commands = createGameCommands({
+      load: (saveId) => store.load(saveId),
+      commit: async () => { throw new Error("磁盘写入失败"); },
+    });
+
+    await expect(commands.placeRoom(state, "slot-nw")).rejects.toThrow("磁盘写入失败");
+    expect(state).toEqual(snapshot);
+    expect(await store.load(state.saveId)).toEqual(persisted);
+  });
+
   it("initializes a valid policy when the legacy rate is near the safe integer limit", async () => {
     const store = new InMemorySavePort();
     const commands = createGameCommands(store);
