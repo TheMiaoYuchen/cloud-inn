@@ -20,7 +20,7 @@ test("completes the prototype hotel loop from design through day two", async ({ 
   await expect(page.getByText("已建 4/4")).toBeVisible();
 
   await page.getByRole("button", { name: "进入运营" }).click();
-  await expect(page.getByRole("heading", { name: "云岫酒店 · 运营" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "完整经营中心" })).toBeVisible();
 
   const startButton = page.getByRole("button", { name: "开始营业" });
   if (await startButton.isVisible().catch(() => false)) {
