@@ -5,14 +5,13 @@ import type { RoomOffer } from '../../domain/operations/roomOffer';
 import { money } from './OperationsSummary';
 
 const seasons = { spring: '春季', summer: '夏季', autumn: '秋季', winter: '冬季' } as const;
-export function PricingPanel({ offers, policies, context, pending, onSave, onAuto }: {
-  offers: RoomOffer[]; policies: Record<string, unknown>; context: PricingContext; pending: boolean;
+export function PricingPanel({ offer, policies, context, pending, onSave, onAuto }: {
+  offer?: RoomOffer; policies: Record<string, unknown>; context: PricingContext; pending: boolean;
   onSave: (policy: PricePolicy) => Promise<boolean>; onAuto: (offerId: string, enabled: boolean) => Promise<boolean>;
 }) {
-  const offer = offers[0];
-  const policy = policies[offer?.id] as PricePolicy | undefined;
+  const policy = offer ? policies[offer.id] as PricePolicy | undefined : undefined;
   const [form, setForm] = useState({ base: policy ? String(policy.baseRateCents / 100) : '', min: policy ? String(policy.minRateCents / 100) : '', max: policy ? String(policy.maxRateCents / 100) : '' });
-  useEffect(() => { if (policy) setForm({ base: String(policy.baseRateCents / 100), min: String(policy.minRateCents / 100), max: String(policy.maxRateCents / 100) }); }, [policy?.baseRateCents, policy?.minRateCents, policy?.maxRateCents]);
+  useEffect(() => { if (policy) setForm({ base: String(policy.baseRateCents / 100), min: String(policy.minRateCents / 100), max: String(policy.maxRateCents / 100) }); }, [policy?.roomOfferId, policy?.baseRateCents, policy?.minRateCents, policy?.maxRateCents]);
   const suggestion = useMemo(() => policy ? suggestRate(policy, context) : null, [policy, context]);
   if (!offer || !policy) return <section aria-label="房价策略" className="action-card"><h3>房价与改造</h3><p>暂无可经营的客房产品。</p></section>;
   const save = async () => {

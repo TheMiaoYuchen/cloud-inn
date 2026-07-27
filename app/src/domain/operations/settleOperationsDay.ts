@@ -277,12 +277,11 @@ export function settleOperationsDay(
     };
   });
   const averageSatisfactionBps = reviews.length === 0
-    ? input.operations.reputationBps
+    ? null
     : Math.trunc(reviews.reduce((sum, review) => sum + review.ratingBps, 0) / reviews.length);
-  const reputationDeltaBps = Math.max(
-    -200,
-    Math.min(200, Math.trunc((averageSatisfactionBps - 5_000) / 20)),
-  );
+  const reputationDeltaBps = averageSatisfactionBps === null
+    ? 0
+    : Math.max(-200, Math.min(200, Math.trunc((averageSatisfactionBps - 5_000) / 20)));
   const reputationBps = Math.max(
     0,
     Math.min(10_000, input.operations.reputationBps + reputationDeltaBps),

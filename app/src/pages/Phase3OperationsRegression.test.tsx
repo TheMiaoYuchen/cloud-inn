@@ -89,6 +89,25 @@ function activeState(withReport = true): GameState {
   return { ...state, operations };
 }
 
+function multiOfferState(): GameState {
+  const state = activeState(true);
+  state.floor.rooms.push({
+    id: 'room-slot-ne',
+    slotId: 'slot-ne',
+    roomBlueprintId: 'room-type-1',
+    committedBuildCostCents: 1,
+  });
+  state.operations!.pricePolicies['offer:room-slot-ne:room-type-1'] = {
+    roomOfferId: 'offer:room-slot-ne:room-type-1',
+    baseRateCents: 95_000,
+    minRateCents: 80_000,
+    maxRateCents: 130_000,
+    automaticPricing: true,
+    nightlyRateCents: 95_000,
+  } as never;
+  return state;
+}
+
 afterEach(() => vi.useRealTimers());
 
 describe('Phase 3 operations center', () => {
@@ -175,6 +194,48 @@ describe('Phase 3 operations center', () => {
     await user.type(minimum, '900');
     await user.click(within(pricing).getByRole('button', { name: '保存房价策略' }));
     expect(await screen.findByRole('alert')).toHaveTextContent('最低价、基础价和最高价顺序无效');
+  });
+
+  it('selects, prices, locks, reloads, and renovates each room offer independently', async () => {
+    const state = multiOfferState();
+    const port = await portWith(state);
+    const user = userEvent.setup();
+    const view = render(<GameProvider savePort={port} saveId={state.saveId} nowMs={() => checkpoint}><OperationsPage /></GameProvider>);
+    const offerPicker = await screen.findByRole('combobox', { name: '客房产品' });
+
+    expect(within(offerPicker).getByRole('option', { name: /槽位 slot-nw.*offer:room-slot-nw/ })).toBeInTheDocument();
+    expect(within(offerPicker).getByRole('option', { name: /槽位 slot-ne.*offer:room-slot-ne/ })).toBeInTheDocument();
+    await user.selectOptions(offerPicker, 'offer:room-slot-ne:room-type-1');
+
+    const pricing = screen.getByRole('region', { name: '房价策略' });
+    expect(within(pricing).getByRole('spinbutton', { name: '基础价（元）' })).toHaveValue(950);
+    await user.clear(within(pricing).getByRole('spinbutton', { name: '基础价（元）' }));
+    await user.type(within(pricing).getByRole('spinbutton', { name: '基础价（元）' }), '1050');
+    await user.click(within(pricing).getByRole('button', { name: '保存房价策略' }));
+    await user.click(within(pricing).getByRole('checkbox', { name: '自动定价' }));
+
+    expect((await port.load(state.saveId))?.operations?.pricePolicies['offer:room-slot-ne:room-type-1'])
+      .toMatchObject({ baseRateCents: 105_000, automaticPricing: false });
+    expect((await port.load(state.saveId))?.operations?.pricePolicies['offer:room-slot-nw:room-type-1'])
+      .toMatchObject({ baseRateCents: 75_000, automaticPricing: true });
+
+    view.unmount();
+    render(<GameProvider savePort={port} saveId={state.saveId} nowMs={() => checkpoint}><OperationsPage /></GameProvider>);
+    await user.selectOptions(await screen.findByRole('combobox', { name: '客房产品' }), 'offer:room-slot-ne:room-type-1');
+    expect(within(screen.getByRole('region', { name: '房价策略' })).getByRole('spinbutton', { name: '基础价（元）' })).toHaveValue(1050);
+    expect(within(screen.getByRole('region', { name: '房价策略' })).getByRole('checkbox', { name: '自动定价' })).not.toBeChecked();
+
+    const renovation = screen.getByRole('region', { name: '客房改造' });
+    expect(within(renovation).getByText('offer:room-slot-ne:room-type-1')).toBeInTheDocument();
+    await user.click(within(renovation).getByRole('button', { name: '预览改造' }));
+    expect(await within(renovation).findByText(/改造前/)).toBeInTheDocument();
+    await user.click(within(renovation).getByRole('button', { name: '确认改造' }));
+
+    const renovated = await port.load(state.saveId);
+    expect(renovated?.operations?.offerUpgrades['offer:room-slot-ne:room-type-1:workspace'])
+      .toMatchObject({ roomOfferId: 'offer:room-slot-ne:room-type-1' });
+    expect(renovated?.operations?.offerUpgrades['offer:room-slot-nw:room-type-1:workspace'])
+      .toBeUndefined();
   });
 
   it('updates all department levers and persists them across reload', async () => {

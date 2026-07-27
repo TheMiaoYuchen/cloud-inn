@@ -288,6 +288,75 @@ describe("settleOperationsDay", () => {
     expect(operations.discoveredNeeds).toEqual(report.discoveredNeeds);
   });
 
+  it.each([
+    { reputationBps: 2_000, availability: "zero inventory" as const },
+    { reputationBps: 9_000, availability: "closure" as const },
+  ])(
+    "keeps reputation $reputationBps, maximum, and unlocks stable during $availability with no reviews",
+    ({ reputationBps, availability }) => {
+      const input = createApprovedSettlementInput();
+      input.operations.reputationBps = reputationBps;
+      input.operations.maximumReputationBps = reputationBps;
+      input.operations.unlockedContent = reputationBps === 9_000
+        ? [
+            "operations:pricing-automation",
+            "operations:premium-segments",
+            "operations:signature-service",
+          ]
+        : [];
+      if (availability === "zero inventory") {
+        input.offers = [];
+      } else {
+        input.offers = [input.offers[0]];
+        const offer = input.offers[0];
+        const upgrade = projectRoomOfferUpgrade(offer, {
+          roomOfferId: offer.id,
+          kind: "workspace",
+          level: 1,
+        }).upgrade;
+        upgrade.remainingClosureDays = 1;
+        input.operations.offerUpgrades[roomOfferUpgradeKey(offer.id, "workspace")] = upgrade;
+      }
+      const unlocks = structuredClone(input.operations.unlockedContent);
+
+      const { report, operations } = settleOperationsDay(input);
+
+      expect(report.reviews).toEqual([]);
+      expect(report.reputationDeltaBps).toBe(0);
+      expect(report.reputationBps).toBe(reputationBps);
+      expect(operations.reputationBps).toBe(reputationBps);
+      expect(operations.maximumReputationBps).toBe(reputationBps);
+      expect(operations.unlockedContent).toEqual(unlocks);
+    },
+  );
+
+  it.each([
+    { quality: "positive" as const, direction: "greater" as const },
+    { quality: "negative" as const, direction: "less" as const },
+  ])("keeps $quality review-driven reputation changes", ({ quality, direction }) => {
+    const input = createApprovedSettlementInput();
+    if (quality === "negative") {
+      input.offers = [{
+        ...input.offers[0],
+        nightlyRateCents: 150_000,
+        viewBps: 0,
+        workspaceBps: 0,
+        quietBps: 0,
+        privacyBps: 0,
+        designAffinities: Object.fromEntries(
+          GUEST_SEGMENT_IDS.map((segmentId) => [segmentId, 0]),
+        ) as typeof input.offers[number]["designAffinities"],
+      }];
+    }
+
+    const { report } = settleOperationsDay(input);
+
+    expect(report.reviews?.length).toBeGreaterThan(0);
+    expect(report.reputationBps)[direction === "greater" ? "toBeGreaterThan" : "toBeLessThan"](
+      input.operations.reputationBps,
+    );
+  });
+
   it("projects threshold unlocks after settlement without rewriting historical reports", () => {
     const input = createApprovedSettlementInput();
     input.operations.reputationBps = 5_999;

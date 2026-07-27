@@ -28,11 +28,11 @@ import { createOperationsState } from "../domain/operations/createOperationsStat
 import type { Difficulty, OperationsState } from "../domain/operations/operationsTypes";
 import {
   effectiveRate,
-  seasonForGameDay,
   validatePricePolicy,
   type PricePolicy,
   type PricingContext,
 } from "../domain/operations/pricing";
+import { pricingContextForState } from "./pricingContextForState";
 import { projectRoomOffers, type RoomOffer } from "../domain/operations/roomOffer";
 import {
   calculateTrainingCostCents,
@@ -80,49 +80,6 @@ export function previewRoomRenovation(
     nightlyRateCents: policy?.nightlyRateCents ?? baseOffer.nightlyRateCents,
   };
   return previewRoomOfferUpgrade(offer, operations, input);
-}
-
-function clampBps(value: number): number {
-  return Math.max(0, Math.min(10_000, Math.trunc(value)));
-}
-
-function pricingContext(state: Readonly<GameState>): PricingContext {
-  const recentReports = state.reports.slice(-7);
-  const availableRooms = recentReports.reduce(
-    (total, report) => total + report.availableRooms,
-    0,
-  );
-  const soldRooms = recentReports.reduce(
-    (total, report) => total + report.soldRooms,
-    0,
-  );
-  const occupancyBps = availableRooms === 0
-    ? 5_000
-    : Math.trunc((soldRooms * 10_000) / availableRooms);
-  const latestReport = recentReports[recentReports.length - 1];
-  const remainingInventoryBps = !latestReport || latestReport.availableRooms === 0
-    ? 5_000
-    : Math.trunc(
-        ((latestReport.availableRooms - latestReport.soldRooms) * 10_000) /
-          latestReport.availableRooms,
-      );
-  const operationsReports = state.operations?.dailyReports.slice(-7) ?? [];
-  const totalDemand = operationsReports.reduce(
-    (total, report) =>
-      total + report.segments.reduce((dayTotal, segment) => dayTotal + segment.demand, 0),
-    0,
-  );
-  const demandCapacity = state.floor.rooms.length * operationsReports.length;
-
-  return {
-    season: seasonForGameDay(state.currentDay),
-    trailingSevenDayOccupancyBps: clampBps(occupancyBps),
-    segmentDemandBps: demandCapacity === 0
-      ? 5_000
-      : clampBps(Math.trunc((totalDemand * 10_000) / demandCapacity)),
-    reputationBps: clampBps(state.operations?.reputationBps ?? 5_000),
-    remainingInventoryBps: clampBps(remainingInventoryBps),
-  };
 }
 
 function offerIds(state: Readonly<GameState>): string[] {
@@ -180,7 +137,7 @@ function operationsWithCurrentAutomaticRates(
 ): OperationsState {
   const operations = state.operations;
   if (!operations) throw new Error("经营系统尚未初始化");
-  const context = pricingContext(state);
+  const context = pricingContextForState(state);
   const pricePolicies = { ...operations.pricePolicies };
 
   for (const offer of offers) {
@@ -358,7 +315,7 @@ export function createGameCommands(savePort: SavePort) {
         throw new Error("经营难度无效");
       }
       const current = state.operations ?? createOperationsState(difficulty);
-      const context = pricingContext({ ...state, operations: current });
+      const context = pricingContextForState({ ...state, operations: current });
       const pricePolicies: OperationsState["pricePolicies"] = {};
       for (const roomOfferId of offerIds(state)) {
         pricePolicies[roomOfferId] = asPricePolicy(
@@ -470,7 +427,7 @@ export function createGameCommands(savePort: SavePort) {
       }
       const policy: PricePolicy = {
         ...structuredClone(input),
-        nightlyRateCents: effectiveRate(input, pricingContext(state)),
+        nightlyRateCents: effectiveRate(input, pricingContextForState(state)),
       };
       return persist(state, {
         ...state,
@@ -499,14 +456,14 @@ export function createGameCommands(savePort: SavePort) {
         existing,
         roomOfferId,
         state.rateCents,
-        pricingContext(state),
+        pricingContextForState(state),
       );
       const policy: PricePolicy = {
         ...current,
         automaticPricing,
         nightlyRateCents: current.baseRateCents,
       };
-      policy.nightlyRateCents = effectiveRate(policy, pricingContext(state));
+      policy.nightlyRateCents = effectiveRate(policy, pricingContextForState(state));
       return persist(state, {
         ...state,
         operations: {

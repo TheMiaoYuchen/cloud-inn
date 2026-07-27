@@ -917,7 +917,7 @@ describe("game commands", () => {
     await expectSavedRevision(state, locked, store);
   });
 
-  it("derives automatic pricing from trailing seven reports, reputation, and remaining inventory", async () => {
+  it("ignores legacy reports when operations history is empty for automatic pricing", async () => {
     const store = new InMemorySavePort();
     const commands = createGameCommands(store);
     let state = await commands.saveRoomBlueprint(
@@ -953,7 +953,7 @@ describe("game commands", () => {
     const offerId = "offer:room-slot-nw:room-type-1";
     const current = initialized.operations?.pricePolicies[offerId] as PricePolicy;
 
-    expect(current.nightlyRateCents).toBe(96_800);
+    expect(current.nightlyRateCents).toBe(87_200);
   });
 
   it.each([

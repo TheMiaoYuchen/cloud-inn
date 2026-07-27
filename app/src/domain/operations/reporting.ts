@@ -147,10 +147,17 @@ export function projectPeriodicReports(
   const weeklyReports = operations.weeklyReports.map((report) => structuredClone(report));
   const monthlyCloses = operations.monthlyCloses.map((report) => structuredClone(report));
   if ([7, 14, 21, 28].includes(lastDay) && !weeklyReports.some(({ endDay }) => endDay === lastDay)) {
-    weeklyReports.push(aggregateWeeklyReport(dailyReports.slice(-7)));
+    const startDay = lastDay - 6;
+    const window = dailyReports.filter(({ day }) => day >= startDay && day <= lastDay);
+    if (window.length === 7 && window.every(({ day }, index) => day === startDay + index)) {
+      weeklyReports.push(aggregateWeeklyReport(window));
+    }
   }
   if (lastDay === 30 && !monthlyCloses.some(({ endDay }) => endDay === lastDay)) {
-    monthlyCloses.push(aggregateMonthlyClose(dailyReports.slice(-30)));
+    const window = dailyReports.filter(({ day }) => day >= 1 && day <= lastDay);
+    if (window.length === 30 && window.every(({ day }, index) => day === index + 1)) {
+      monthlyCloses.push(aggregateMonthlyClose(window));
+    }
   }
   return { weeklyReports, monthlyCloses };
 }

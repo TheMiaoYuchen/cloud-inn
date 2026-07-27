@@ -113,6 +113,37 @@ describe("operations reporting", () => {
     expect(projected.monthlyCloses).toEqual([]);
   });
 
+  it("skips a calendar week when late initialization has no complete aligned window", () => {
+    const operations = createOperationsState();
+    operations.dailyReports = [daily(6), daily(7)];
+
+    expect(projectPeriodicReports(operations)).toEqual({
+      weeklyReports: [],
+      monthlyCloses: [],
+    });
+  });
+
+  it("projects week two when late initialization contains the complete days 8 through 14", () => {
+    const operations = createOperationsState();
+    operations.dailyReports = Array.from({ length: 9 }, (_, index) => daily(index + 6));
+
+    const projected = projectPeriodicReports(operations);
+
+    expect(projected.weeklyReports.map(({ week, startDay, endDay }) => ({ week, startDay, endDay })))
+      .toEqual([{ week: 2, startDay: 8, endDay: 14 }]);
+    expect(projected.monthlyCloses).toEqual([]);
+  });
+
+  it("skips the monthly close when operations initialize on day thirty", () => {
+    const operations = createOperationsState();
+    operations.dailyReports = [daily(30)];
+
+    expect(projectPeriodicReports(operations)).toEqual({
+      weeklyReports: [],
+      monthlyCloses: [],
+    });
+  });
+
   it.each([
     [[daily(1), daily(3), daily(2), daily(4), daily(5), daily(6), daily(7)], "连续"],
     [[daily(1), daily(2), daily(2), daily(4), daily(5), daily(6), daily(7)], "唯一"],
