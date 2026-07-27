@@ -116,17 +116,23 @@ function clampBps(value: number): number {
   return Math.max(0, Math.min(10_000, value));
 }
 
-function kindFor(upgrade: Readonly<RoomOfferUpgrade>): UpgradeKind {
-  const kind = upgrade.kind ?? upgrade.upgradeId;
-  if (!isUpgradeKind(kind)) throw new Error("已保存的改造类型无效");
-  if (upgrade.kind !== undefined && upgrade.upgradeId !== upgrade.kind) {
+export function roomOfferRenovationKind(
+  upgrade: Readonly<RoomOfferUpgrade>,
+): UpgradeKind | null {
+  if (upgrade.kind !== undefined && !isUpgradeKind(upgrade.kind)) {
+    throw new Error("已保存的改造类型无效");
+  }
+  const kind = upgrade.kind ?? (isUpgradeKind(upgrade.upgradeId) ? upgrade.upgradeId : null);
+  if (kind === null) return null;
+  if (upgrade.kind !== undefined && upgrade.upgradeId !== kind) {
     throw new Error("已保存的改造编号与类型不一致");
   }
   return kind;
 }
 
-function validatePersistedUpgrade(upgrade: Readonly<RoomOfferUpgrade>): UpgradeKind {
-  const kind = kindFor(upgrade);
+function validatePersistedUpgrade(upgrade: Readonly<RoomOfferUpgrade>): UpgradeKind | null {
+  const kind = roomOfferRenovationKind(upgrade);
+  if (kind === null) return null;
   const rule = ruleFor(kind, upgrade.level);
   if (
     upgrade.remainingClosureDays !== undefined
@@ -173,7 +179,9 @@ function currentUpgrade(
 
 function offerInConstruction(operations: Readonly<OperationsState>, roomOfferId: string): boolean {
   return Object.values(operations.offerUpgrades).some((upgrade) =>
-    upgrade.roomOfferId === roomOfferId && (upgrade.remainingClosureDays ?? 0) > 0,
+    roomOfferRenovationKind(upgrade) !== null
+      && upgrade.roomOfferId === roomOfferId
+      && (upgrade.remainingClosureDays ?? 0) > 0,
   );
 }
 
@@ -184,6 +192,7 @@ export function validateRoomOfferUpgrades(
   const offerIds = new Set(offers.map(({ id }) => id));
   for (const [key, upgrade] of Object.entries(operations.offerUpgrades)) {
     const kind = validatePersistedUpgrade(upgrade);
+    if (kind === null) continue;
     if (!offerIds.has(upgrade.roomOfferId)) throw new Error("已保存的改造客房产品不存在");
     if (key !== roomOfferUpgradeKey(upgrade.roomOfferId, kind)) {
       throw new Error("已保存的改造键与内容不一致");

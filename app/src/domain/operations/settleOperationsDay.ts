@@ -6,7 +6,11 @@ import type { RoomOffer } from "./roomOffer";
 import { calculateServiceCapacity } from "./serviceCapacity";
 import { projectOperationsFinance, validateLoans } from "./finance";
 import { projectReputationUnlocks } from "./unlocks";
-import { applyRoomOfferUpgrades, validateRoomOfferUpgrades } from "./renovation";
+import {
+  applyRoomOfferUpgrades,
+  roomOfferRenovationKind,
+  validateRoomOfferUpgrades,
+} from "./renovation";
 
 export interface OperationsSettlementInput {
   day: number;
@@ -131,7 +135,9 @@ export function settleOperationsDay(
   }));
   const pricedOffers = input.offers
     .filter((offer) => !Object.values(input.operations.offerUpgrades).some((upgrade) =>
-      upgrade.roomOfferId === offer.id && (upgrade.remainingClosureDays ?? 0) > 0,
+      roomOfferRenovationKind(upgrade) !== null
+        && upgrade.roomOfferId === offer.id
+        && (upgrade.remainingClosureDays ?? 0) > 0,
     ))
     .map((offer) => ({
       ...applyRoomOfferUpgrades(offer, input.operations),
@@ -330,13 +336,13 @@ export function settleOperationsDay(
   operations.discoveredNeeds = [...operations.discoveredNeeds, ...newDiscoveries];
   operations.loans = finance.loans;
   operations.offerUpgrades = Object.fromEntries(
-    Object.entries(operations.offerUpgrades).map(([key, upgrade]) => [
-      key,
-      {
+    Object.entries(operations.offerUpgrades).map(([key, upgrade]) => {
+      if (roomOfferRenovationKind(upgrade) === null) return [key, upgrade];
+      return [key, {
         ...upgrade,
         remainingClosureDays: Math.max(0, (upgrade.remainingClosureDays ?? 0) - 1),
-      },
-    ]),
+      }];
+    }),
   );
   if (soldRooms > 0) {
     let allocatedBps = 0;

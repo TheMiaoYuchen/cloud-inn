@@ -6,6 +6,21 @@ import { compareCodeUnits, settleOperationsDay } from "./settleOperationsDay";
 import { projectRoomOfferUpgrade, roomOfferUpgradeKey } from "./renovation";
 
 describe("settleOperationsDay", () => {
+  it("ignores and preserves a pre-renovation legacy offer upgrade while settling", () => {
+    const input = createApprovedSettlementInput();
+    const legacy = {
+      roomOfferId: "deluxe-king",
+      upgradeId: "club-access",
+      level: 1,
+    };
+    input.operations.offerUpgrades[legacy.roomOfferId] = legacy;
+
+    const result = settleOperationsDay(input);
+
+    expect(result.report.availableRooms).toBe(input.offers.length);
+    expect(result.operations.offerUpgrades[legacy.roomOfferId]).toEqual(legacy);
+  });
+
   it("keeps a renovating offer closed for the settled day and deterministically decrements closure", () => {
     const input = createApprovedSettlementInput();
     input.offers = [input.offers[0]];

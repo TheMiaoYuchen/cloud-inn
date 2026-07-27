@@ -190,6 +190,21 @@ describe("room-offer renovation", () => {
     expect(() => validateRoomOfferUpgrades([base], operations)).toThrow("不存在");
   });
 
+  it("ignores a legacy arbitrary upgrade and preserves its input without projecting it", () => {
+    const operations = createOperationsState();
+    const base = offer();
+    operations.offerUpgrades[base.id] = {
+      roomOfferId: base.id,
+      upgradeId: "club-access",
+      level: 1,
+    };
+    const snapshot = structuredClone(operations.offerUpgrades);
+
+    expect(validateRoomOfferUpgrades([base], operations)).toBeUndefined();
+    expect(applyRoomOfferUpgrades(base, operations)).toEqual(base);
+    expect(operations.offerUpgrades).toEqual(snapshot);
+  });
+
   it("explains business workspace and high-net-worth view/privacy score gains", () => {
     const operations = createOperationsState();
     const base = offer();

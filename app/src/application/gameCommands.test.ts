@@ -74,6 +74,33 @@ describe("game commands", () => {
     expect({ state, input }).toEqual(snapshot);
   });
 
+  it("previews and renovates with an unrelated legacy upgrade preserved verbatim", async () => {
+    const fixture = await openedOperations("save-renovation-legacy", "management");
+    const legacy = {
+      roomOfferId: "deluxe-king",
+      upgradeId: "club-access",
+      level: 1,
+    };
+    const state = {
+      ...fixture.state,
+      operations: {
+        ...fixture.state.operations!,
+        offerUpgrades: { [legacy.roomOfferId]: legacy },
+      },
+    };
+    const request: RoomOfferUpgradeRequest = {
+      roomOfferId: "offer:room-slot-nw:room-type-1",
+      kind: "workspace",
+      level: 1,
+    };
+
+    expect(previewRoomRenovation(state, request).beforeOffer.workspaceBps)
+      .toBe(previewRoomRenovation(fixture.state, request).beforeOffer.workspaceBps);
+    const renovated = await fixture.commands.renovateRoomOffer(state, request);
+    expect(renovated.operations?.offerUpgrades[legacy.roomOfferId]).toEqual(legacy);
+    expect(renovated.operations?.offerUpgrades[`${request.roomOfferId}:workspace`]).toBeDefined();
+  });
+
   it("atomically commits a management renovation, full cost, closure, and stable compound key", async () => {
     const { store, commands, state } = await openedOperations("save-renovation-management", "management");
     const offerId = "offer:room-slot-nw:room-type-1";
