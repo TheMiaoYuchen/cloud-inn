@@ -18,7 +18,7 @@ impl SaveRepository {
         let conn = self.open(save_id)?;
         let row = conn
             .query_row(
-                "SELECT schema_version,ruleset_version,revision,phase,current_day,cash_cents,rate_cents,phase2_json,latest_report_json,operations_json FROM saves WHERE save_id=?1",
+                "SELECT schema_version,ruleset_version,revision,phase,current_day,cash_cents,rate_cents,phase2_json,latest_report_json,operations_json,phase4_json FROM saves WHERE save_id=?1",
                 [save_id],
                 |r| {
                     Ok((
@@ -27,13 +27,25 @@ impl SaveRepository {
                         r.get::<_, i64>(6)?, r.get::<_, Option<String>>(7)?,
                         r.get::<_, Option<String>>(8)?,
                         r.get::<_, Option<String>>(9)?,
+                        r.get::<_, Option<String>>(10)?,
                     ))
                 },
             )
             .optional()
             .map_err(db_err)?;
-        let Some((schema, ruleset, revision, phase, day, cash, rate, phase2, latest, operations)) =
-            row
+        let Some((
+            schema,
+            ruleset,
+            revision,
+            phase,
+            day,
+            cash,
+            rate,
+            phase2,
+            latest,
+            operations,
+            phase4,
+        )) = row
         else {
             return Ok(None);
         };
@@ -69,6 +81,9 @@ impl SaveRepository {
         if let Some(raw) = operations {
             game["operations"] = parse_json(raw)?;
         }
+        if let Some(raw) = phase4 {
+            game["phase4"] = parse_json(raw)?;
+        }
         validate_game(&game)?;
         Ok(Some(game))
     }
@@ -98,7 +113,7 @@ impl SaveRepository {
         if current != expected_revision || fields.revision != next_revision {
             return Err("存档已更新，请重新加载".to_string());
         }
-        tx.execute("INSERT INTO saves(save_id,schema_version,ruleset_version,revision,phase,current_day,cash_cents,rate_cents,phase2_json,latest_report_json,operations_json,updated_at) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,datetime('now')) ON CONFLICT(save_id) DO UPDATE SET schema_version=excluded.schema_version,ruleset_version=excluded.ruleset_version,revision=excluded.revision,phase=excluded.phase,current_day=excluded.current_day,cash_cents=excluded.cash_cents,rate_cents=excluded.rate_cents,phase2_json=excluded.phase2_json,latest_report_json=excluded.latest_report_json,operations_json=excluded.operations_json,updated_at=excluded.updated_at", params![save_id, fields.schema_version, fields.ruleset, fields.revision, fields.phase, fields.current_day, fields.cash_cents, fields.rate_cents, fields.phase2, fields.latest_report, fields.operations]).map_err(db_err)?;
+        tx.execute("INSERT INTO saves(save_id,schema_version,ruleset_version,revision,phase,current_day,cash_cents,rate_cents,phase2_json,latest_report_json,operations_json,phase4_json,updated_at) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,datetime('now')) ON CONFLICT(save_id) DO UPDATE SET schema_version=excluded.schema_version,ruleset_version=excluded.ruleset_version,revision=excluded.revision,phase=excluded.phase,current_day=excluded.current_day,cash_cents=excluded.cash_cents,rate_cents=excluded.rate_cents,phase2_json=excluded.phase2_json,latest_report_json=excluded.latest_report_json,operations_json=excluded.operations_json,phase4_json=excluded.phase4_json,updated_at=excluded.updated_at", params![save_id, fields.schema_version, fields.ruleset, fields.revision, fields.phase, fields.current_day, fields.cash_cents, fields.rate_cents, fields.phase2, fields.latest_report, fields.operations, fields.phase4]).map_err(db_err)?;
         tx.execute("DELETE FROM room_instances WHERE save_id=?1", [&save_id])
             .map_err(db_err)?;
         tx.execute("DELETE FROM room_blueprints WHERE save_id=?1", [&save_id])
@@ -146,6 +161,7 @@ impl SaveRepository {
         migrate_phase2(&mut conn)?;
         migrate_blueprint_openings(&mut conn)?;
         migrate_operations(&mut conn)?;
+        migrate_phase4(&mut conn)?;
         Ok(conn)
     }
 }
@@ -257,6 +273,27 @@ fn migrate_operations(conn: &mut Connection) -> Result<(), String> {
     }
     tx.execute(
         "INSERT OR IGNORE INTO schema_migrations(version,applied_at) VALUES(5,datetime('now'))",
+        [],
+    )
+    .map_err(db_err)?;
+    tx.commit().map_err(db_err)
+}
+
+fn migrate_phase4(conn: &mut Connection) -> Result<(), String> {
+    let tx = conn
+        .transaction_with_behavior(TransactionBehavior::Immediate)
+        .map_err(db_err)?;
+    let has_phase4 = tx
+        .prepare("SELECT 1 FROM pragma_table_info('saves') WHERE name='phase4_json'")
+        .map_err(db_err)?
+        .exists([])
+        .map_err(db_err)?;
+    if !has_phase4 {
+        tx.execute("ALTER TABLE saves ADD COLUMN phase4_json TEXT", [])
+            .map_err(db_err)?;
+    }
+    tx.execute(
+        "INSERT OR IGNORE INTO schema_migrations(version,applied_at) VALUES(6,datetime('now'))",
         [],
     )
     .map_err(db_err)?;
@@ -641,6 +678,7 @@ struct Fields {
     latest_report: Option<String>,
     phase2: Option<String>,
     operations: Option<String>,
+    phase4: Option<String>,
     blueprint: Option<Blueprint>,
     rooms: Vec<Room>,
     reports: Vec<(i64, String)>,
@@ -686,6 +724,13 @@ fn validate_game(g: &Value) -> Result<Fields, String> {
         Some(Value::Null) | None => None,
         Some(value) => {
             validate_operations(value, current_day, cash_cents)?;
+            Some(serde_json::to_string(value).map_err(|_| "存档数据损坏".to_string())?)
+        }
+    };
+    let phase4 = match g.get("phase4") {
+        None => None,
+        Some(value) => {
+            validate_phase4(value)?;
             Some(serde_json::to_string(value).map_err(|_| "存档数据损坏".to_string())?)
         }
     };
@@ -814,6 +859,7 @@ fn validate_game(g: &Value) -> Result<Fields, String> {
         latest_report,
         phase2,
         operations,
+        phase4,
         blueprint,
         rooms,
         reports,
@@ -821,6 +867,168 @@ fn validate_game(g: &Value) -> Result<Fields, String> {
 }
 
 const JS_MAX_SAFE_INTEGER: i64 = 9_007_199_254_740_991;
+const PHASE4_STABLE_ID_MAX_LENGTH: usize = 96;
+
+fn phase4_error(detail: &str) -> String {
+    format!("内容规模存档{detail}")
+}
+
+fn phase4_object<'a>(
+    value: &'a Value,
+    label: &str,
+) -> Result<&'a serde_json::Map<String, Value>, String> {
+    value
+        .as_object()
+        .ok_or_else(|| phase4_error(&format!("{label}结构无效")))
+}
+
+fn phase4_array<'a>(value: &'a Value, label: &str) -> Result<&'a Vec<Value>, String> {
+    value
+        .as_array()
+        .ok_or_else(|| phase4_error(&format!("{label}结构无效")))
+}
+
+fn phase4_field<'a>(
+    object: &'a serde_json::Map<String, Value>,
+    key: &str,
+    label: &str,
+) -> Result<&'a Value, String> {
+    object
+        .get(key)
+        .ok_or_else(|| phase4_error(&format!("{label}结构无效")))
+}
+
+fn phase4_stable_id<'a>(value: &'a Value, label: &str) -> Result<&'a str, String> {
+    let id = value
+        .as_str()
+        .ok_or_else(|| phase4_error(&format!("{label}必须是稳定 ID")))?;
+    let valid = !id.is_empty()
+        && id.len() <= PHASE4_STABLE_ID_MAX_LENGTH
+        && id.bytes().enumerate().all(|(index, byte)| {
+            byte.is_ascii_lowercase()
+                || byte.is_ascii_digit()
+                || (index > 0 && matches!(byte, b':' | b'-'))
+        });
+    if !valid {
+        return Err(phase4_error(&format!("{label}必须是稳定 ID")));
+    }
+    Ok(id)
+}
+
+fn validate_phase4_money(value: &Value) -> Result<(), String> {
+    if value
+        .as_i64()
+        .is_some_and(|money| (0..=JS_MAX_SAFE_INTEGER).contains(&money))
+    {
+        Ok(())
+    } else {
+        Err(phase4_error("施工金额必须是安全整数"))
+    }
+}
+
+fn validate_phase4_stable_ids(value: &Value) -> Result<(), String> {
+    match value {
+        Value::Array(values) => {
+            for child in values {
+                validate_phase4_stable_ids(child)?;
+            }
+        }
+        Value::Object(object) => {
+            for (key, child) in object {
+                if key == "id" || key.ends_with("Id") {
+                    phase4_stable_id(child, key)?;
+                } else if key.ends_with("Ids") || key == "reasonCodes" {
+                    for id in phase4_array(child, key)? {
+                        phase4_stable_id(id, key)?;
+                    }
+                }
+                validate_phase4_stable_ids(child)?;
+            }
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
+fn validate_phase4(value: &Value) -> Result<(), String> {
+    let phase4 = phase4_object(value, "状态")?;
+    if phase4.get("rulesetVersion").and_then(Value::as_str) != Some("content-scale-v1") {
+        return Err(phase4_error("规则版本无效"));
+    }
+    for (key, label) in [
+        ("building", "建筑"),
+        ("floorTemplates", "楼层模板"),
+        ("spaceBlueprints", "公共空间蓝图"),
+        ("publicSpaces", "公共空间"),
+        ("facilities", "设施"),
+        ("catalogProgress", "目录进度"),
+    ] {
+        phase4_object(phase4_field(phase4, key, label)?, label)?;
+    }
+    validate_phase4_stable_ids(value)?;
+    let floors = phase4_array(phase4_field(phase4, "floors", "楼层")?, "楼层")?;
+    match phase4.get("recentFlowSnapshot") {
+        Some(Value::Null | Value::Object(_)) => {}
+        _ => return Err(phase4_error("近期流动快照结构无效")),
+    }
+
+    let mut floor_ids = HashSet::new();
+    let mut room_ids = HashSet::new();
+    let mut room_floor_ids = Vec::new();
+    for raw_floor in floors {
+        let floor = phase4_object(raw_floor, "楼层")?;
+        let floor_id = phase4_stable_id(phase4_field(floor, "id", "楼层编号")?, "楼层编号")?;
+        if !floor_ids.insert(floor_id) {
+            return Err(phase4_error("楼层编号重复"));
+        }
+        for raw_room in phase4_array(phase4_field(floor, "rooms", "客房")?, "客房")? {
+            let room = phase4_object(raw_room, "客房")?;
+            let room_id = phase4_stable_id(phase4_field(room, "id", "客房编号")?, "客房编号")?;
+            if !room_ids.insert(room_id) {
+                return Err(phase4_error("客房编号重复"));
+            }
+            room_floor_ids.push(phase4_stable_id(
+                phase4_field(room, "floorId", "客房楼层编号")?,
+                "客房楼层编号",
+            )?);
+            validate_phase4_money(phase4_field(room, "committedBuildCostCents", "施工金额")?)?;
+        }
+    }
+    if room_floor_ids
+        .iter()
+        .any(|floor_id| !floor_ids.contains(floor_id))
+    {
+        return Err(phase4_error("客房楼层引用无效"));
+    }
+
+    let mut public_space_ids = HashSet::new();
+    let public_spaces = phase4_object(
+        phase4_field(phase4, "publicSpaces", "公共空间")?,
+        "公共空间",
+    )?;
+    for raw_space in public_spaces.values() {
+        let space = phase4_object(raw_space, "公共空间")?;
+        let id = phase4_stable_id(phase4_field(space, "id", "公共空间编号")?, "公共空间编号")?;
+        if !public_space_ids.insert(id) {
+            return Err(phase4_error("公共空间编号重复"));
+        }
+        validate_phase4_money(phase4_field(space, "committedBuildCostCents", "施工金额")?)?;
+    }
+    let blueprints = phase4_object(
+        phase4_field(phase4, "spaceBlueprints", "公共空间蓝图")?,
+        "公共空间蓝图",
+    )?;
+    for raw_blueprint in blueprints.values() {
+        let blueprint = phase4_object(raw_blueprint, "公共空间蓝图")?;
+        validate_phase4_money(phase4_field(
+            blueprint,
+            "committedBuildCostCents",
+            "施工金额",
+        )?)?;
+    }
+    Ok(())
+}
+
 const OPERATIONS_DEPARTMENTS: [&str; 6] = [
     "frontOffice",
     "housekeeping",
@@ -1852,7 +2060,7 @@ mod tests {
                 .unwrap()
                 .query_row::<i64, _, _>("SELECT count(*) FROM schema_migrations", [], |x| x.get(0))
                 .unwrap(),
-            5
+            6
         );
     }
     #[test]
@@ -2898,5 +3106,110 @@ mod tests {
         });
         assert!(ha.join().unwrap().is_ok());
         assert!(hb.join().unwrap().is_ok());
+    }
+
+    fn phase4_fixture(raw: &str) -> Value {
+        serde_json::from_str(raw).unwrap()
+    }
+
+    #[test]
+    fn phase4_minimal_commits_and_reopens_shared_fixture() {
+        let repository = SaveRepository::new(root("phase4-shared"));
+        let mut game = phase4_fixture(include_str!("../tests/fixtures/phase4-valid.json"));
+        let expected_phase4 = game["phase4"].clone();
+        game["revision"] = json!(1);
+
+        repository.commit_game(0, game).unwrap();
+
+        let loaded = repository.load_game("phase4-shared").unwrap().unwrap();
+        assert_eq!(loaded["phase4"], expected_phase4);
+    }
+
+    #[test]
+    fn phase4_minimal_rejects_shared_invalid_fixtures() {
+        for (name, raw, expected) in [
+            (
+                "duplicate-floor-id",
+                include_str!("../tests/fixtures/phase4-invalid/duplicate-floor-id.json"),
+                "楼层编号重复",
+            ),
+            (
+                "unknown-room-floor",
+                include_str!("../tests/fixtures/phase4-invalid/unknown-room-floor.json"),
+                "客房楼层引用无效",
+            ),
+            (
+                "unsafe-money",
+                include_str!("../tests/fixtures/phase4-invalid/unsafe-money.json"),
+                "施工金额必须是安全整数",
+            ),
+        ] {
+            let repository = SaveRepository::new(root(&format!("phase4-invalid-{name}")));
+            let mut invalid = phase4_fixture(raw);
+            invalid["revision"] = json!(1);
+            let error = repository.commit_game(0, invalid).unwrap_err();
+            assert!(error.contains(expected), "unexpected error: {error}");
+        }
+    }
+
+    #[test]
+    fn phase4_minimal_rejects_null_envelope_like_browser_validation() {
+        let mut invalid = game();
+        invalid["phase4"] = Value::Null;
+
+        assert!(validate_game(&invalid).is_err());
+    }
+
+    #[test]
+    fn phase4_minimal_rejects_malformed_stable_ids() {
+        let mut invalid = phase4_fixture(include_str!("../tests/fixtures/phase4-valid.json"));
+        invalid["phase4"]["building"]["templateId"] = json!("Building Template");
+
+        let error = validate_game(&invalid).err().unwrap();
+        assert!(error.contains("稳定 ID"));
+    }
+
+    #[test]
+    fn phase4_minimal_invalid_update_leaves_prior_revision_unchanged() {
+        let repository = SaveRepository::new(root("phase4-rollback"));
+        let mut valid = phase4_fixture(include_str!("../tests/fixtures/phase4-valid.json"));
+        valid["revision"] = json!(1);
+        repository.commit_game(0, valid.clone()).unwrap();
+
+        let mut invalid = phase4_fixture(include_str!(
+            "../tests/fixtures/phase4-invalid/unsafe-money.json"
+        ));
+        invalid["revision"] = json!(2);
+        let error = repository.commit_game(1, invalid).unwrap_err();
+
+        assert!(error.contains("施工金额必须是安全整数"));
+        assert_eq!(repository.load_game("phase4-shared").unwrap(), Some(valid));
+    }
+
+    #[test]
+    fn phase4_minimal_migrates_old_schema_and_loads_without_envelope() {
+        let repository = SaveRepository::new(root("phase4-old-schema"));
+        repository.commit_game(0, game()).unwrap();
+        let conn = repository.open("save-1").unwrap();
+        conn.execute_batch(
+            "ALTER TABLE saves DROP COLUMN phase4_json;
+             DELETE FROM schema_migrations WHERE version=6;",
+        )
+        .unwrap();
+        drop(conn);
+
+        let loaded = repository.load_game("save-1").unwrap().unwrap();
+
+        assert!(loaded.get("phase4").is_none());
+        let conn = repository.open("save-1").unwrap();
+        assert_eq!(
+            conn.query_row::<i64, _, _>(
+                "SELECT count(*) FROM pragma_table_info('saves') WHERE name='phase4_json'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap(),
+            1
+        );
     }
 }

@@ -1,5 +1,6 @@
 import type { GameState } from "../../domain/game/state";
 import type { SaveId } from "../../domain/primitives";
+import { validatePhase4State } from "./validatePhase4State";
 
 type JsonObject = Record<string, unknown>;
 
@@ -400,5 +401,6 @@ export function validateBrowserGameState(
   }
   if (game.phase2 !== undefined) validatePhase2(game.phase2);
   if (game.operations !== undefined) validateOperations(game.operations, game);
+  if (game.phase4 !== undefined) validatePhase4State(game.phase4);
   return structuredClone(game) as unknown as GameState;
 }
