@@ -49,8 +49,14 @@ export function projectReputationUnlocks(
     operations.reputationBps,
     newReputationBps,
   );
-  const unlockedContent = [...operations.unlockedContent];
-  const known = new Set(unlockedContent);
+  const unlockedContent: string[] = [];
+  const known = new Set<string>();
+  for (const key of operations.unlockedContent) {
+    if (!known.has(key)) {
+      known.add(key);
+      unlockedContent.push(key);
+    }
+  }
   for (const unlock of REPUTATION_UNLOCKS) {
     if (unlock.reputationBps <= maximumReputationBps && !known.has(unlock.key)) {
       known.add(unlock.key);

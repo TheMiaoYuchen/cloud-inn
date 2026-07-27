@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  DAILY_SETTLEMENT_SAFETY_LOAN_ID,
+  DEPARTMENT_TRAINING_SAFETY_LOAN_ID,
   applyLoanRepayment,
   coverCasualShortfall,
   createLoan,
@@ -49,6 +51,13 @@ describe("operations finance", () => {
     expect(() => validateLoanRequest(request, [loan])).toThrow("贷款编号必须唯一");
   });
 
+  it.each([
+    DAILY_SETTLEMENT_SAFETY_LOAN_ID,
+    DEPARTMENT_TRAINING_SAFETY_LOAN_ID,
+  ])("reserves internal safety loan ID %s from voluntary requests", (id) => {
+    expect(() => createLoan({ ...request, id }, [])).toThrow("安全贷款编号为系统保留");
+  });
+
   it("rejects invalid persisted loans and duplicate IDs", () => {
     const loan = createLoan(request, []);
 
@@ -57,6 +66,15 @@ describe("operations finance", () => {
     );
     expect(() => validateLoans([loan, { ...loan }])).toThrow("贷款编号必须唯一");
     expect(() => validateLoan({ ...loan, principalCents: Number.NaN })).toThrow("安全整数");
+  });
+
+  it("rejects inactive persisted records and minimum payments above outstanding balance", () => {
+    const loan = createLoan(request, []);
+
+    expect(() => validateLoan({ ...loan, outstandingCents: 0 })).toThrow("贷款余额");
+    expect(() => validateLoan({ ...loan, outstandingCents: 1, minimumPaymentCents: 2 })).toThrow(
+      "最低还款不能超过贷款余额",
+    );
   });
 
   it("calculates deterministic daily interest with safe BigInt arithmetic", () => {
@@ -74,17 +92,28 @@ describe("operations finance", () => {
     expect(projectLoanSettlement(loans).loans).not.toBe(loans);
   });
 
-  it("applies principal repayment without mutating loans and removes a settled record", () => {
+  it("keeps original principal, clamps minimum payment, and removes a settled record", () => {
     const loan = createLoan(request, []);
     const partial = applyLoanRepayment([loan], loan.id, 40_000);
 
     expect(partial).toEqual([{
       ...loan,
-      principalCents: 60_000,
       outstandingCents: 60_000,
     }]);
-    expect(applyLoanRepayment(partial, loan.id, 60_000)).toEqual([]);
+    const nearFull = applyLoanRepayment(partial, loan.id, 59_999);
+    expect(nearFull).toEqual([{
+      ...loan,
+      outstandingCents: 1,
+      minimumPaymentCents: 1,
+    }]);
+    expect(applyLoanRepayment(nearFull, loan.id, 1)).toEqual([]);
     expect(loan.principalCents).toBe(100_000);
+  });
+
+  it("allows a fully repaid voluntary loan ID to be reused", () => {
+    const loan = createLoan(request, []);
+
+    expect(createLoan(request, applyLoanRepayment([loan], loan.id, loan.outstandingCents))).toEqual(loan);
   });
 
   it.each([0, -1, 100_001, Number.NaN])("rejects invalid repayment %s", (amountCents) => {
@@ -94,17 +123,30 @@ describe("operations finance", () => {
   });
 
   it("covers the exact casual shortfall and deterministically merges repeat safety financing", () => {
-    const first = coverCasualShortfall(10_000, 25_000, [], "safety-loan:training");
-    const second = coverCasualShortfall(0, 5_000, first.loans, "safety-loan:training");
+    const first = coverCasualShortfall(10_000, 25_000, [], DEPARTMENT_TRAINING_SAFETY_LOAN_ID);
+    const second = coverCasualShortfall(0, 5_000, first.loans, DEPARTMENT_TRAINING_SAFETY_LOAN_ID);
 
     expect(first).toMatchObject({ borrowedCents: 15_000, endingCashCents: 0 });
     expect(second.loans).toEqual([{
-      id: "safety-loan:training",
+      id: DEPARTMENT_TRAINING_SAFETY_LOAN_ID,
       principalCents: 20_000,
       outstandingCents: 20_000,
       dailyInterestBps: 10,
       minimumPaymentCents: 200,
     }]);
+  });
+
+  it("rejects unknown safety IDs and an existing reserved loan with altered terms", () => {
+    expect(() => coverCasualShortfall(0, 1, [], "safety-loan:unknown")).toThrow(
+      "安全贷款编号无效",
+    );
+    expect(() => coverCasualShortfall(0, 1, [{
+      id: DAILY_SETTLEMENT_SAFETY_LOAN_ID,
+      principalCents: 100,
+      outstandingCents: 100,
+      dailyInterestBps: 20,
+      minimumPaymentCents: 1,
+    }], DAILY_SETTLEMENT_SAFETY_LOAN_ID)).toThrow("安全贷款合同无效");
   });
 
   it("projects one authoritative interest charge and casual shortfall financing", () => {

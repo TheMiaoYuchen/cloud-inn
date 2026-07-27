@@ -21,6 +21,10 @@ import {
 import type { SavePort } from "./ports/SavePort";
 import type { DepartmentConfiguration } from "../domain/operations/departmentCatalog";
 import type { LoanRequest } from "../domain/operations/finance";
+import {
+  DAILY_SETTLEMENT_SAFETY_LOAN_ID,
+  DEPARTMENT_TRAINING_SAFETY_LOAN_ID,
+} from "../domain/operations/finance";
 
 function prototypeCells() {
   return [
@@ -87,6 +91,24 @@ describe("game commands", () => {
     },
   );
 
+  it.each([DAILY_SETTLEMENT_SAFETY_LOAN_ID, DEPARTMENT_TRAINING_SAFETY_LOAN_ID])(
+    "rejects voluntary use of reserved loan ID %s without saving",
+    async (id) => {
+      const store = new InMemorySavePort();
+      const commands = createGameCommands(store);
+      const state = await commands.initializeOperations(createNewGame(`save-finance-reserved-${id}`));
+      const persisted = await store.load(state.saveId);
+
+      await expect(commands.takeLoan(state, {
+        id,
+        amountCents: 100,
+        dailyInterestBps: 10,
+        termDays: 10,
+      })).rejects.toThrow("安全贷款编号为系统保留");
+      expect(await store.load(state.saveId)).toEqual(persisted);
+    },
+  );
+
   it("repays principal atomically and removes the loan when fully settled", async () => {
     const store = new InMemorySavePort();
     const commands = createGameCommands(store);
@@ -104,7 +126,7 @@ describe("game commands", () => {
     const partial = await commands.repayLoan(state, "loan:bank:repay", 40_000);
     expect(partial.cashCents).toBe(state.cashCents - 40_000);
     expect(partial.operations?.loans[0]).toMatchObject({
-      principalCents: 60_000,
+      principalCents: 100_000,
       outstandingCents: 60_000,
     });
     const settled = await commands.repayLoan(partial, "loan:bank:repay", 60_000);
@@ -137,6 +159,54 @@ describe("game commands", () => {
     )).rejects.toThrow(message);
     expect(await store.load(state.saveId)).toEqual(persisted);
   });
+
+  it.each([Number.NaN, -1, Number.MAX_SAFE_INTEGER + 1])(
+    "rejects repayment from invalid current cash %s before loan arithmetic",
+    async (cashCents) => {
+      const store = new InMemorySavePort();
+      const commands = createGameCommands(store);
+      const state = {
+        ...await commands.initializeOperations(createNewGame(`save-finance-repay-cash-${cashCents}`)),
+        cashCents,
+        operations: {
+          ...createOperationsState(),
+          loans: [{
+            id: "loan:invalid-record",
+            principalCents: 100,
+            outstandingCents: 0,
+            dailyInterestBps: 10,
+            minimumPaymentCents: 1,
+          }],
+        },
+      };
+      const persisted = await store.load(state.saveId);
+
+      await expect(commands.repayLoan(state, "loan:invalid-record", 1)).rejects.toThrow("金额");
+      expect(await store.load(state.saveId)).toEqual(persisted);
+    },
+  );
+
+  it.each([Number.NaN, -1, Number.MAX_SAFE_INTEGER + 1])(
+    "rejects management department configuration from invalid current cash %s before cost arithmetic",
+    async (cashCents) => {
+      const store = new InMemorySavePort();
+      const commands = createGameCommands(store);
+      const state = {
+        ...await commands.initializeOperations(
+          createNewGame(`save-department-management-cash-${cashCents}`),
+          "management",
+        ),
+        cashCents,
+      };
+      const persisted = await store.load(state.saveId);
+
+      await expect(commands.configureDepartment(state, {
+        ...state.operations!.departments.frontOffice,
+        trainingBps: 1_000,
+      })).rejects.toThrow("金额");
+      expect(await store.load(state.saveId)).toEqual(persisted);
+    },
+  );
 
   it("switches only between supported difficulties without resetting operations", async () => {
     const store = new InMemorySavePort();

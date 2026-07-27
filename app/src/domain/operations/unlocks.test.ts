@@ -24,7 +24,12 @@ describe("reputation unlocks", () => {
 
   it("unlocks threshold content as a stable union and updates the historical maximum", () => {
     const operations = createOperationsState();
-    operations.unlockedContent = ["existing:content"];
+    operations.unlockedContent = [
+      "existing:content",
+      "operations:pricing-automation",
+      "existing:content",
+      "operations:pricing-automation",
+    ];
 
     const projected = projectReputationUnlocks(operations, 7_500);
 
@@ -34,7 +39,12 @@ describe("reputation unlocks", () => {
       "operations:pricing-automation",
       "operations:premium-segments",
     ]);
-    expect(operations.unlockedContent).toEqual(["existing:content"]);
+    expect(operations.unlockedContent).toEqual([
+      "existing:content",
+      "operations:pricing-automation",
+      "existing:content",
+      "operations:pricing-automation",
+    ]);
   });
 
   it("preserves earned content and maximum reputation after reputation falls or state reloads", () => {

@@ -1,6 +1,13 @@
 import type { Difficulty, LoanState } from "./operationsTypes";
 
 const MAX_SAFE = BigInt(Number.MAX_SAFE_INTEGER);
+export const DAILY_SETTLEMENT_SAFETY_LOAN_ID = "safety-loan:daily-settlement";
+export const DEPARTMENT_TRAINING_SAFETY_LOAN_ID = "safety-loan:department-training";
+const RESERVED_SAFETY_LOAN_IDS = new Set([
+  DAILY_SETTLEMENT_SAFETY_LOAN_ID,
+  DEPARTMENT_TRAINING_SAFETY_LOAN_ID,
+]);
+const SAFETY_LOAN_DAILY_INTEREST_BPS = 10;
 
 export interface LoanRequest {
   id: string;
@@ -31,10 +38,13 @@ function validateId(id: string): void {
 export function validateLoan(loan: Readonly<LoanState>): void {
   validateId(loan.id);
   assertInteger(loan.principalCents, "贷款本金", 1);
-  assertInteger(loan.outstandingCents, "贷款余额", 0);
+  assertInteger(loan.outstandingCents, "贷款余额", 1);
   if (loan.outstandingCents > loan.principalCents) throw new Error("贷款余额不能超过本金");
   assertInteger(loan.dailyInterestBps, "贷款日利率", 0, 10_000);
   assertInteger(loan.minimumPaymentCents, "贷款最低还款", 1);
+  if (loan.minimumPaymentCents > loan.outstandingCents) {
+    throw new Error("贷款最低还款不能超过贷款余额");
+  }
 }
 
 export function validateLoans(loans: ReadonlyArray<Readonly<LoanState>>): void {
@@ -49,6 +59,7 @@ export function validateLoans(loans: ReadonlyArray<Readonly<LoanState>>): void {
 export function validateLoanRequest(request: Readonly<LoanRequest>, existing: ReadonlyArray<Readonly<LoanState>>): void {
   validateLoans(existing);
   validateId(request.id);
+  if (RESERVED_SAFETY_LOAN_IDS.has(request.id)) throw new Error("安全贷款编号为系统保留");
   assertInteger(request.amountCents, "贷款金额", 1);
   assertInteger(request.dailyInterestBps, "贷款日利率", 0, 10_000);
   assertInteger(request.termDays, "贷款期限", 1);
@@ -103,8 +114,8 @@ export function applyLoanRepayment(
     if (outstandingCents === 0) return [];
     return [{
       ...item,
-      principalCents: item.principalCents - amountCents,
       outstandingCents,
+      minimumPaymentCents: Math.min(item.minimumPaymentCents, outstandingCents),
     }];
   }).sort(compareIds);
 }
@@ -119,6 +130,7 @@ export function coverCasualShortfall(
   assertInteger(costCents, "成本", 0);
   validateLoans(loans);
   validateId(safetyLoanId);
+  if (!RESERVED_SAFETY_LOAN_IDS.has(safetyLoanId)) throw new Error("安全贷款编号无效");
   const borrowedCents = Math.max(0, costCents - cashCents);
   const endingCashCents = Math.max(0, cashCents - costCents);
   const existingIndex = loans.findIndex(({ id }) => id === safetyLoanId);
@@ -126,13 +138,16 @@ export function coverCasualShortfall(
     return { borrowedCents, endingCashCents, loans: loans.map((loan) => ({ ...loan })).sort(compareIds) };
   }
   const existing = existingIndex < 0 ? undefined : loans[existingIndex];
+  if (existing && existing.dailyInterestBps !== SAFETY_LOAN_DAILY_INTEREST_BPS) {
+    throw new Error("安全贷款合同无效");
+  }
   const principalCents = safeNumber(BigInt(existing?.principalCents ?? 0) + BigInt(borrowedCents), "安全贷款本金");
   const outstandingCents = safeNumber(BigInt(existing?.outstandingCents ?? 0) + BigInt(borrowedCents), "安全贷款余额");
   const safetyLoan: LoanState = {
     id: safetyLoanId,
     principalCents,
     outstandingCents,
-    dailyInterestBps: 10,
+    dailyInterestBps: SAFETY_LOAN_DAILY_INTEREST_BPS,
     minimumPaymentCents: Math.max(1, Math.trunc(outstandingCents / 100)),
   };
   const next = existingIndex < 0
@@ -174,7 +189,12 @@ export function projectOperationsFinance(input: Readonly<OperationsFinanceInput>
     throw new Error("现金不足以完成经营结算");
   }
   const covered = input.difficulty === "casual"
-    ? coverCasualShortfall(availableCash, totalCostCents, settlement.loans, input.safetyLoanId ?? "safety-loan:daily-settlement")
+    ? coverCasualShortfall(
+        availableCash,
+        totalCostCents,
+        settlement.loans,
+        input.safetyLoanId ?? DAILY_SETTLEMENT_SAFETY_LOAN_ID,
+      )
     : { borrowedCents: 0, endingCashCents: availableCash - totalCostCents, loans: settlement.loans };
   return {
     interestCents: settlement.interestCents,

@@ -44,10 +44,9 @@ import {
   applyLoanRepayment,
   coverCasualShortfall,
   createLoan,
+  DEPARTMENT_TRAINING_SAFETY_LOAN_ID,
   type LoanRequest,
 } from "../domain/operations/finance";
-
-const DEPARTMENT_TRAINING_SAFETY_LOAN_ID = "safety-loan:department-training";
 
 function clampBps(value: number): number {
   return Math.max(0, Math.min(10_000, Math.trunc(value)));
@@ -161,8 +160,8 @@ export function createGameCommands(savePort: SavePort) {
     ): Promise<GameState> {
       const operations = state.operations;
       if (!operations) throw new Error("经营系统尚未初始化");
-      const loan = createLoan(request, operations.loans);
       const currentCashCents = assertSafeMoney(state.cashCents);
+      const loan = createLoan(request, operations.loans);
       const nextCash = BigInt(currentCashCents) + BigInt(loan.principalCents);
       if (nextCash > BigInt(Number.MAX_SAFE_INTEGER)) throw new Error("金额超出安全整数范围");
       return persist(state, {
@@ -183,11 +182,12 @@ export function createGameCommands(savePort: SavePort) {
     ): Promise<GameState> {
       const operations = state.operations;
       if (!operations) throw new Error("经营系统尚未初始化");
+      const currentCashCents = assertSafeMoney(state.cashCents);
       const loans = applyLoanRepayment(operations.loans, loanId, amountCents);
-      if (amountCents > state.cashCents) throw new Error("现金不足以偿还贷款");
+      if (amountCents > currentCashCents) throw new Error("现金不足以偿还贷款");
       return persist(state, {
         ...state,
-        cashCents: assertSafeMoney(state.cashCents - amountCents),
+        cashCents: currentCashCents - amountCents,
         operations: { ...operations, loans },
       });
     },
@@ -236,24 +236,25 @@ export function createGameCommands(savePort: SavePort) {
       validateDepartmentConfiguration(input);
       const operations = state.operations;
       if (!operations) throw new Error("经营系统尚未初始化");
+      const currentCashCents = assertSafeMoney(state.cashCents);
       const previous = operations.departments[input.id];
       if (!previous) throw new Error("部门配置不完整");
       const trainingCostCents = calculateTrainingCostCents(
         previous.trainingBps,
         input.trainingBps,
       );
-      if (operations.difficulty === "management" && trainingCostCents > state.cashCents) {
+      if (operations.difficulty === "management" && trainingCostCents > currentCashCents) {
         throw new Error("现金不足以支付一次性培训费用");
       }
       const payment = operations.difficulty === "casual"
         ? coverCasualShortfall(
-            state.cashCents,
+            currentCashCents,
             trainingCostCents,
             operations.loans,
             DEPARTMENT_TRAINING_SAFETY_LOAN_ID,
           )
         : {
-            endingCashCents: state.cashCents - trainingCostCents,
+            endingCashCents: currentCashCents - trainingCostCents,
             loans: operations.loans.map((loan) => ({ ...loan })),
           };
       const nextDepartment = structuredClone(input);
