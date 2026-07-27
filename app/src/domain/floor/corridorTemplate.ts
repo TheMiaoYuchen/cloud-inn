@@ -4,6 +4,7 @@ import type {
   GridPoint,
   RoomVariant,
 } from "../design/designTypes";
+import { assertStableId } from "../building/buildingTypes";
 
 export type CorridorTemplateKind = "complete-ring" | "partial-ring";
 
@@ -117,6 +118,53 @@ export function createCorridorTemplate(kind: CorridorTemplateKind): CorridorTemp
       y: RING_MIN + 1 + index,
     })),
     slots: makeSlots(kind),
+  };
+}
+
+export function createDenseGuestFloorTemplate(input: {
+  floorId: string;
+  slotsPerSide?: number;
+}): CorridorTemplate {
+  const floorId = assertStableId(input.floorId);
+  const slotsPerSide = input.slotsPerSide ?? 8;
+  if (!Number.isInteger(slotsPerSide) || slotsPerSide < 6 || slotsPerSide > 8) {
+    throw new Error("每侧槽位必须是 6-8 之间的整数");
+  }
+  const offset = Math.floor((8 - slotsPerSide) * 2);
+  const anchors = Array.from(
+    { length: slotsPerSide },
+    (_, index) => 16 + offset + index * 4,
+  );
+  const slot = (
+    side: "north" | "east" | "south" | "west",
+    index: number,
+    anchor: GridPoint,
+    width: number,
+    height: number,
+  ): CorridorSlot => ({
+    id: `${floorId}:slot:${side}:${String(index + 1).padStart(2, "0")}`,
+    anchor,
+    width,
+    height,
+  });
+
+  return {
+    id: `dense-guest:${floorId}`,
+    name: "高密度中央核心筒环廊",
+    width: 64,
+    height: 64,
+    core: makeCore(),
+    corridor: makeRing("complete-ring"),
+    entrances: Array.from({ length: CORE_MIN - RING_MIN - 1 }, (_, index) => ({
+      x: 31,
+      y: RING_MIN + 1 + index,
+    })),
+    slots: [
+      ...anchors.map((x, index) => slot("north", index, { x, y: 9 }, 4, 6)),
+      ...anchors.map((y, index) => slot("east", index, { x: 49, y }, 6, 4)),
+      ...anchors.map((x, index) => slot("south", index, { x, y: 49 }, 4, 6)),
+      ...anchors.map((y, index) => slot("west", index, { x: 9, y }, 6, 4)),
+    ],
   };
 }
 

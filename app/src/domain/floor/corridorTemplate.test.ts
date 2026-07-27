@@ -4,6 +4,7 @@ import type { CorridorTemplate } from "../design/designTypes";
 import {
   analyzeCorridorTemplate,
   createCorridorTemplate,
+  createDenseGuestFloorTemplate,
   createRoomFootprint,
   validateCorridorTemplate,
 } from "./corridorTemplate";
@@ -106,6 +107,32 @@ describe("createCorridorTemplate", () => {
       expect(validateCorridorTemplate(template)).toEqual({ ok: true, reasons: [] });
     },
   );
+});
+
+describe("createDenseGuestFloorTemplate", () => {
+  it("creates 32 deterministic true-size outer slots around a connected ring", () => {
+    const first = createDenseGuestFloorTemplate({
+      floorId: "floor:28",
+      slotsPerSide: 8,
+    });
+    const second = createDenseGuestFloorTemplate({
+      floorId: "floor:28",
+      slotsPerSide: 8,
+    });
+
+    expect(first).toEqual(second);
+    expect(first.id).toBe("dense-guest:floor:28");
+    expect(first.slots).toHaveLength(32);
+    expect(new Set(first.slots.map(({ id }) => id)).size).toBe(32);
+    expect(first.slots.every(({ width, height }) => width * height === 24)).toBe(true);
+    expect(validateCorridorTemplate(first)).toEqual({ ok: true, reasons: [] });
+  });
+
+  it("rejects invalid floor IDs and density bounds", () => {
+    expect(() => createDenseGuestFloorTemplate({ floorId: "Floor 28", slotsPerSide: 8 })).toThrow("稳定 ID");
+    expect(() => createDenseGuestFloorTemplate({ floorId: "floor:28", slotsPerSide: 5 })).toThrow("每侧槽位");
+    expect(() => createDenseGuestFloorTemplate({ floorId: "floor:28", slotsPerSide: 8.5 })).toThrow("每侧槽位");
+  });
 });
 
 describe("createRoomFootprint", () => {
