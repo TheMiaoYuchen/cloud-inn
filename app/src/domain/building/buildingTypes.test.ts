@@ -174,6 +174,19 @@ describe("Phase 4 state contracts", () => {
       ),
     ).toHaveLength(6);
     expect(
+      Object.values(phase4?.facilities ?? {})
+        .filter((facility) => facility.status === "operating")
+        .map((facility) => facility.type)
+        .sort(),
+    ).toEqual([
+      "all-day-dining",
+      "ballroom",
+      "bar",
+      "chinese-restaurant",
+      "gym",
+      "spa",
+    ] satisfies PublicSpaceType[]);
+    expect(
       Object.values(phase4?.facilities ?? {}).map((facility) => facility.type),
     ).toEqual([
       "all-day-dining",
@@ -324,6 +337,7 @@ describe("Phase 4 state contracts", () => {
     );
     const facility = facilities.find((candidate) => candidate.type === type)!;
 
+    expect(facility.policy).toBeNull();
     expect(facility.menuSelection).toBeNull();
     expect(facility.policy?.signatureOfferingId).toBeUndefined();
     expect(facility.developedOfferingIds).toEqual([]);

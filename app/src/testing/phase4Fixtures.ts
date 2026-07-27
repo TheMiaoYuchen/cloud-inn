@@ -36,9 +36,14 @@ const FACILITY_TYPES: readonly PublicSpaceType[] = [
   "boutique",
 ];
 
-const OPERATING_FACILITY_TYPES = new Set<PublicSpaceType>(
-  FACILITY_TYPES.slice(0, 6),
-);
+const OPERATING_FACILITY_TYPES = new Set<PublicSpaceType>([
+  "all-day-dining",
+  "chinese-restaurant",
+  "bar",
+  "spa",
+  "ballroom",
+  "gym",
+]);
 
 const RESTAURANT_TYPES = new Set<PublicSpaceType>([
   "all-day-dining",
@@ -205,14 +210,17 @@ function createPublicSpaceRecords(floors: HotelFloor[]): {
         enabled: OPERATING_FACILITY_TYPES.has(type),
         dailyOperatingCostCents: 50_000 + index * 2_500,
         segmentInputs: createSegmentInputs(),
-        policy: {
-          positioningId: assertStableId(`positioning:${type}:standard`),
-          priceBandId: assertStableId("price-band:premium"),
-          capacity: 20 + index * 5,
-          openingPolicyId: assertStableId("opening-policy:daily"),
-          serviceBudgetCents: 50_000 + index * 2_500,
-          signatureOfferingId,
-        },
+        policy:
+          RESTAURANT_TYPES.has(type) || SERVICE_PACKAGE_TYPES.has(type)
+            ? {
+                positioningId: assertStableId(`positioning:${type}:standard`),
+                priceBandId: assertStableId("price-band:premium"),
+                capacity: 20 + index * 5,
+                openingPolicyId: assertStableId("opening-policy:daily"),
+                serviceBudgetCents: 50_000 + index * 2_500,
+                signatureOfferingId,
+              }
+            : null,
         menuSelection: RESTAURANT_TYPES.has(type)
           ? {
               menuStructureId: assertStableId(`menu:${type}:standard`),
