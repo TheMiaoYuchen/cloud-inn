@@ -18,7 +18,7 @@ impl SaveRepository {
         let conn = self.open(save_id)?;
         let row = conn
             .query_row(
-                "SELECT schema_version,ruleset_version,revision,phase,current_day,cash_cents,rate_cents,phase2_json,latest_report_json FROM saves WHERE save_id=?1",
+                "SELECT schema_version,ruleset_version,revision,phase,current_day,cash_cents,rate_cents,phase2_json,latest_report_json,operations_json FROM saves WHERE save_id=?1",
                 [save_id],
                 |r| {
                     Ok((
@@ -26,12 +26,15 @@ impl SaveRepository {
                         r.get::<_, String>(3)?, r.get::<_, i64>(4)?, r.get::<_, i64>(5)?,
                         r.get::<_, i64>(6)?, r.get::<_, Option<String>>(7)?,
                         r.get::<_, Option<String>>(8)?,
+                        r.get::<_, Option<String>>(9)?,
                     ))
                 },
             )
             .optional()
             .map_err(db_err)?;
-        let Some((schema, ruleset, revision, phase, day, cash, rate, phase2, latest)) = row else {
+        let Some((schema, ruleset, revision, phase, day, cash, rate, phase2, latest, operations)) =
+            row
+        else {
             return Ok(None);
         };
         let blueprint = conn
@@ -63,6 +66,9 @@ impl SaveRepository {
         if let Some(raw) = phase2 {
             game["phase2"] = parse_json(raw)?;
         }
+        if let Some(raw) = operations {
+            game["operations"] = parse_json(raw)?;
+        }
         validate_game(&game)?;
         Ok(Some(game))
     }
@@ -92,7 +98,7 @@ impl SaveRepository {
         if current != expected_revision || fields.revision != next_revision {
             return Err("存档已更新，请重新加载".to_string());
         }
-        tx.execute("INSERT INTO saves(save_id,schema_version,ruleset_version,revision,phase,current_day,cash_cents,rate_cents,phase2_json,latest_report_json,updated_at) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,datetime('now')) ON CONFLICT(save_id) DO UPDATE SET schema_version=excluded.schema_version,ruleset_version=excluded.ruleset_version,revision=excluded.revision,phase=excluded.phase,current_day=excluded.current_day,cash_cents=excluded.cash_cents,rate_cents=excluded.rate_cents,phase2_json=excluded.phase2_json,latest_report_json=excluded.latest_report_json,updated_at=excluded.updated_at", params![save_id, fields.schema_version, fields.ruleset, fields.revision, fields.phase, fields.current_day, fields.cash_cents, fields.rate_cents, fields.phase2, fields.latest_report]).map_err(db_err)?;
+        tx.execute("INSERT INTO saves(save_id,schema_version,ruleset_version,revision,phase,current_day,cash_cents,rate_cents,phase2_json,latest_report_json,operations_json,updated_at) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,datetime('now')) ON CONFLICT(save_id) DO UPDATE SET schema_version=excluded.schema_version,ruleset_version=excluded.ruleset_version,revision=excluded.revision,phase=excluded.phase,current_day=excluded.current_day,cash_cents=excluded.cash_cents,rate_cents=excluded.rate_cents,phase2_json=excluded.phase2_json,latest_report_json=excluded.latest_report_json,operations_json=excluded.operations_json,updated_at=excluded.updated_at", params![save_id, fields.schema_version, fields.ruleset, fields.revision, fields.phase, fields.current_day, fields.cash_cents, fields.rate_cents, fields.phase2, fields.latest_report, fields.operations]).map_err(db_err)?;
         tx.execute("DELETE FROM room_instances WHERE save_id=?1", [&save_id])
             .map_err(db_err)?;
         tx.execute("DELETE FROM room_blueprints WHERE save_id=?1", [&save_id])
@@ -139,6 +145,7 @@ impl SaveRepository {
         migrate_legacy(&mut conn)?;
         migrate_phase2(&mut conn)?;
         migrate_blueprint_openings(&mut conn)?;
+        migrate_operations(&mut conn)?;
         Ok(conn)
     }
 }
@@ -229,6 +236,27 @@ fn migrate_blueprint_openings(conn: &mut Connection) -> Result<(), String> {
     }
     tx.execute(
         "INSERT OR IGNORE INTO schema_migrations(version,applied_at) VALUES(4,datetime('now'))",
+        [],
+    )
+    .map_err(db_err)?;
+    tx.commit().map_err(db_err)
+}
+
+fn migrate_operations(conn: &mut Connection) -> Result<(), String> {
+    let tx = conn
+        .transaction_with_behavior(TransactionBehavior::Immediate)
+        .map_err(db_err)?;
+    let has_operations = tx
+        .prepare("SELECT 1 FROM pragma_table_info('saves') WHERE name='operations_json'")
+        .map_err(db_err)?
+        .exists([])
+        .map_err(db_err)?;
+    if !has_operations {
+        tx.execute("ALTER TABLE saves ADD COLUMN operations_json TEXT", [])
+            .map_err(db_err)?;
+    }
+    tx.execute(
+        "INSERT OR IGNORE INTO schema_migrations(version,applied_at) VALUES(5,datetime('now'))",
         [],
     )
     .map_err(db_err)?;
@@ -612,6 +640,7 @@ struct Fields {
     rate_cents: i64,
     latest_report: Option<String>,
     phase2: Option<String>,
+    operations: Option<String>,
     blueprint: Option<Blueprint>,
     rooms: Vec<Room>,
     reports: Vec<(i64, String)>,
@@ -652,6 +681,13 @@ fn validate_game(g: &Value) -> Result<Fields, String> {
     let phase2 = match g.get("phase2") {
         Some(Value::Null) | None => None,
         Some(value) => Some(validate_phase2(value)?),
+    };
+    let operations = match g.get("operations") {
+        Some(Value::Null) | None => None,
+        Some(value) => {
+            validate_operations(value, current_day, cash_cents)?;
+            Some(serde_json::to_string(value).map_err(|_| "存档数据损坏".to_string())?)
+        }
     };
     let latest_report = match g.get("latestReport") {
         Some(Value::Null) | None => None,
@@ -777,10 +813,598 @@ fn validate_game(g: &Value) -> Result<Fields, String> {
         rate_cents,
         latest_report,
         phase2,
+        operations,
         blueprint,
         rooms,
         reports,
     })
+}
+
+const JS_MAX_SAFE_INTEGER: i64 = 9_007_199_254_740_991;
+const OPERATIONS_DEPARTMENTS: [&str; 6] = [
+    "frontOffice",
+    "housekeeping",
+    "foodAndBeverage",
+    "engineering",
+    "security",
+    "guestRelations",
+];
+const OPERATIONS_SEGMENTS: [&str; 6] = [
+    "business",
+    "couple",
+    "family",
+    "leisure",
+    "high-net-worth",
+    "cultural-experience",
+];
+const OPERATIONS_UNLOCKS: [&str; 3] = [
+    "operations:pricing-automation",
+    "operations:premium-segments",
+    "operations:signature-service",
+];
+
+fn operations_object(value: &Value) -> Result<&serde_json::Map<String, Value>, String> {
+    value
+        .as_object()
+        .ok_or_else(|| "经营存档数据损坏".to_string())
+}
+
+fn operations_array<'a>(value: &'a Value, key: &str) -> Result<&'a Vec<Value>, String> {
+    obj(value, key)?
+        .as_array()
+        .ok_or_else(|| "经营存档数据损坏".to_string())
+}
+
+fn operations_string<'a>(value: &'a Value, key: &str) -> Result<&'a str, String> {
+    obj(value, key)?
+        .as_str()
+        .filter(|text| !text.is_empty() && text.trim() == *text)
+        .ok_or_else(|| "经营存档数据损坏".to_string())
+}
+
+fn operations_int(value: &Value, key: &str, minimum: i64, maximum: i64) -> Result<i64, String> {
+    let number = obj(value, key)?
+        .as_i64()
+        .ok_or_else(|| "经营存档数据损坏".to_string())?;
+    if number < minimum || number > maximum || number > JS_MAX_SAFE_INTEGER {
+        return Err("经营存档数据损坏".into());
+    }
+    Ok(number)
+}
+
+fn operations_optional_int(
+    value: &Value,
+    key: &str,
+    minimum: i64,
+    maximum: i64,
+) -> Result<Option<i64>, String> {
+    value
+        .get(key)
+        .map(|_| operations_int(value, key, minimum, maximum))
+        .transpose()
+}
+
+fn operations_bps(value: &Value, key: &str) -> Result<i64, String> {
+    operations_int(value, key, 0, 10_000)
+}
+
+fn checked_sum(values: impl IntoIterator<Item = i64>) -> Result<i64, String> {
+    let total = values.into_iter().map(i128::from).sum::<i128>();
+    if total < -i128::from(JS_MAX_SAFE_INTEGER) || total > i128::from(JS_MAX_SAFE_INTEGER) {
+        Err("经营存档数据损坏".into())
+    } else {
+        Ok(total as i64)
+    }
+}
+
+fn operations_one_of(value: &Value, key: &str, allowed: &[&str]) -> Result<String, String> {
+    let candidate = operations_string(value, key)?;
+    if !allowed.contains(&candidate) {
+        return Err("经营存档数据损坏".into());
+    }
+    Ok(candidate.to_string())
+}
+
+fn validate_operations_departments(value: &Value) -> Result<(), String> {
+    let departments = operations_object(value)?;
+    if departments.len() != OPERATIONS_DEPARTMENTS.len()
+        || OPERATIONS_DEPARTMENTS
+            .iter()
+            .any(|id| !departments.contains_key(*id))
+    {
+        return Err("经营存档数据损坏".into());
+    }
+    let specialties: HashMap<&str, [&str; 2]> = HashMap::from([
+        ("frontOffice", ["arrival-flow", "front-desk-care"]),
+        ("housekeeping", ["room-turnover", "quality-control"]),
+        ("foodAndBeverage", ["dining-throughput", "menu-quality"]),
+        ("engineering", ["preventive-maintenance", "rapid-repair"]),
+        ("security", ["risk-prevention", "emergency-response"]),
+        ("guestRelations", ["personalized-care", "service-recovery"]),
+    ]);
+    for id in OPERATIONS_DEPARTMENTS {
+        let department = &departments[id];
+        if operations_string(department, "id")? != id {
+            return Err("经营存档数据损坏".into());
+        }
+        operations_int(department, "staffing", 0, 500)?;
+        operations_int(department, "dailyBudgetCents", 0, 100_000_000)?;
+        operations_bps(department, "trainingBps")?;
+        operations_bps(department, "serviceStandardBps")?;
+        if let Some(specialty) = department.get("leaderSpecialty") {
+            if !specialties[id].contains(
+                &specialty
+                    .as_str()
+                    .ok_or_else(|| "经营存档数据损坏".to_string())?,
+            ) {
+                return Err("经营存档数据损坏".into());
+            }
+        }
+    }
+    Ok(())
+}
+
+fn validate_operations_prices(value: &Value) -> Result<(), String> {
+    for (key, policy) in operations_object(value)? {
+        if key.is_empty() || key.trim() != key || operations_string(policy, "roomOfferId")? != key {
+            return Err("经营存档数据损坏".into());
+        }
+        let nightly = operations_int(policy, "nightlyRateCents", 0, JS_MAX_SAFE_INTEGER)?;
+        let explicit = [
+            "baseRateCents",
+            "minRateCents",
+            "maxRateCents",
+            "automaticPricing",
+        ]
+        .iter()
+        .any(|field| policy.get(*field).is_some());
+        if explicit {
+            let base = operations_int(policy, "baseRateCents", 1, JS_MAX_SAFE_INTEGER)?;
+            let minimum = operations_int(policy, "minRateCents", 1, JS_MAX_SAFE_INTEGER)?;
+            let maximum = operations_int(policy, "maxRateCents", 1, JS_MAX_SAFE_INTEGER)?;
+            if obj(policy, "automaticPricing")?.as_bool().is_none()
+                || minimum > base
+                || base > maximum
+                || nightly < minimum
+                || nightly > maximum
+            {
+                return Err("经营存档数据损坏".into());
+            }
+        }
+    }
+    Ok(())
+}
+
+fn upgrade_rule(kind: &str, level: i64) -> Option<(i64, i64)> {
+    match (kind, level) {
+        ("workspace", 1) => Some((120_000, 2)),
+        ("workspace", 2) => Some((200_000, 3)),
+        ("view", 1) => Some((180_000, 2)),
+        ("view", 2) => Some((280_000, 3)),
+        ("familyCapacity", 1) => Some((160_000, 2)),
+        ("familyCapacity", 2) => Some((240_000, 3)),
+        ("privacy", 1) => Some((150_000, 2)),
+        ("privacy", 2) => Some((240_000, 3)),
+        _ => None,
+    }
+}
+
+fn validate_operations_upgrades(value: &Value, current_day: i64) -> Result<(), String> {
+    for (key, upgrade) in operations_object(value)? {
+        let room_offer_id = operations_string(upgrade, "roomOfferId")?;
+        let upgrade_id = operations_string(upgrade, "upgradeId")?;
+        let level = operations_int(upgrade, "level", 1, JS_MAX_SAFE_INTEGER)?;
+        let Some(kind_value) = upgrade.get("kind") else {
+            continue;
+        };
+        let kind = kind_value
+            .as_str()
+            .ok_or_else(|| "经营存档数据损坏".to_string())?;
+        let (cost, closure_days) =
+            upgrade_rule(kind, level).ok_or_else(|| "经营存档数据损坏".to_string())?;
+        let committed_day = operations_int(upgrade, "committedDay", 0, current_day)?;
+        let remaining = operations_int(upgrade, "remainingClosureDays", 0, JS_MAX_SAFE_INTEGER)?;
+        if upgrade_id != kind
+            || key != &format!("{room_offer_id}:{kind}")
+            || operations_int(upgrade, "costCents", 0, JS_MAX_SAFE_INTEGER)? != cost
+            || remaining != (closure_days - (current_day - committed_day)).max(0)
+        {
+            return Err("经营存档数据损坏".into());
+        }
+    }
+    Ok(())
+}
+
+fn validate_operations_loans(value: &Value) -> Result<(), String> {
+    let mut ids = HashSet::new();
+    let reserved = [
+        "safety-loan:daily-settlement",
+        "safety-loan:department-training",
+        "safety-loan:room-renovation",
+    ];
+    for loan in value
+        .as_array()
+        .ok_or_else(|| "经营存档数据损坏".to_string())?
+    {
+        let id = operations_string(loan, "id")?;
+        if !ids.insert(id) {
+            return Err("经营存档数据损坏".into());
+        }
+        let principal = operations_int(loan, "principalCents", 1, JS_MAX_SAFE_INTEGER)?;
+        let outstanding = operations_int(loan, "outstandingCents", 1, principal)?;
+        let interest = operations_bps(loan, "dailyInterestBps")?;
+        operations_int(loan, "minimumPaymentCents", 1, outstanding)?;
+        if reserved.contains(&id) && interest != 10 {
+            return Err("经营存档数据损坏".into());
+        }
+    }
+    Ok(())
+}
+
+fn validate_operations_need(value: &Value, current_day: i64) -> Result<(), String> {
+    operations_string(value, "id")?;
+    operations_one_of(value, "segmentId", &OPERATIONS_SEGMENTS)?;
+    operations_one_of(value, "kind", &["room-feature", "service", "price"])?;
+    operations_int(value, "discoveredDay", 0, current_day)?;
+    operations_bps(value, "strengthBps")?;
+    Ok(())
+}
+
+#[derive(Clone, Copy)]
+struct OperationsDailyTotals {
+    day: i64,
+    revenue: i64,
+    operating: i64,
+    finance: i64,
+    net: i64,
+    cash: i64,
+    reputation: i64,
+    available: i64,
+    sold: i64,
+    occupancy: i64,
+}
+
+fn validate_operations_daily(
+    value: &Value,
+    current_day: i64,
+) -> Result<OperationsDailyTotals, String> {
+    let day = operations_int(value, "day", 1, 30)?;
+    let mut segment_ids = HashSet::new();
+    let mut segment_revenue = Vec::new();
+    let mut segment_sold = Vec::new();
+    for segment in operations_array(value, "segments")? {
+        let id = operations_one_of(segment, "segmentId", &OPERATIONS_SEGMENTS)?;
+        if !segment_ids.insert(id) {
+            return Err("经营存档数据损坏".into());
+        }
+        operations_int(segment, "demand", 0, JS_MAX_SAFE_INTEGER)?;
+        segment_sold.push(operations_int(
+            segment,
+            "soldRooms",
+            0,
+            JS_MAX_SAFE_INTEGER,
+        )?);
+        operations_int(segment, "averageRateCents", 0, JS_MAX_SAFE_INTEGER)?;
+        segment_revenue.push(operations_int(
+            segment,
+            "revenueCents",
+            0,
+            JS_MAX_SAFE_INTEGER,
+        )?);
+        operations_bps(segment, "satisfactionBps")?;
+    }
+    let revenue = operations_int(value, "revenueCents", 0, JS_MAX_SAFE_INTEGER)?;
+    let operating = operations_int(value, "operatingCostCents", 0, JS_MAX_SAFE_INTEGER)?;
+    let finance = operations_int(value, "financeCostCents", 0, JS_MAX_SAFE_INTEGER)?;
+    let net = operations_int(
+        value,
+        "netIncomeCents",
+        -JS_MAX_SAFE_INTEGER,
+        JS_MAX_SAFE_INTEGER,
+    )?;
+    let cash = operations_int(value, "endingCashCents", 0, JS_MAX_SAFE_INTEGER)?;
+    let reputation = operations_bps(value, "reputationBps")?;
+    if checked_sum(segment_revenue)? != revenue
+        || checked_sum([revenue, -operating, -finance])? != net
+        || operations_optional_int(value, "roomRevenueCents", 0, JS_MAX_SAFE_INTEGER)?
+            .is_some_and(|stored| stored != revenue)
+        || operations_optional_int(value, "departmentCostCents", 0, JS_MAX_SAFE_INTEGER)?
+            .is_some_and(|stored| stored != operating)
+        || operations_optional_int(value, "loanInterestCents", 0, JS_MAX_SAFE_INTEGER)?
+            .is_some_and(|stored| stored != finance)
+    {
+        return Err("经营存档数据损坏".into());
+    }
+    operations_optional_int(value, "cashShortfallCents", 0, JS_MAX_SAFE_INTEGER)?;
+    let available =
+        operations_optional_int(value, "availableRooms", 0, JS_MAX_SAFE_INTEGER)?.unwrap_or(0);
+    let segment_sold = checked_sum(segment_sold)?;
+    let sold = operations_optional_int(value, "soldRooms", 0, JS_MAX_SAFE_INTEGER)?
+        .unwrap_or(segment_sold);
+    let occupancy = operations_optional_int(value, "occupancyBps", 0, 10_000)?.unwrap_or(0);
+    if value.get("soldRooms").is_some() && sold != segment_sold {
+        return Err("经营存档数据损坏".into());
+    }
+    let expected_occupancy = if available == 0 {
+        0
+    } else {
+        ((i128::from(sold) * 10_000) / i128::from(available)) as i64
+    };
+    if sold > available || (value.get("occupancyBps").is_some() && occupancy != expected_occupancy)
+    {
+        return Err("经营存档数据损坏".into());
+    }
+    operations_optional_int(value, "reputationDeltaBps", -10_000, 10_000)?;
+    for lost in value
+        .get("lostBookings")
+        .map(|items| {
+            items
+                .as_array()
+                .ok_or_else(|| "经营存档数据损坏".to_string())
+        })
+        .transpose()?
+        .unwrap_or(&Vec::new())
+    {
+        operations_one_of(lost, "segmentId", &OPERATIONS_SEGMENTS)?;
+        operations_one_of(
+            lost,
+            "code",
+            &["hard-requirement", "price", "service", "no-inventory"],
+        )?;
+        operations_int(lost, "count", 0, JS_MAX_SAFE_INTEGER)?;
+        operations_string(lost, "explanation")?;
+    }
+    for review in value
+        .get("reviews")
+        .map(|items| {
+            items
+                .as_array()
+                .ok_or_else(|| "经营存档数据损坏".to_string())
+        })
+        .transpose()?
+        .unwrap_or(&Vec::new())
+    {
+        operations_one_of(review, "segmentId", &OPERATIONS_SEGMENTS)?;
+        operations_bps(review, "ratingBps")?;
+        operations_string(review, "text")?;
+    }
+    for booking in value
+        .get("bookings")
+        .map(|items| {
+            items
+                .as_array()
+                .ok_or_else(|| "经营存档数据损坏".to_string())
+        })
+        .transpose()?
+        .unwrap_or(&Vec::new())
+    {
+        operations_one_of(booking, "segmentId", &OPERATIONS_SEGMENTS)?;
+        operations_string(booking, "roomId")?;
+        operations_string(booking, "offerId")?;
+        operations_int(booking, "rateCents", 0, JS_MAX_SAFE_INTEGER)?;
+    }
+    for need in value
+        .get("discoveredNeeds")
+        .map(|items| {
+            items
+                .as_array()
+                .ok_or_else(|| "经营存档数据损坏".to_string())
+        })
+        .transpose()?
+        .unwrap_or(&Vec::new())
+    {
+        validate_operations_need(need, current_day)?;
+    }
+    Ok(OperationsDailyTotals {
+        day,
+        revenue,
+        operating,
+        finance,
+        net,
+        cash,
+        reputation,
+        available,
+        sold,
+        occupancy,
+    })
+}
+
+fn validate_operations_aggregate(
+    value: &Value,
+    reports: &[OperationsDailyTotals],
+    number_key: &str,
+    number: i64,
+) -> Result<(), String> {
+    let first = reports
+        .first()
+        .ok_or_else(|| "经营存档数据损坏".to_string())?;
+    let last = reports
+        .last()
+        .ok_or_else(|| "经营存档数据损坏".to_string())?;
+    let revenue = checked_sum(reports.iter().map(|report| report.revenue))?;
+    let operating = checked_sum(reports.iter().map(|report| report.operating))?;
+    let finance = checked_sum(reports.iter().map(|report| report.finance))?;
+    let net = checked_sum(reports.iter().map(|report| report.net))?;
+    let available = checked_sum(reports.iter().map(|report| report.available))?;
+    let sold = checked_sum(reports.iter().map(|report| report.sold))?;
+    let occupancy =
+        checked_sum(reports.iter().map(|report| report.occupancy))? / reports.len() as i64;
+    let reputation =
+        checked_sum(reports.iter().map(|report| report.reputation))? / reports.len() as i64;
+    if operations_int(value, number_key, 1, 4)? != number
+        || operations_int(value, "startDay", 1, 30)? != first.day
+        || operations_int(value, "endDay", 1, 30)? != last.day
+        || operations_int(value, "revenueCents", 0, JS_MAX_SAFE_INTEGER)? != revenue
+        || operations_int(
+            value,
+            "netIncomeCents",
+            -JS_MAX_SAFE_INTEGER,
+            JS_MAX_SAFE_INTEGER,
+        )? != net
+        || operations_optional_int(value, "operatingCostCents", 0, JS_MAX_SAFE_INTEGER)?
+            .is_some_and(|stored| stored != operating)
+        || operations_optional_int(value, "financeCostCents", 0, JS_MAX_SAFE_INTEGER)?
+            .is_some_and(|stored| stored != finance)
+        || operations_optional_int(value, "availableRooms", 0, JS_MAX_SAFE_INTEGER)?
+            .is_some_and(|stored| stored != available)
+        || operations_optional_int(value, "soldRooms", 0, JS_MAX_SAFE_INTEGER)?
+            .is_some_and(|stored| stored != sold)
+        || operations_optional_int(value, "averageOccupancyBps", 0, 10_000)?
+            .is_some_and(|stored| stored != occupancy)
+        || operations_optional_int(value, "reputationBps", 0, 10_000)?
+            .is_some_and(|stored| stored != reputation)
+    {
+        return Err("经营存档数据损坏".into());
+    }
+    if number_key == "week"
+        && (value.get("averageOccupancyBps").is_none() || value.get("reputationBps").is_none())
+    {
+        return Err("经营存档数据损坏".into());
+    }
+    if number_key == "month"
+        && (operations_int(value, "debtPaymentCents", 0, JS_MAX_SAFE_INTEGER)? != finance
+            || operations_int(value, "endingCashCents", 0, JS_MAX_SAFE_INTEGER)? != last.cash)
+    {
+        return Err("经营存档数据损坏".into());
+    }
+    if let Some(code) = value.get("topReasonCode") {
+        let code = code
+            .as_str()
+            .ok_or_else(|| "经营存档数据损坏".to_string())?;
+        if ![
+            "hard-requirement",
+            "price",
+            "service",
+            "no-inventory",
+            "none",
+        ]
+        .contains(&code)
+        {
+            return Err("经营存档数据损坏".into());
+        }
+    }
+    for key in ["topResultCode", "suggestedActionCode"] {
+        if value.get(key).is_some() {
+            operations_string(value, key)?;
+        }
+    }
+    Ok(())
+}
+
+fn validate_operations(value: &Value, current_day: i64, cash_cents: i64) -> Result<(), String> {
+    operations_object(value)?;
+    if operations_string(value, "rulesetVersion")? != "operations-v1" {
+        return Err("经营存档数据损坏".into());
+    }
+    operations_one_of(value, "difficulty", &["casual", "management"])?;
+    let reputation = operations_bps(value, "reputationBps")?;
+    let maximum_reputation = operations_bps(value, "maximumReputationBps")?;
+    if maximum_reputation < reputation || current_day > 30 {
+        return Err("经营存档数据损坏".into());
+    }
+    validate_operations_departments(obj(value, "departments")?)?;
+    validate_operations_prices(obj(value, "pricePolicies")?)?;
+    validate_operations_upgrades(obj(value, "offerUpgrades")?, current_day)?;
+    validate_operations_loans(obj(value, "loans")?)?;
+    let mut need_ids = HashSet::new();
+    for need in operations_array(value, "discoveredNeeds")? {
+        validate_operations_need(need, current_day)?;
+        if !need_ids.insert(operations_string(need, "id")?) {
+            return Err("经营存档数据损坏".into());
+        }
+    }
+    if let Some(mix) = value.get("segmentMix") {
+        let mut total = 0;
+        for (segment, bps) in operations_object(mix)? {
+            if !OPERATIONS_SEGMENTS.contains(&segment.as_str()) {
+                return Err("经营存档数据损坏".into());
+            }
+            let value = bps
+                .as_i64()
+                .filter(|number| (0..=10_000).contains(number))
+                .ok_or_else(|| "经营存档数据损坏".to_string())?;
+            total += value;
+        }
+        if total != 0 && total != 10_000 {
+            return Err("经营存档数据损坏".into());
+        }
+    }
+    let daily_values = operations_array(value, "dailyReports")?;
+    if daily_values.len() > 30 {
+        return Err("经营存档数据损坏".into());
+    }
+    let mut daily = Vec::new();
+    for report in daily_values {
+        let totals = validate_operations_daily(report, current_day)?;
+        if daily
+            .last()
+            .is_some_and(|prior: &OperationsDailyTotals| totals.day <= prior.day)
+        {
+            return Err("经营存档数据损坏".into());
+        }
+        daily.push(totals);
+    }
+    if let Some(last) = daily.last() {
+        if last.day != current_day || last.cash != cash_cents || last.reputation != reputation {
+            return Err("经营存档数据损坏".into());
+        }
+    }
+    let daily_by_day = daily
+        .iter()
+        .map(|report| (report.day, *report))
+        .collect::<HashMap<_, _>>();
+    let expected_weeks = (1..=4)
+        .filter_map(|week| {
+            let reports = (((week - 1) * 7 + 1)..=week * 7)
+                .map(|day| daily_by_day.get(&day).copied())
+                .collect::<Option<Vec<_>>>()?;
+            Some((week, reports))
+        })
+        .collect::<Vec<_>>();
+    let weekly = operations_array(value, "weeklyReports")?;
+    if weekly.len() != expected_weeks.len() {
+        return Err("经营存档数据损坏".into());
+    }
+    for (index, (week, reports)) in expected_weeks.iter().enumerate() {
+        validate_operations_aggregate(&weekly[index], reports, "week", *week)?;
+    }
+    let closes = operations_array(value, "monthlyCloses")?;
+    let month = (1..=30)
+        .map(|day| daily_by_day.get(&day).copied())
+        .collect::<Option<Vec<_>>>();
+    if closes.len() != usize::from(month.is_some()) {
+        return Err("经营存档数据损坏".into());
+    }
+    if let Some(month) = month {
+        validate_operations_aggregate(&closes[0], &month, "month", 1)?;
+    }
+    let mut unlocks = HashSet::new();
+    for unlock in operations_array(value, "unlockedContent")? {
+        let key = unlock
+            .as_str()
+            .filter(|key| OPERATIONS_UNLOCKS.contains(key))
+            .ok_or_else(|| "经营存档数据损坏".to_string())?;
+        if !unlocks.insert(key) {
+            return Err("经营存档数据损坏".into());
+        }
+    }
+    let speed = operations_int(value, "timeSpeed", 0, 4)?;
+    if ![0, 1, 2, 4].contains(&speed) {
+        return Err("经营存档数据损坏".into());
+    }
+    let checkpoint = match obj(value, "lastOfflineCheckpointMs")? {
+        Value::Null => None,
+        _ => Some(operations_int(
+            value,
+            "lastOfflineCheckpointMs",
+            0,
+            JS_MAX_SAFE_INTEGER,
+        )?),
+    };
+    if current_day == 30 && (speed != 0 || checkpoint.is_none()) {
+        return Err("经营存档数据损坏".into());
+    }
+    Ok(())
 }
 
 fn validate_phase2(value: &Value) -> Result<String, String> {
@@ -1029,6 +1653,96 @@ mod tests {
     fn game() -> Value {
         json!({"schemaVersion":1,"rulesetVersion":"prototype-v1","saveId":"save-1","revision":1,"phase":"design","currentDay":0,"cashCents":100,"rateCents":10,"roomBlueprint":null,"floor":{"id":"prototype-floor","rooms":[]},"reports":[],"latestReport":null})
     }
+    fn operations_departments() -> Value {
+        json!({
+            "frontOffice": {"id":"frontOffice","staffing":0,"dailyBudgetCents":0,"trainingBps":0,"serviceStandardBps":5000},
+            "housekeeping": {"id":"housekeeping","staffing":0,"dailyBudgetCents":0,"trainingBps":0,"serviceStandardBps":5000},
+            "foodAndBeverage": {"id":"foodAndBeverage","staffing":0,"dailyBudgetCents":0,"trainingBps":0,"serviceStandardBps":5000},
+            "engineering": {"id":"engineering","staffing":0,"dailyBudgetCents":0,"trainingBps":0,"serviceStandardBps":5000},
+            "security": {"id":"security","staffing":0,"dailyBudgetCents":0,"trainingBps":0,"serviceStandardBps":5000},
+            "guestRelations": {"id":"guestRelations","staffing":0,"dailyBudgetCents":0,"trainingBps":0,"serviceStandardBps":5000}
+        })
+    }
+    fn minimal_operations() -> Value {
+        json!({
+            "rulesetVersion":"operations-v1",
+            "difficulty":"casual",
+            "reputationBps":5000,
+            "departments":operations_departments(),
+            "pricePolicies":{},
+            "offerUpgrades":{},
+            "loans":[],
+            "discoveredNeeds":[],
+            "dailyReports":[],
+            "weeklyReports":[],
+            "monthlyCloses":[],
+            "maximumReputationBps":5000,
+            "unlockedContent":[],
+            "timeSpeed":0,
+            "lastOfflineCheckpointMs":null
+        })
+    }
+    fn operations_daily(day: i64) -> Value {
+        json!({
+            "day":day,
+            "segments":[{"segmentId":"business","demand":2,"soldRooms":1,"averageRateCents":1000,"revenueCents":1000,"satisfactionBps":5000 + day}],
+            "revenueCents":1000,"operatingCostCents":100,"financeCostCents":10,"netIncomeCents":890,
+            "endingCashCents":1_000_000 + day,"reputationBps":5000 + day,
+            "availableRooms":2,"soldRooms":1,"occupancyBps":5000,
+            "departmentCostCents":100,"roomRevenueCents":1000,"loanInterestCents":10,"cashShortfallCents":0,
+            "lostBookings":[{"segmentId":"couple","code":"price","count":1,"explanation":"rate"}],
+            "reviews":[{"segmentId":"business","ratingBps":5000 + day,"text":"ok"}],
+            "bookings":[{"segmentId":"business","roomId":"room-1","offerId":"offer-1","rateCents":1000}],
+            "reputationDeltaBps":1,
+            "discoveredNeeds":[]
+        })
+    }
+    fn operations_week(week: i64) -> Value {
+        let start_day = (week - 1) * 7 + 1;
+        let end_day = week * 7;
+        json!({
+            "week":week,"startDay":start_day,"endDay":end_day,
+            "revenueCents":7000,"operatingCostCents":700,"financeCostCents":70,"netIncomeCents":6230,
+            "availableRooms":14,"soldRooms":7,"averageOccupancyBps":5000,
+            "reputationBps":5000 + (start_day + end_day) / 2,
+            "topResultCode":"segment:business","topReasonCode":"price","suggestedActionCode":"adjust-pricing"
+        })
+    }
+    fn full_operations_game() -> Value {
+        let daily = (1..=30).map(operations_daily).collect::<Vec<_>>();
+        let legacy = (1..=30).map(|day| json!({"day":day})).collect::<Vec<_>>();
+        let mut operations = minimal_operations();
+        operations["dailyReports"] = json!(daily);
+        operations["weeklyReports"] = json!((1..=4).map(operations_week).collect::<Vec<_>>());
+        operations["monthlyCloses"] = json!([{
+            "month":1,"startDay":1,"endDay":30,"revenueCents":30000,"operatingCostCents":3000,
+            "financeCostCents":300,"netIncomeCents":26700,"debtPaymentCents":300,
+            "availableRooms":60,"soldRooms":30,"averageOccupancyBps":5000,"reputationBps":5015,
+            "endingCashCents":1_000_030,"topResultCode":"segment:business","topReasonCode":"price",
+            "suggestedActionCode":"adjust-pricing"
+        }]);
+        operations["reputationBps"] = json!(5030);
+        operations["maximumReputationBps"] = json!(6000);
+        operations["unlockedContent"] = json!(["operations:pricing-automation"]);
+        operations["timeSpeed"] = json!(0);
+        operations["lastOfflineCheckpointMs"] = json!(30_000);
+        operations["pricePolicies"] = json!({"offer-1":{
+            "roomOfferId":"offer-1","nightlyRateCents":1000,"baseRateCents":1000,
+            "minRateCents":800,"maxRateCents":1200,"automaticPricing":true
+        }});
+        operations["offerUpgrades"] = json!({
+            "offer-1:workspace":{"roomOfferId":"offer-1","upgradeId":"workspace","kind":"workspace","level":1,"remainingClosureDays":0,"committedDay":2,"costCents":120000},
+            "legacy":{"roomOfferId":"removed-offer","upgradeId":"old-custom","level":42}
+        });
+        operations["loans"] = json!([{"id":"loan-1","principalCents":10000,"outstandingCents":5000,"dailyInterestBps":100,"minimumPaymentCents":500}]);
+        let mut state = game();
+        state["currentDay"] = json!(30);
+        state["cashCents"] = json!(1_000_030);
+        state["reports"] = json!(legacy);
+        state["latestReport"] = json!({"day":30});
+        state["operations"] = operations;
+        state
+    }
     fn blueprint_game(revision: i64, rooms: Value) -> Value {
         let mut g = game();
         g["revision"] = json!(revision);
@@ -1123,8 +1837,394 @@ mod tests {
                 .unwrap()
                 .query_row::<i64, _, _>("SELECT count(*) FROM schema_migrations", [], |x| x.get(0))
                 .unwrap(),
-            4
+            5
         );
+    }
+    #[test]
+    fn operations_are_optional_and_minimal_state_is_valid() {
+        assert!(validate_game(&game()).is_ok());
+        let mut state = game();
+        state["operations"] = minimal_operations();
+        assert!(validate_game(&state).is_ok());
+    }
+
+    #[test]
+    fn operations_allow_history_that_starts_after_a_legacy_game_day() {
+        let mut state = game();
+        state["currentDay"] = json!(5);
+        state["cashCents"] = json!(1_000_005);
+        state["reports"] = json!((1..=5).map(|day| json!({"day":day})).collect::<Vec<_>>());
+        state["latestReport"] = json!({"day":5});
+        let mut operations = minimal_operations();
+        operations["dailyReports"] = json!([operations_daily(5)]);
+        operations["reputationBps"] = json!(5005);
+        operations["maximumReputationBps"] = json!(5005);
+        state["operations"] = operations;
+
+        assert!(validate_game(&state).is_ok());
+    }
+
+    #[test]
+    fn operations_day_30_round_trips_through_sqlite() {
+        let repository = SaveRepository::new(root("operations-roundtrip"));
+        let state = full_operations_game();
+
+        repository.commit_game(0, state.clone()).unwrap();
+
+        assert_eq!(repository.load_game("save-1").unwrap(), Some(state));
+    }
+
+    #[test]
+    fn operations_reject_invalid_scalars_catalogs_and_history() {
+        let mutations: Vec<SnapshotMutation> = vec![
+            (
+                "ruleset",
+                Box::new(|g| g["operations"]["rulesetVersion"] = json!("operations-v2")),
+            ),
+            (
+                "difficulty",
+                Box::new(|g| g["operations"]["difficulty"] = json!("expert")),
+            ),
+            (
+                "missing department",
+                Box::new(|g| {
+                    g["operations"]["departments"]
+                        .as_object_mut()
+                        .unwrap()
+                        .remove("security");
+                }),
+            ),
+            (
+                "extra department",
+                Box::new(|g| g["operations"]["departments"]["spa"] = json!({"id":"spa"})),
+            ),
+            (
+                "department mismatch",
+                Box::new(|g| {
+                    g["operations"]["departments"]["security"]["id"] = json!("engineering")
+                }),
+            ),
+            (
+                "unsafe money",
+                Box::new(|g| {
+                    g["operations"]["departments"]["security"]["dailyBudgetCents"] =
+                        json!(9_007_199_254_740_992_i64)
+                }),
+            ),
+            (
+                "fraction bps",
+                Box::new(|g| g["operations"]["reputationBps"] = json!(1.5)),
+            ),
+            (
+                "bps range",
+                Box::new(|g| g["operations"]["reputationBps"] = json!(10001)),
+            ),
+            (
+                "speed",
+                Box::new(|g| g["operations"]["timeSpeed"] = json!(3)),
+            ),
+            (
+                "negative checkpoint",
+                Box::new(|g| g["operations"]["lastOfflineCheckpointMs"] = json!(-1)),
+            ),
+            (
+                "unsafe checkpoint",
+                Box::new(|g| {
+                    g["operations"]["lastOfflineCheckpointMs"] = json!(9_007_199_254_740_992_i64)
+                }),
+            ),
+            (
+                "day 30 speed",
+                Box::new(|g| g["operations"]["timeSpeed"] = json!(1)),
+            ),
+            (
+                "day 30 checkpoint",
+                Box::new(|g| g["operations"]["lastOfflineCheckpointMs"] = Value::Null),
+            ),
+            (
+                "unknown segment",
+                Box::new(|g| {
+                    g["operations"]["dailyReports"][0]["segments"][0]["segmentId"] = json!("vip")
+                }),
+            ),
+            (
+                "duplicate day",
+                Box::new(|g| g["operations"]["dailyReports"][1]["day"] = json!(1)),
+            ),
+            (
+                "nonmonotonic day",
+                Box::new(|g| {
+                    g["operations"]["dailyReports"]
+                        .as_array_mut()
+                        .unwrap()
+                        .swap(1, 2)
+                }),
+            ),
+            (
+                "too many days",
+                Box::new(|g| {
+                    g["operations"]["dailyReports"]
+                        .as_array_mut()
+                        .unwrap()
+                        .push(operations_daily(31))
+                }),
+            ),
+            (
+                "outer day mismatch",
+                Box::new(|g| g["currentDay"] = json!(29)),
+            ),
+            (
+                "outer cash mismatch",
+                Box::new(|g| g["cashCents"] = json!(1_000_031)),
+            ),
+            (
+                "operations reputation mismatch",
+                Box::new(|g| g["operations"]["reputationBps"] = json!(5029)),
+            ),
+        ];
+        for (label, mutate) in mutations {
+            let mut malformed = full_operations_game();
+            mutate(&mut malformed);
+            assert!(validate_game(&malformed).is_err(), "{label}");
+        }
+    }
+
+    #[test]
+    fn operations_reject_inconsistent_daily_and_periodic_reports() {
+        let mutations: Vec<SnapshotMutation> = vec![
+            (
+                "segment sum",
+                Box::new(|g| g["operations"]["dailyReports"][0]["revenueCents"] = json!(1001)),
+            ),
+            (
+                "net total",
+                Box::new(|g| g["operations"]["dailyReports"][0]["netIncomeCents"] = json!(891)),
+            ),
+            (
+                "room revenue",
+                Box::new(|g| g["operations"]["dailyReports"][0]["roomRevenueCents"] = json!(999)),
+            ),
+            (
+                "department cost",
+                Box::new(|g| g["operations"]["dailyReports"][0]["departmentCostCents"] = json!(99)),
+            ),
+            (
+                "finance cost",
+                Box::new(|g| g["operations"]["dailyReports"][0]["loanInterestCents"] = json!(9)),
+            ),
+            (
+                "invalid review",
+                Box::new(|g| {
+                    g["operations"]["dailyReports"][0]["reviews"][0]["ratingBps"] = json!(10001)
+                }),
+            ),
+            (
+                "invalid booking",
+                Box::new(|g| {
+                    g["operations"]["dailyReports"][0]["bookings"][0]["rateCents"] = json!(-1)
+                }),
+            ),
+            (
+                "invalid lost code",
+                Box::new(|g| {
+                    g["operations"]["dailyReports"][0]["lostBookings"][0]["code"] = json!("unknown")
+                }),
+            ),
+            (
+                "missing weekly",
+                Box::new(|g| {
+                    g["operations"]["weeklyReports"]
+                        .as_array_mut()
+                        .unwrap()
+                        .pop();
+                }),
+            ),
+            (
+                "weekly number",
+                Box::new(|g| g["operations"]["weeklyReports"][0]["week"] = json!(2)),
+            ),
+            (
+                "weekly window",
+                Box::new(|g| g["operations"]["weeklyReports"][0]["startDay"] = json!(2)),
+            ),
+            (
+                "weekly total",
+                Box::new(|g| g["operations"]["weeklyReports"][0]["revenueCents"] = json!(7001)),
+            ),
+            (
+                "weekly reputation",
+                Box::new(|g| g["operations"]["weeklyReports"][0]["reputationBps"] = json!(5005)),
+            ),
+            (
+                "monthly duplicate",
+                Box::new(|g| {
+                    let close = g["operations"]["monthlyCloses"][0].clone();
+                    g["operations"]["monthlyCloses"]
+                        .as_array_mut()
+                        .unwrap()
+                        .push(close);
+                }),
+            ),
+            (
+                "monthly boundary",
+                Box::new(|g| g["operations"]["monthlyCloses"][0]["endDay"] = json!(29)),
+            ),
+            (
+                "monthly total",
+                Box::new(|g| g["operations"]["monthlyCloses"][0]["netIncomeCents"] = json!(26701)),
+            ),
+            (
+                "monthly cash",
+                Box::new(|g| {
+                    g["operations"]["monthlyCloses"][0]["endingCashCents"] = json!(1_000_031)
+                }),
+            ),
+        ];
+        for (label, mutate) in mutations {
+            let mut malformed = full_operations_game();
+            mutate(&mut malformed);
+            assert!(validate_game(&malformed).is_err(), "{label}");
+        }
+    }
+
+    #[test]
+    fn operations_reject_invalid_finance_upgrades_unlocks_and_market_state() {
+        let mutations: Vec<SnapshotMutation> = vec![
+            (
+                "empty loan",
+                Box::new(|g| g["operations"]["loans"][0]["id"] = json!("")),
+            ),
+            (
+                "duplicate loan",
+                Box::new(|g| {
+                    let loan = g["operations"]["loans"][0].clone();
+                    g["operations"]["loans"].as_array_mut().unwrap().push(loan);
+                }),
+            ),
+            (
+                "zero balance",
+                Box::new(|g| g["operations"]["loans"][0]["outstandingCents"] = json!(0)),
+            ),
+            (
+                "balance principal",
+                Box::new(|g| g["operations"]["loans"][0]["outstandingCents"] = json!(10001)),
+            ),
+            (
+                "payment balance",
+                Box::new(|g| g["operations"]["loans"][0]["minimumPaymentCents"] = json!(5001)),
+            ),
+            (
+                "reserved contract",
+                Box::new(|g| {
+                    g["operations"]["loans"][0]["id"] = json!("safety-loan:daily-settlement")
+                }),
+            ),
+            (
+                "price key",
+                Box::new(|g| {
+                    g["operations"]["pricePolicies"]["offer-1"]["roomOfferId"] = json!("offer-2")
+                }),
+            ),
+            (
+                "price range",
+                Box::new(|g| {
+                    g["operations"]["pricePolicies"]["offer-1"]["minRateCents"] = json!(1001)
+                }),
+            ),
+            (
+                "price money",
+                Box::new(|g| {
+                    g["operations"]["pricePolicies"]["offer-1"]["nightlyRateCents"] = json!(-1)
+                }),
+            ),
+            (
+                "upgrade missing",
+                Box::new(|g| {
+                    g["operations"]["offerUpgrades"]["offer-1:workspace"]
+                        .as_object_mut()
+                        .unwrap()
+                        .remove("costCents");
+                }),
+            ),
+            (
+                "upgrade key",
+                Box::new(|g| {
+                    let value = g["operations"]["offerUpgrades"]["offer-1:workspace"].take();
+                    g["operations"]["offerUpgrades"]["bad"] = value;
+                }),
+            ),
+            (
+                "upgrade id",
+                Box::new(|g| {
+                    g["operations"]["offerUpgrades"]["offer-1:workspace"]["upgradeId"] =
+                        json!("view")
+                }),
+            ),
+            (
+                "upgrade kind",
+                Box::new(|g| {
+                    g["operations"]["offerUpgrades"]["offer-1:workspace"]["kind"] = json!("pool")
+                }),
+            ),
+            (
+                "upgrade closure",
+                Box::new(|g| {
+                    g["operations"]["offerUpgrades"]["offer-1:workspace"]["remainingClosureDays"] =
+                        json!(3)
+                }),
+            ),
+            (
+                "upgrade cost",
+                Box::new(|g| {
+                    g["operations"]["offerUpgrades"]["offer-1:workspace"]["costCents"] = json!(1)
+                }),
+            ),
+            (
+                "upgrade day",
+                Box::new(|g| {
+                    g["operations"]["offerUpgrades"]["offer-1:workspace"]["committedDay"] =
+                        json!(31)
+                }),
+            ),
+            (
+                "maximum reputation",
+                Box::new(|g| g["operations"]["maximumReputationBps"] = json!(5029)),
+            ),
+            (
+                "duplicate unlock",
+                Box::new(|g| {
+                    g["operations"]["unlockedContent"] = json!([
+                        "operations:pricing-automation",
+                        "operations:pricing-automation"
+                    ])
+                }),
+            ),
+            (
+                "unknown unlock",
+                Box::new(|g| g["operations"]["unlockedContent"] = json!(["unknown"])),
+            ),
+            (
+                "unknown need",
+                Box::new(
+                    |g| g["operations"]["discoveredNeeds"] = json!([{"id":"n","segmentId":"vip","kind":"service","discoveredDay":1,"strengthBps":1}]),
+                ),
+            ),
+            (
+                "duplicate need",
+                Box::new(
+                    |g| g["operations"]["discoveredNeeds"] = json!([{"id":"n","segmentId":"business","kind":"service","discoveredDay":1,"strengthBps":1},{"id":"n","segmentId":"business","kind":"price","discoveredDay":2,"strengthBps":1}]),
+                ),
+            ),
+            (
+                "segment mix",
+                Box::new(|g| g["operations"]["segmentMix"] = json!({"business":5000,"vip":5000})),
+            ),
+        ];
+        for (label, mutate) in mutations {
+            let mut malformed = full_operations_game();
+            mutate(&mut malformed);
+            assert!(validate_game(&malformed).is_err(), "{label}");
+        }
     }
     #[test]
     fn commits_and_loads_full_state() {
