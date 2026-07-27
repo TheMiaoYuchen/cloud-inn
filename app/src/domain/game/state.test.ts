@@ -17,6 +17,10 @@ describe("createNewGame", () => {
     expect(state.revision).toBe(0);
     expect(state.operations).toBeUndefined();
   });
+
+  it("keeps Phase 4 optional for all legacy saves", () => {
+    expect(createNewGame("legacy").phase4).toBeUndefined();
+  });
 });
 
 describe("assertSafeMoney", () => {
