@@ -352,7 +352,7 @@ git commit -m "feat: add operations finance and reputation"
 
 - [ ] **Step 1: Write failing reporting and offline tests**
 
-Assert daily summary every day, one weekly report at days 7/14/21/28, one monthly close at day 30, exact aggregate totals, pause/1x/2x/4x validation, fake-timer advancement at each speed, no advancement while paused, zero-day offline result, seven-day cap, startup elapsed calculation, checkpoint update, and deterministic equivalence between batch and repeated daily settlement.
+Assert daily summary every day, one weekly report at days 7/14/21/28, one monthly close at day 30, exact aggregate totals, pause/1x/2x/4x validation, fake-timer advancement at each speed, no advancement while paused, zero-day offline result, seven-day cap, startup elapsed calculation, checkpoint update, deterministic equivalence between batch and repeated daily settlement, and a live timer advance followed by reload that does not settle the same elapsed interval twice.
 
 - [ ] **Step 2: Run focused tests and confirm RED**
 
@@ -368,7 +368,7 @@ Export `offlineDaysForElapsed(elapsedMs, millisecondsPerGameDay)` and `settleOff
 
 - [ ] **Step 5: Add commands and provider exposure**
 
-Add `setTimeSpeed`, `advanceOperationsDays`, `settleOffline`, and `checkpointOfflineTime`. The provider serializes them through the existing command queue. `useOperationsClock` owns the application timer, converts 1x/2x/4x into documented real-time intervals, dispatches one serialized day at each interval, and is verified with fake timers; no timer or wall-clock read enters domain code. During provider initialization, the application receives an injectable `nowMs`, computes elapsed time from `lastOfflineCheckpointMs`, settles at most seven offline days, then atomically stores the new checkpoint before exposing the loaded state.
+Add `setTimeSpeed`, `advanceOperationsDays`, `settleOffline`, and `checkpointOfflineTime`. Every live, manual, batch, and offline advancement receives an application-supplied `nowMs` and moves `lastOfflineCheckpointMs` in the same persisted commit as its reports and cash, so reload cannot double-settle elapsed time. The provider serializes them through the existing command queue. `useOperationsClock` owns the application timer, converts 1x/2x/4x into documented real-time intervals, dispatches one serialized day with the current injected application time at each interval, and is verified with fake timers; no timer or wall-clock read enters domain code. During provider initialization, the application receives an injectable `nowMs`, computes elapsed time from `lastOfflineCheckpointMs`, settles at most seven offline days, then atomically stores the new checkpoint before exposing the loaded state. Visibility suspension also checkpoints through the same serialized command.
 
 - [ ] **Step 6: Verify 30-day report boundaries and compatibility**
 
@@ -425,7 +425,7 @@ git commit -m "feat: add explainable room renovation"
 
 - [ ] **Step 1: Write failing native and browser malformed-state tests**
 
-Test a legal Phase 3 30-day round-trip plus rejection of unknown segment/department/difficulty, duplicate report days, invalid week/month boundaries, unsafe money/basis points, report totals inconsistent with daily entries, invalid loans, and more than seven offline-settlement days.
+Test a legal Phase 3 30-day round-trip plus rejection of unknown segment/department/difficulty, duplicate report days, invalid week/month boundaries, unsafe money/basis points, report totals inconsistent with daily entries, invalid loans, malformed `offerUpgrades`, negative or inconsistent renovation closure days, `maximumReputationBps` below current reputation, duplicate/unknown `unlockedContent`, invalid checkpoint values/order, and more than seven offline-settlement days.
 
 - [ ] **Step 2: Run focused tests and confirm RED**
 
