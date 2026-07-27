@@ -87,22 +87,21 @@ const QUALITY_SPECIALTIES = new Set<LeaderSpecialtyId>([
 
 function leaderCapacityBonusBps(
   specialty: LeaderSpecialtyId | undefined,
-  defaultSpecialty: LeaderSpecialtyId,
 ): number {
-  return QUALITY_SPECIALTIES.has(specialty ?? defaultSpecialty) ? 166 : 333;
+  if (specialty === undefined) return 0;
+  return QUALITY_SPECIALTIES.has(specialty) ? 166 : 333;
 }
 
 function leaderMoraleBonusBps(
   specialty: LeaderSpecialtyId | undefined,
-  defaultSpecialty: LeaderSpecialtyId,
 ): number {
-  return QUALITY_SPECIALTIES.has(specialty ?? defaultSpecialty) ? 666 : 333;
+  if (specialty === undefined) return 0;
+  return QUALITY_SPECIALTIES.has(specialty) ? 666 : 333;
 }
 
 function qualityBps(
   department: Readonly<DepartmentState>,
   recommendedBudgetPerPersonCents: number,
-  defaultSpecialty: LeaderSpecialtyId,
 ): number {
   const budgetTarget = department.staffing * recommendedBudgetPerPersonCents;
   const budgetSupportBps = budgetTarget === 0
@@ -113,7 +112,7 @@ function qualityBps(
       Math.trunc(department.trainingBps / 5) +
       Math.trunc(department.serviceStandardBps / 6) +
       budgetSupportBps +
-      leaderCapacityBonusBps(department.leaderSpecialty, defaultSpecialty),
+      leaderCapacityBonusBps(department.leaderSpecialty),
   );
 }
 
@@ -141,7 +140,6 @@ export function calculateServiceCapacity(
     const quality = qualityBps(
       department,
       item.recommendedBudgetPerPersonCents,
-      item.leaderSpecialties[0].id,
     );
     const capacityBps = demandRooms === 0
       ? 10_000
@@ -149,11 +147,9 @@ export function calculateServiceCapacity(
     const overloadPenalty = Math.trunc(((10_000 - workloadBps) * 2 + 2) / 3);
     const capacityLeaderBonus = leaderCapacityBonusBps(
       department.leaderSpecialty,
-      item.leaderSpecialties[0].id,
     );
     const moraleLeaderBonus = leaderMoraleBonusBps(
       department.leaderSpecialty,
-      item.leaderSpecialties[0].id,
     );
     return {
       id: item.id,

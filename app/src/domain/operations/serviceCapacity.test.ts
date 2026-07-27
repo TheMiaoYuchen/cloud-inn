@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import { DEPARTMENT_IDS } from "./operationsTypes";
 import {
+  calculateTrainingCostCents,
   DEPARTMENT_CATALOG,
   validateDepartmentConfiguration,
 } from "./departmentCatalog";
@@ -68,6 +69,15 @@ describe("department catalog", () => {
         [field]: value,
       }),
     ).toThrow(message);
+  });
+
+  it.each([
+    [Number.NaN, 1_000],
+    [0, Number.MAX_SAFE_INTEGER + 1],
+    [-1, 1_000],
+    [0, 10_001],
+  ])("rejects invalid training cost inputs %s -> %s", (previous, next) => {
+    expect(() => calculateTrainingCostCents(previous, next)).toThrow("培训水平");
   });
 });
 
@@ -159,6 +169,25 @@ describe("service capacity", () => {
 
     expect(throughput.capacityBps).toBeGreaterThan(quality.capacityBps);
     expect(quality.moraleBps).toBeGreaterThan(throughput.moraleBps);
+  });
+
+  it("grants no specialty bonus until a department leader is appointed", () => {
+    const withoutLeader = configuredDepartments();
+    delete withoutLeader.housekeeping.leaderSpecialty;
+    const appointed = structuredClone(withoutLeader);
+    appointed.housekeeping.leaderSpecialty = "quality-control";
+
+    const unledResult = calculateServiceCapacity(withoutLeader, {
+      occupiedRooms: 80,
+      availableRooms: 100,
+    }).departments.find(({ id }) => id === "housekeeping")!;
+    const appointedResult = calculateServiceCapacity(appointed, {
+      occupiedRooms: 80,
+      availableRooms: 100,
+    }).departments.find(({ id }) => id === "housekeeping")!;
+
+    expect(appointedResult.capacityBps).toBeGreaterThan(unledResult.capacityBps);
+    expect(appointedResult.moraleBps).toBeGreaterThan(unledResult.moraleBps);
   });
 
   it("keeps zero-room and high-load results finite, integer, and stably ordered", () => {

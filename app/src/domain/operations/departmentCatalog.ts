@@ -49,6 +49,16 @@ export function calculateTrainingCostCents(
   previousTrainingBps: number,
   nextTrainingBps: number,
 ): number {
+  assertBoundedInteger(
+    previousTrainingBps,
+    DEPARTMENT_LIMITS.trainingBps,
+    "培训水平",
+  );
+  assertBoundedInteger(
+    nextTrainingBps,
+    DEPARTMENT_LIMITS.trainingBps,
+    "培训水平",
+  );
   return Math.max(0, nextTrainingBps - previousTrainingBps) * TRAINING_COST_PER_BPS_CENTS;
 }
 
