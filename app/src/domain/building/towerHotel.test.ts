@@ -1,7 +1,10 @@
 import { describe, expect, it } from "vitest";
 
 import { createOperationsState } from "../operations/createOperationsState";
-import { createCorridorTemplate, getTransformedRoomSize } from "../floor/corridorTemplate";
+import { createRoomMaster, createRoomVariants } from "../design/roomSeries";
+import { CONTEMPORARY_ORIENTAL } from "../design/stylePresets";
+import { createCorridorTemplate } from "../floor/corridorTemplate";
+import { createRectangle } from "../room/grid";
 import { createNewGame, type GameState } from "../game/state";
 import { assertStableId } from "./buildingTypes";
 import { createPhase4AcceptanceState } from "../../testing/phase4Fixtures";
@@ -91,45 +94,38 @@ describe("tower hotel", () => {
   it("migrates actual Phase 3 floor placements without changing selected transforms or progress", () => {
     const legacy = openedLegacyFixture();
     const corridorTemplate = createCorridorTemplate("complete-ring");
-    const variant = {
-      id: "room-blueprint:standard-twin",
-      name: "标准双床房",
-      masterId: legacy.roomBlueprint!.id,
-      cells: Array.from({ length: 24 }, (_, index) => ({
-        x: index % 4,
-        y: Math.floor(index / 4),
-        zone: index % 4 === 3 ? "bathroom" as const : "bedroom" as const,
-      })),
-      rotation: 0 as const,
-      mirrored: false,
-      overrides: ["bedType" as const],
-      gene: {
-        palette: "cloud-neutral",
-        materials: ["oak"],
-        metal: "brass",
-        lighting: "warm",
-        mood: "calm",
-      },
-      variantKind: "twin" as const,
-      metrics: legacy.roomBlueprint!.metrics,
-    };
+    const master = createRoomMaster({
+      id: "room-master:standard",
+      name: "标准客房母版",
+      columns: 8,
+      rows: 12,
+      cells: [
+        ...createRectangle(0, 0, 8, 9, "bedroom"),
+        ...createRectangle(0, 9, 8, 3, "bathroom"),
+      ],
+      gene: CONTEMPORARY_ORIENTAL.gene,
+    });
+    const variants = createRoomVariants(master);
+    const variant = variants.find(({ variantKind }) => variantKind === "twin")!;
+    expect(master.metrics.areaSquareMeters).toBe(24);
+    expect(variant.metrics.areaSquareMeters).toBe(24);
     legacy.phase2 = {
-      hotelGene: variant.gene,
-      roomMaster: null,
-      roomVariants: [variant],
+      hotelGene: master.gene,
+      roomMaster: master,
+      roomVariants: variants,
       corridorTemplate,
       floorPlacements: corridorTemplate.slots.map((slot, index) => ({
         slotId: slot.id,
         variantId: variant.id,
-        rotation: (index % 2 === 0 ? 0 : 90) as 0 | 90,
+        rotation: (slot.width >= 8 && slot.height >= 12 ? 0 : 90) as 0 | 90,
         mirrored: index % 3 === 0,
       })),
     };
     legacy.floor.rooms = corridorTemplate.slots.map((slot, index) => ({
       id: `room-${slot.id}`,
       slotId: slot.id,
-      roomBlueprintId: legacy.roomBlueprint!.id,
-      committedBuildCostCents: 2_400_000 + index,
+      roomBlueprintId: master.id,
+      committedBuildCostCents: variant.metrics.buildCostCents + index,
     }));
     legacy.operations!.reputationBps = 7_123;
     legacy.operations!.maximumReputationBps = 7_123;
@@ -158,18 +154,30 @@ describe("tower hotel", () => {
       const slot = corridorTemplate.slots.find(({ id }) => id === placement.slotId)!;
       expect(migrated).toMatchObject({
         id: placement.slotId,
-        roomBlueprintId: legacy.roomBlueprint!.id,
+        roomBlueprintId: master.id,
         variantId: placement.variantId,
         anchorX: slot.anchor.x,
         anchorY: slot.anchor.y,
-        ...getTransformedRoomSize(variant.cells, placement.rotation),
+        width: placement.rotation === 0 ? 4 : 6,
+        height: placement.rotation === 0 ? 6 : 4,
         rotation: placement.rotation,
         mirrored: placement.mirrored,
       });
+      expect(migrated.width * migrated.height).toBe(
+        variant.metrics.areaSquareMeters,
+      );
       expect(guestFloor.rooms.find(({ localPlacementId }) => localPlacementId === placement.slotId)).toMatchObject({
-        roomBlueprintId: legacy.roomBlueprint!.id,
+        roomBlueprintId: master.id,
         variantId: placement.variantId,
       });
+    }
+    const designIds = new Set([
+      legacy.phase2.roomMaster!.id,
+      ...legacy.phase2.roomVariants.map(({ id }) => id),
+    ]);
+    for (const room of guestFloor.rooms) {
+      expect(designIds).toContain(room.roomBlueprintId);
+      expect(designIds).toContain(room.variantId);
     }
     expect(upgraded.cashCents).toBe(cash);
     expect(upgraded.operations?.reputationBps).toBe(7_123);
@@ -214,6 +222,88 @@ describe("tower hotel", () => {
     };
 
     expect(() => upgradeLegacyToPhase4(legacy)).toThrow("二期放置不完整");
+  });
+
+  it("rejects a non-rectangular generated Phase 3 variant instead of fabricating area", () => {
+    const legacy = openedLegacyFixture();
+    const master = createRoomMaster({
+      id: "room-master:irregular",
+      name: "不规则母版",
+      columns: 8,
+      rows: 12,
+      cells: [
+        ...createRectangle(0, 0, 8, 9, "bedroom"),
+        ...createRectangle(0, 9, 8, 3, "bathroom"),
+      ],
+      gene: CONTEMPORARY_ORIENTAL.gene,
+    });
+    const variants = createRoomVariants(master);
+    variants[0] = {
+      ...variants[0],
+      cells: variants[0].cells.slice(0, -1),
+    };
+    const corridorTemplate = createCorridorTemplate("complete-ring");
+    legacy.phase2 = {
+      hotelGene: master.gene,
+      roomMaster: master,
+      roomVariants: variants,
+      corridorTemplate,
+      floorPlacements: corridorTemplate.slots.map((slot) => ({
+        slotId: slot.id,
+        variantId: variants[0].id,
+        rotation: (slot.width >= 8 && slot.height >= 12 ? 0 : 90) as 0 | 90,
+        mirrored: false,
+      })),
+    };
+    legacy.floor.rooms = corridorTemplate.slots.map((slot) => ({
+      id: `room-${slot.id}`,
+      slotId: slot.id,
+      roomBlueprintId: master.id,
+      committedBuildCostCents: variants[0].metrics!.buildCostCents,
+    }));
+
+    expect(() => upgradeLegacyToPhase4(legacy)).toThrow("无重叠矩形");
+  });
+
+  it("rejects generated Phase 3 metrics that disagree with quarter-meter cells", () => {
+    const legacy = openedLegacyFixture();
+    const master = createRoomMaster({
+      id: "room-master:wrong-metrics",
+      name: "错误面积母版",
+      columns: 8,
+      rows: 12,
+      cells: [
+        ...createRectangle(0, 0, 8, 9, "bedroom"),
+        ...createRectangle(0, 9, 8, 3, "bathroom"),
+      ],
+      gene: CONTEMPORARY_ORIENTAL.gene,
+    });
+    const variants = createRoomVariants(master);
+    variants[0] = {
+      ...variants[0],
+      metrics: { ...variants[0].metrics!, areaSquareMeters: 20 },
+    };
+    const corridorTemplate = createCorridorTemplate("complete-ring");
+    legacy.phase2 = {
+      hotelGene: master.gene,
+      roomMaster: master,
+      roomVariants: variants,
+      corridorTemplate,
+      floorPlacements: corridorTemplate.slots.map((slot) => ({
+        slotId: slot.id,
+        variantId: variants[0].id,
+        rotation: (slot.width >= 8 && slot.height >= 12 ? 0 : 90) as 0 | 90,
+        mirrored: false,
+      })),
+    };
+    legacy.floor.rooms = corridorTemplate.slots.map((slot) => ({
+      id: `room-${slot.id}`,
+      slotId: slot.id,
+      roomBlueprintId: master.id,
+      committedBuildCostCents: variants[0].metrics!.buildCostCents,
+    }));
+
+    expect(() => upgradeLegacyToPhase4(legacy)).toThrow("面积与格子不一致");
   });
 
   it("derives migrated room identity from stable legacy slots rather than array position", () => {

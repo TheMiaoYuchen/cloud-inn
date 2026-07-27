@@ -1,5 +1,7 @@
 import { describe, expect, it } from "vitest";
 
+import { REPUTATION_UNLOCKS } from "../operations/unlocks";
+
 import {
   APPROVED_PUBLIC_SPACE_TYPES,
   CONTENT_PROGRESS_SOURCES,
@@ -119,6 +121,51 @@ describe("content catalog", () => {
 
     expect(() => validateContentCatalog(candidate)).toThrow("未知设施类型");
   });
+
+  it.each(["service", "price"] as const)(
+    "rejects discovered-need kind %s because settlement cannot produce it",
+    (kind) => {
+      const candidate = structuredClone(FACILITY_CATALOG) as FacilityCatalogEntry[];
+      candidate[5] = {
+        ...candidate[5],
+        unlockRule: {
+          all: [{ source: "discovered-need", segmentId: "leisure", kind }],
+        },
+      };
+
+      expect(() => validateContentCatalog(candidate)).toThrow("需求类型");
+    },
+  );
+
+  it("rejects completed choices outside the actual reputation unlock catalog", () => {
+    const candidate = structuredClone(FACILITY_CATALOG) as FacilityCatalogEntry[];
+    candidate[10] = {
+      ...candidate[10],
+      unlockRule: {
+        all: [{
+          source: "completed-content-choice",
+          id: "operations:does-not-exist" as never,
+        }],
+      },
+    };
+
+    expect(() => validateContentCatalog(candidate)).toThrow("内容选择");
+  });
+
+  it.each(REPUTATION_UNLOCKS)(
+    "accepts actual completed choice $key",
+    ({ key }) => {
+      const candidate = structuredClone(FACILITY_CATALOG) as FacilityCatalogEntry[];
+      candidate[10] = {
+        ...candidate[10],
+        unlockRule: {
+          all: [{ source: "completed-content-choice", id: key as never }],
+        },
+      };
+
+      expect(validateContentCatalog(candidate)).toBeUndefined();
+    },
+  );
 
   it.each([
     ["duplicate IDs", (catalog: FacilityCatalogEntry[]) => {

@@ -1,6 +1,7 @@
 import { assertStableId, type StableId } from "../building/buildingTypes";
 import type { PublicSpaceType } from "../facilities/facilityTypes";
 import { GUEST_SEGMENT_IDS, type DiscoveredMarketNeed, type GuestSegmentId } from "../operations/operationsTypes";
+import { REPUTATION_UNLOCKS } from "../operations/unlocks";
 import { assertSafeMoney } from "../primitives";
 
 function deepFreeze<T>(value: T): Readonly<T> {
@@ -226,6 +227,9 @@ export function validateContentCatalog(
   const facilityIds = new Set<string>();
   const facilityTypes = new Set<PublicSpaceType>();
   const candidateTypes = new Set(catalog.map(({ type }) => type));
+  const completedChoiceIds = new Set(
+    REPUTATION_UNLOCKS.map(({ key }) => key),
+  );
   const candidateIds = catalog.map(({ id: facilityId }) => facilityId);
   if (
     candidateIds.length !== APPROVED_PUBLIC_SPACE_TYPES.length ||
@@ -258,9 +262,12 @@ export function validateContentCatalog(
       if (prerequisite.source === "reputation" && (!Number.isSafeInteger(prerequisite.thresholdBps) || prerequisite.thresholdBps < 0 || prerequisite.thresholdBps > 10_000)) throw new Error("解锁声誉无效");
       if (prerequisite.source === "discovered-need") {
         if (!(GUEST_SEGMENT_IDS as readonly string[]).includes(prerequisite.segmentId)) throw new Error("解锁引用了未知客群");
-        if (!( ["room-feature", "service", "price"] as readonly string[]).includes(prerequisite.kind)) throw new Error("解锁引用了未知需求类型");
+        if (prerequisite.kind !== "room-feature") throw new Error("解锁引用了当前结算无法生产的需求类型");
       }
-      if (prerequisite.source === "completed-content-choice") assertStableId(prerequisite.id);
+      if (prerequisite.source === "completed-content-choice") {
+        assertStableId(prerequisite.id);
+        if (!completedChoiceIds.has(prerequisite.id)) throw new Error("解锁引用了未知内容选择");
+      }
       if (prerequisite.source === "built-facility" && !candidateTypes.has(prerequisite.facilityType)) throw new Error("解锁引用了未知设施类型");
     }
   });

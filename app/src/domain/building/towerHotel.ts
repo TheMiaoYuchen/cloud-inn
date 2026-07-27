@@ -1,6 +1,7 @@
 import { projectContentUnlocks, reconcileCatalogProgress } from "../content/contentUnlocks";
 import { FLOOR_TEMPLATE_CATALOG, TOWER_CATALOG } from "../content/contentCatalog";
-import { createDenseGuestFloorTemplate, getTransformedRoomSize } from "../floor/corridorTemplate";
+import { prototypeConfig } from "../config/prototypeConfig";
+import { createDenseGuestFloorTemplate } from "../floor/corridorTemplate";
 import type { GameState, RoomInstance } from "../game/state";
 import { assertSafeMoney } from "../primitives";
 import {
@@ -194,6 +195,29 @@ function placementDimensions(areaSquareMeters: number): { width: number; height:
   throw new Error("客房设计面积无法映射到整数格");
 }
 
+function phase3VariantDimensions(
+  cells: ReadonlyArray<{ x: number; y: number }>,
+  areaSquareMeters: number,
+  rotation: ScaleRoomPlacement["rotation"],
+): { width: number; height: number } {
+  if (cells.length === 0) throw new Error("二期客房变体没有可迁移格子");
+  const xs = cells.map(({ x }) => x);
+  const ys = cells.map(({ y }) => y);
+  const footprintWidth = Math.max(...xs) - Math.min(...xs) + 1;
+  const footprintHeight = Math.max(...ys) - Math.min(...ys) + 1;
+  const uniqueCells = new Set(cells.map(({ x, y }) => `${x},${y}`));
+  if (uniqueCells.size !== cells.length || cells.length !== footprintWidth * footprintHeight) {
+    throw new Error("二期客房变体必须是无重叠矩形才能迁移到 1 平方米网格");
+  }
+  if (cells.length * prototypeConfig.cellAreaSquareMeters !== areaSquareMeters) {
+    throw new Error("二期客房变体面积与格子不一致");
+  }
+  const dimensions = placementDimensions(areaSquareMeters);
+  return rotation === 90 || rotation === 270
+    ? { width: dimensions.height, height: dimensions.width }
+    : dimensions;
+}
+
 function authoritativeRoomArea(state: Readonly<GameState>, room: Readonly<RoomInstance>): number {
   if (state.roomBlueprint?.id === room.roomBlueprintId) {
     return state.roomBlueprint.metrics.areaSquareMeters;
@@ -234,8 +258,12 @@ function createLegacyGuestTemplate(state: Readonly<GameState>): ScaleFloorTempla
         ({ id }) => id === phase2Placement.variantId,
       );
       if (!slot || !variant) throw new Error(`旧酒店客房 ${room.id} 的二期放置引用无效`);
-      const dimensions = getTransformedRoomSize(
+      if (variant.masterId !== room.roomBlueprintId || !variant.metrics) {
+        throw new Error(`旧酒店客房 ${room.id} 的二期设计引用无效`);
+      }
+      const dimensions = phase3VariantDimensions(
         variant.cells,
+        variant.metrics.areaSquareMeters,
         phase2Placement.rotation,
       );
       if (dimensions.width > slot.width || dimensions.height > slot.height) {
