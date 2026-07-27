@@ -327,7 +327,10 @@ function validateOperations(value: unknown, game: JsonObject): void {
   const speed = integer(operations.timeSpeed, "时间速度");
   if (![0, 1, 2, 4].includes(speed)) operationsError("时间速度无效");
   if (operations.lastOfflineCheckpointMs !== null) integer(operations.lastOfflineCheckpointMs, "离线检查点");
-  if (currentDay === 30 && (speed !== 0 || operations.lastOfflineCheckpointMs === null)) operationsError("第30日必须暂停并保存检查点");
+  const hasOperationsHistory = daily.length > 0 || weeks.length > 0 || closes.length > 0;
+  if (currentDay === 30 && (speed !== 0 || (hasOperationsHistory && operations.lastOfflineCheckpointMs === null))) {
+    operationsError("第30日必须暂停，有经营历史时还必须保存检查点");
+  }
 }
 
 function object(value: unknown): JsonObject {

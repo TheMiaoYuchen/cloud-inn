@@ -1408,7 +1408,8 @@ fn validate_operations(value: &Value, current_day: i64, cash_cents: i64) -> Resu
             JS_MAX_SAFE_INTEGER,
         )?),
     };
-    if current_day == 30 && (speed != 0 || checkpoint.is_none()) {
+    let has_operations_history = !daily.is_empty() || !weekly.is_empty() || !closes.is_empty();
+    if current_day == 30 && (speed != 0 || (has_operations_history && checkpoint.is_none())) {
         return Err("经营存档数据损坏".into());
     }
     Ok(())
@@ -1882,6 +1883,20 @@ mod tests {
     fn operations_day_30_round_trips_through_sqlite() {
         let repository = SaveRepository::new(root("operations-roundtrip"));
         let state = full_operations_game();
+
+        repository.commit_game(0, state.clone()).unwrap();
+
+        assert_eq!(repository.load_game("save-1").unwrap(), Some(state));
+    }
+
+    #[test]
+    fn operations_day_30_fresh_legacy_initialization_round_trips() {
+        let repository = SaveRepository::new(root("operations-day-30-fresh"));
+        let mut state = game();
+        state["currentDay"] = json!(30);
+        state["reports"] = json!((1..=30).map(|day| json!({"day":day})).collect::<Vec<_>>());
+        state["latestReport"] = json!({"day":30});
+        state["operations"] = minimal_operations();
 
         repository.commit_game(0, state.clone()).unwrap();
 

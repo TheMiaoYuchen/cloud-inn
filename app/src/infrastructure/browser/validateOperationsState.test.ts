@@ -150,6 +150,24 @@ describe("browser operations persistence validation", () => {
     expect(loaded).not.toBe(state);
   });
 
+  it("accepts a fresh operations envelope lazily initialized on legacy day 30", () => {
+    const legacy = createNewGame("legacy-day-30");
+    const reports = Array.from({ length: 30 }, (_, index) => ({
+      ...legacyReport(daily(index + 1)),
+      day: index + 1,
+    }));
+    const state: GameState = {
+      ...legacy,
+      revision: 1,
+      currentDay: 30,
+      reports,
+      latestReport: reports[29],
+      operations: createOperationsState(),
+    };
+
+    expect(validateBrowserGameState(JSON.parse(JSON.stringify(state)), state.saveId)).toEqual(state);
+  });
+
   it.each([
     ["ruleset", (g: any) => { g.operations.rulesetVersion = "operations-v2"; }],
     ["difficulty", (g: any) => { g.operations.difficulty = "expert"; }],
@@ -164,7 +182,7 @@ describe("browser operations persistence validation", () => {
     ["unsafe checkpoint", (g: any) => { g.operations.lastOfflineCheckpointMs = Number.MAX_SAFE_INTEGER + 1; }],
     ["negative checkpoint", (g: any) => { g.operations.lastOfflineCheckpointMs = -1; }],
     ["day 30 running", (g: any) => { g.operations.timeSpeed = 1; }],
-    ["day 30 missing checkpoint", (g: any) => { g.operations.lastOfflineCheckpointMs = null; }],
+    ["day 30 history missing checkpoint", (g: any) => { g.operations.lastOfflineCheckpointMs = null; }],
   ])("rejects invalid operations scalar or catalog state: %s", (_label, mutate) => {
     expect(() => validateBrowserGameState(malformed(mutate), "operations-30")).toThrow("经营存档");
   });
