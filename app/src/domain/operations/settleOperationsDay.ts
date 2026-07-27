@@ -23,6 +23,10 @@ const MAX_SAFE_BIGINT = BigInt(Number.MAX_SAFE_INTEGER);
 const SETTLEMENT_SAFETY_LOAN_ID = "safety-loan:daily-settlement";
 const LOSS_CODE_ORDER = ["hard-requirement", "price", "service", "no-inventory"] as const;
 
+export function compareCodeUnits(left: string, right: string): number {
+  return left < right ? -1 : left > right ? 1 : 0;
+}
+
 function safeNumber(value: bigint, label: string, allowNegative = false): number {
   if (value > MAX_SAFE_BIGINT || value < (allowNegative ? -MAX_SAFE_BIGINT : 0n)) {
     throw new Error(`${label}超出安全整数范围`);
@@ -44,15 +48,40 @@ function validateInput(input: Readonly<OperationsSettlementInput>): void {
   }
   assertSafeInteger(input.operations.reputationBps, "声誉");
   if (input.operations.reputationBps > 10_000) throw new Error("声誉必须是 0 到 10000 的安全整数");
+  assertSafeInteger(input.operations.maximumReputationBps, "最高声誉");
+  if (input.operations.maximumReputationBps > 10_000) {
+    throw new Error("最高声誉必须是 0 到 10000 的安全整数");
+  }
+  if (input.operations.maximumReputationBps < input.operations.reputationBps) {
+    throw new Error("最高声誉不能低于当前声誉");
+  }
+  let previousReportDay = 0;
+  for (const report of input.operations.dailyReports) {
+    if (!Number.isSafeInteger(report.day) || report.day <= previousReportDay) {
+      throw new Error("经营日报日期必须是唯一且严格递增的正安全整数");
+    }
+    previousReportDay = report.day;
+  }
+  if (input.day <= previousReportDay) {
+    throw new Error("营业日必须晚于最后一份经营日报");
+  }
+  const loanIds = new Set<string>();
   for (const loan of input.operations.loans) {
+    if (loan.id.trim().length === 0) throw new Error("贷款编号不能为空");
+    if (loanIds.has(loan.id)) throw new Error("贷款编号必须唯一");
+    loanIds.add(loan.id);
     assertSafeInteger(loan.principalCents, "贷款本金");
     assertSafeInteger(loan.outstandingCents, "贷款余额");
     assertSafeInteger(loan.dailyInterestBps, "贷款日利率");
     assertSafeInteger(loan.minimumPaymentCents, "贷款最低还款");
     if (loan.dailyInterestBps > 10_000) throw new Error("贷款日利率必须是 0 到 10000 的安全整数");
   }
+  const offerIds = new Set<string>();
   for (const offer of input.offers) {
-    if (!offer.id || !offer.sourceRoomId) throw new Error("客房产品编号不能为空");
+    if (offer.id.trim().length === 0) throw new Error("客房产品编号不能为空");
+    if (offerIds.has(offer.id)) throw new Error("客房产品编号必须唯一");
+    offerIds.add(offer.id);
+    if (!offer.sourceRoomId) throw new Error("客房产品房间编号不能为空");
     if (!Number.isSafeInteger(offer.nightlyRateCents) || offer.nightlyRateCents < 0) {
       throw new Error("客房产品房价必须是非负安全整数");
     }
@@ -170,8 +199,8 @@ export function settleOperationsDay(
     right.score - left.score
       || right.priceFit - left.priceFit
       || left.segmentIndex - right.segmentIndex
-      || left.offer.sourceRoomId.localeCompare(right.offer.sourceRoomId)
-      || left.offer.id.localeCompare(right.offer.id)
+      || compareCodeUnits(left.offer.sourceRoomId, right.offer.sourceRoomId)
+      || compareCodeUnits(left.offer.id, right.offer.id)
       || left.demandIndex - right.demandIndex,
   );
   const soldOffers = new Set<string>();
@@ -328,19 +357,23 @@ export function settleOperationsDay(
         offerId: assignment.offer.id,
         rateCents: assignment.offer.nightlyRateCents,
       }))
-      .sort((left, right) => left.offerId.localeCompare(right.offerId)),
+      .sort((left, right) => compareCodeUnits(left.offerId, right.offerId)),
     reputationDeltaBps,
     discoveredNeeds: newDiscoveries,
   };
   const operations = structuredClone(input.operations) as OperationsState;
   operations.dailyReports = [...operations.dailyReports, report];
   operations.reputationBps = reputationBps;
-  operations.maximumReputationBps = Math.max(operations.maximumReputationBps, reputationBps);
+  operations.maximumReputationBps = Math.max(
+    operations.maximumReputationBps,
+    input.operations.reputationBps,
+    reputationBps,
+  );
   operations.discoveredNeeds = [...operations.discoveredNeeds, ...newDiscoveries];
   if (operations.difficulty === "casual") {
     operations.loans = financeSafetyLoan(operations.loans, cashShortfallCents);
   }
-  operations.loans.sort((left, right) => left.id.localeCompare(right.id));
+  operations.loans.sort((left, right) => compareCodeUnits(left.id, right.id));
   if (soldRooms > 0) {
     let allocatedBps = 0;
     let lastSoldIndex = 0;

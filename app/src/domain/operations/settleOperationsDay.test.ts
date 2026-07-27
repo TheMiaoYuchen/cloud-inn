@@ -2,9 +2,17 @@ import { describe, expect, it } from "vitest";
 
 import { createApprovedOperations, createApprovedSettlementInput } from "./operationsFixtures";
 import { GUEST_SEGMENT_IDS } from "./operationsTypes";
-import { settleOperationsDay } from "./settleOperationsDay";
+import { compareCodeUnits, settleOperationsDay } from "./settleOperationsDay";
 
 describe("settleOperationsDay", () => {
+  it("orders ASCII and non-ASCII identifiers by explicit code units", () => {
+    expect(["房间", "z", "a", "酒店"].sort(compareCodeUnits)).toEqual([
+      "a",
+      "z",
+      "房间",
+      "酒店",
+    ]);
+  });
   it("replays the approved hotel for 30 days identically from independent inputs", () => {
     const replay = (clone: boolean) => {
       let input = createApprovedSettlementInput();
@@ -195,6 +203,46 @@ describe("settleOperationsDay", () => {
     expect(operations.discoveredNeeds).toEqual(report.discoveredNeeds);
   });
 
+  it.each([Number.NaN, -1, 10_001, 1.5])(
+    "rejects invalid maximum reputation %s",
+    (maximumReputationBps) => {
+      const input = createApprovedSettlementInput();
+      input.operations.maximumReputationBps = maximumReputationBps;
+
+      expect(() => settleOperationsDay(input)).toThrow("最高声誉");
+    },
+  );
+
+  it("rejects a maximum reputation below current reputation", () => {
+    const input = createApprovedSettlementInput();
+    input.operations.reputationBps = 6_000;
+    input.operations.maximumReputationBps = 5_999;
+
+    expect(() => settleOperationsDay(input)).toThrow("最高声誉不能低于当前声誉");
+  });
+
+  it("preserves the historical maximum when daily reputation falls", () => {
+    const input = createApprovedSettlementInput();
+    input.operations.reputationBps = 7_000;
+    input.operations.maximumReputationBps = 8_000;
+    input.offers = [{
+      ...input.offers[0],
+      nightlyRateCents: 150_000,
+      viewBps: 0,
+      workspaceBps: 0,
+      quietBps: 0,
+      privacyBps: 0,
+      designAffinities: Object.fromEntries(
+        GUEST_SEGMENT_IDS.map((segmentId) => [segmentId, 0]),
+      ) as typeof input.offers[number]["designAffinities"],
+    }];
+
+    const { operations } = settleOperationsDay(input);
+
+    expect(operations.reputationBps).toBeLessThan(7_000);
+    expect(operations.maximumReputationBps).toBe(8_000);
+  });
+
   it("does not mutate nested settlement input", () => {
     const input = createApprovedSettlementInput();
     const snapshot = structuredClone(input);
@@ -202,6 +250,35 @@ describe("settleOperationsDay", () => {
     settleOperationsDay(input);
 
     expect(input).toEqual(snapshot);
+  });
+
+  it("rejects settlement on the same or an earlier day than existing history", () => {
+    const input = createApprovedSettlementInput();
+    const first = settleOperationsDay({ ...input, day: 2 });
+
+    expect(() => settleOperationsDay({
+      ...input,
+      day: first.report.day,
+      operations: first.operations,
+    })).toThrow("营业日必须晚于最后一份经营日报");
+    expect(() => settleOperationsDay({
+      ...input,
+      day: 1,
+      operations: first.operations,
+    })).toThrow("营业日必须晚于最后一份经营日报");
+  });
+
+  it.each([
+    ["unsafe", [1, Number.NaN]],
+    ["duplicate", [1, 1]],
+    ["descending", [2, 1]],
+  ] as const)("rejects %s existing daily report history", (_kind, days) => {
+    const input = createApprovedSettlementInput();
+    const report = settleOperationsDay(input).report;
+    input.day = 3;
+    input.operations.dailyReports = days.map((day) => ({ ...report, day }));
+
+    expect(() => settleOperationsDay(input)).toThrow("经营日报日期");
   });
 
   it("settles department cost, loan interest, and no inventory without rooms", () => {
@@ -280,6 +357,54 @@ describe("settleOperationsDay", () => {
     }];
 
     expect(() => settleOperationsDay(input)).toThrow("安全整数范围");
+  });
+
+  it.each(["", "   "])("rejects empty loan id %j", (id) => {
+    const input = createApprovedSettlementInput();
+    input.operations.loans = [{
+      id,
+      principalCents: 100_000,
+      outstandingCents: 100_000,
+      dailyInterestBps: 10,
+      minimumPaymentCents: 100,
+    }];
+
+    expect(() => settleOperationsDay(input)).toThrow("贷款编号不能为空");
+  });
+
+  it("rejects duplicate loan ids before interest or safety financing", () => {
+    const input = createApprovedSettlementInput();
+    const loan = {
+      id: "loan:duplicate",
+      principalCents: 100_000,
+      outstandingCents: 100_000,
+      dailyInterestBps: 100,
+      minimumPaymentCents: 100,
+    };
+    input.operations.loans = [loan, { ...loan }];
+
+    expect(() => settleOperationsDay(input)).toThrow("贷款编号必须唯一");
+  });
+
+  it.each(["", "   "])("rejects empty offer id %j", (id) => {
+    const input = createApprovedSettlementInput();
+    input.offers[0] = { ...input.offers[0], id };
+
+    expect(() => settleOperationsDay(input)).toThrow("客房产品编号不能为空");
+  });
+
+  it("rejects duplicate offer ids instead of silently dropping inventory", () => {
+    const input = createApprovedSettlementInput();
+    input.offers = [
+      input.offers[0],
+      {
+        ...input.offers[1],
+        id: input.offers[0].id,
+        sourceRoomId: "room-distinct-inventory",
+      },
+    ];
+
+    expect(() => settleOperationsDay(input)).toThrow("客房产品编号必须唯一");
   });
 
   it.each([
