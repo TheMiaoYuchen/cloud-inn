@@ -11,6 +11,13 @@ function sharedPhase4Json(): unknown {
   return structuredClone(sharedPhase4Fixture);
 }
 
+function phase4JsonWithMoneyToken(token: string): unknown {
+  const json = JSON.stringify(sharedPhase4Fixture);
+  const original = '"committedBuildCostCents":2500000';
+  expect(json).toContain(original);
+  return JSON.parse(json.replace(original, `"committedBuildCostCents":${token}`));
+}
+
 describe("minimal Phase 4 browser persistence validation", () => {
   it("matches and accepts the checked-in cross-runtime fixture", () => {
     const json = sharedPhase4Json();
@@ -44,4 +51,34 @@ describe("minimal Phase 4 browser persistence validation", () => {
       validateBrowserGameState(snapshot, "phase4-shared"),
     ).toThrow("稳定 ID");
   });
+
+  it.each(["2500000.0", "25e5", "9007199254740991.0"])(
+    "accepts safe integral construction money token %s",
+    (token) => {
+      expect(() =>
+        validateBrowserGameState(
+          phase4JsonWithMoneyToken(token),
+          "phase4-shared",
+        ),
+      ).not.toThrow();
+    },
+  );
+
+  it.each([
+    "2500000.5",
+    "-1.0",
+    "9007199254740992",
+    "9007199254740992.0",
+    "1e400",
+  ])(
+    "rejects unsafe construction money token %s",
+    (token) => {
+      expect(() =>
+        validateBrowserGameState(
+          phase4JsonWithMoneyToken(token),
+          "phase4-shared",
+        ),
+      ).toThrow("施工金额必须是安全整数");
+    },
+  );
 });

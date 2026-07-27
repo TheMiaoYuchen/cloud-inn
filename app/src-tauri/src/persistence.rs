@@ -916,10 +916,15 @@ fn phase4_stable_id<'a>(value: &'a Value, label: &str) -> Result<&'a str, String
 }
 
 fn validate_phase4_money(value: &Value) -> Result<(), String> {
-    if value
+    let safe_integer = value
         .as_i64()
-        .is_some_and(|money| (0..=JS_MAX_SAFE_INTEGER).contains(&money))
-    {
+        .is_some_and(|money| (0..=JS_MAX_SAFE_INTEGER).contains(&money));
+    let safe_float = value.as_f64().is_some_and(|money| {
+        money.is_finite()
+            && money.fract() == 0.0
+            && (0.0..=JS_MAX_SAFE_INTEGER as f64).contains(&money)
+    });
+    if safe_integer || safe_float {
         Ok(())
     } else {
         Err(phase4_error("施工金额必须是安全整数"))
@@ -3112,6 +3117,21 @@ mod tests {
         serde_json::from_str(raw).unwrap()
     }
 
+    fn phase4_fixture_json_with_money_token(token: &str) -> String {
+        let raw = include_str!("../tests/fixtures/phase4-valid.json");
+        let original = "\"committedBuildCostCents\": 2500000";
+        assert!(raw.contains(original));
+        raw.replacen(
+            original,
+            &format!("\"committedBuildCostCents\": {token}"),
+            1,
+        )
+    }
+
+    fn phase4_fixture_with_money_token(token: &str) -> Value {
+        phase4_fixture(&phase4_fixture_json_with_money_token(token))
+    }
+
     #[test]
     fn phase4_minimal_commits_and_reopens_shared_fixture() {
         let repository = SaveRepository::new(root("phase4-shared"));
@@ -3167,6 +3187,40 @@ mod tests {
 
         let error = validate_game(&invalid).err().unwrap();
         assert!(error.contains("稳定 ID"));
+    }
+
+    #[test]
+    fn phase4_minimal_accepts_safe_integral_float_and_exponent_money() {
+        for token in ["2500000.0", "25e5", "9007199254740991.0"] {
+            let fixture = phase4_fixture_with_money_token(token);
+            assert!(
+                validate_game(&fixture).is_ok(),
+                "safe money token rejected: {token}"
+            );
+        }
+    }
+
+    #[test]
+    fn phase4_minimal_rejects_fractional_and_unsafe_money() {
+        for token in [
+            "2500000.5",
+            "-1.0",
+            "9007199254740992",
+            "9007199254740992.0",
+            "1e400",
+        ] {
+            let raw = phase4_fixture_json_with_money_token(token);
+            match serde_json::from_str::<Value>(&raw) {
+                Ok(fixture) => {
+                    let error = validate_game(&fixture).err().unwrap();
+                    assert!(
+                        error.contains("施工金额必须是安全整数"),
+                        "unexpected error for {token}: {error}"
+                    );
+                }
+                Err(error) => assert_eq!(token, "1e400", "unexpected parse error: {error}"),
+            }
+        }
     }
 
     #[test]
