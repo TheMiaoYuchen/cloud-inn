@@ -16,8 +16,39 @@ import type {
   SegmentDayResult,
   WeeklyOperationsReport,
 } from "./operationsTypes";
+import { GUEST_SEGMENT_IDS } from "./operationsTypes";
+
+type Equal<A, B> =
+  (<T>() => T extends A ? 1 : 2) extends
+  (<T>() => T extends B ? 1 : 2)
+    ? true
+    : false;
+type Expect<T extends true> = T;
+
+type ApprovedGuestSegmentId =
+  | "business"
+  | "couple"
+  | "family"
+  | "leisure"
+  | "high-net-worth"
+  | "cultural-experience";
+type GuestSegmentCatalogIsExact = Expect<
+  Equal<GuestSegmentId, ApprovedGuestSegmentId>
+>;
+const guestSegmentCatalogIsExact: GuestSegmentCatalogIsExact = true;
 
 describe("operations state contracts", () => {
+  it("exports the exact approved guest segment catalog", () => {
+    expect(guestSegmentCatalogIsExact).toBe(true);
+    expect(GUEST_SEGMENT_IDS).toEqual([
+      "business",
+      "couple",
+      "family",
+      "leisure",
+      "high-net-worth",
+      "cultural-experience",
+    ]);
+  });
   it("creates the approved casual operations envelope without changing legacy state", () => {
     const game = createNewGame("phase-3");
     const operations = createOperationsState("casual");

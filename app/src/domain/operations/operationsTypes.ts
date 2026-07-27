@@ -1,9 +1,13 @@
-export type GuestSegmentId =
-  | "business"
-  | "leisure"
-  | "family"
-  | "luxury"
-  | "group";
+export const GUEST_SEGMENT_IDS = [
+  "business",
+  "couple",
+  "family",
+  "leisure",
+  "high-net-worth",
+  "cultural-experience",
+] as const;
+
+export type GuestSegmentId = (typeof GUEST_SEGMENT_IDS)[number];
 
 export type Difficulty = "casual" | "management";
 
