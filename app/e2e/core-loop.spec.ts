@@ -21,21 +21,22 @@ test("completes the prototype hotel loop from design through day two", async ({ 
 
   await page.getByRole("button", { name: "进入运营" }).click();
   await expect(page.getByRole("heading", { name: "完整经营中心" })).toBeVisible();
+  await page.getByRole("button", { name: "启用完整经营" }).click();
+  await expect(page.getByRole("heading", { name: "云岫经营中心" })).toBeVisible();
 
-  const startButton = page.getByRole("button", { name: "开始营业" });
-  if (await startButton.isVisible().catch(() => false)) {
-    await startButton.click();
-  }
-  await page.getByRole("button", { name: "结算下一天" }).click();
-  await expect(page.getByText(/第1天 · 可售4 · 售出3/)).toBeVisible();
-  await expect(page.getByText(/收入 ¥2400 · 成本 ¥770 · 净收入 ¥1630/)).toBeVisible();
+  await page.getByRole("button", { name: "推进一天" }).click();
+  await expect(page.getByText("营业日 1 / 30")).toBeVisible();
+  await expect(page.getByRole("region", { name: "经营报告时间线" })).toContainText("第 1 日");
 
-  await page.getByRole("button", { name: "请求视觉预览" }).click();
-  await expect(page.getByRole("img", { name: "房间视觉预览" })).toBeVisible();
+  await page.getByRole("spinbutton", { name: "基础价（元）" }).fill("1600");
+  await page.getByRole("button", { name: "保存房价策略" }).click();
+  await expect(page.getByRole("region", { name: "房价策略" })).toContainText("当前价");
+  await page.getByRole("button", { name: "推进一天" }).click();
+  await expect(page.getByText("营业日 2 / 30")).toBeVisible();
+  await expect(page.getByRole("region", { name: "经营报告时间线" })).toContainText("第 2 日");
+  await expect(page.getByRole("main")).toContainText("现金");
 
-  await page.getByRole("spinbutton", { name: "房价" }).fill("1600");
-  await page.getByRole("button", { name: "更新房价" }).click();
-  await page.getByRole("button", { name: "结算下一天" }).click();
-  await expect(page.getByText(/第2天 · 可售4 · 售出0/)).toBeVisible();
-  await expect(page.getByText(/可售 4 · 售出 0 .*成本 ¥320/)).toBeVisible();
+  await page.reload();
+  await expect(page.getByText("营业日 2 / 30")).toBeVisible();
+  await expect(page.getByRole("region", { name: "经营报告时间线" })).toContainText("第 2 日");
 });
