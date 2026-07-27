@@ -113,9 +113,16 @@ export interface WeeklyOperationsReport {
   startDay: number;
   endDay: number;
   revenueCents: number;
+  operatingCostCents?: number;
+  financeCostCents?: number;
   netIncomeCents: number;
+  availableRooms?: number;
+  soldRooms?: number;
   averageOccupancyBps: number;
   reputationBps: number;
+  topResultCode?: string;
+  topReasonCode?: LostBookingReasonCode | "none";
+  suggestedActionCode?: string;
 }
 
 export interface MonthlyOperationsClose {
@@ -123,9 +130,18 @@ export interface MonthlyOperationsClose {
   startDay: number;
   endDay: number;
   revenueCents: number;
+  operatingCostCents?: number;
+  financeCostCents?: number;
   netIncomeCents: number;
   debtPaymentCents: number;
+  availableRooms?: number;
+  soldRooms?: number;
+  averageOccupancyBps?: number;
+  reputationBps?: number;
   endingCashCents: number;
+  topResultCode?: string;
+  topReasonCode?: LostBookingReasonCode | "none";
+  suggestedActionCode?: string;
 }
 
 export interface DiscoveredMarketNeed {

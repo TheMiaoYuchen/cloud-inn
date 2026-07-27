@@ -40,6 +40,8 @@ import {
   type DepartmentConfiguration,
 } from "../domain/operations/departmentCatalog";
 import { settleOperationsDay } from "../domain/operations/settleOperationsDay";
+import { projectPeriodicReports } from "../domain/operations/reporting";
+import { offlineDaysForElapsed } from "../domain/operations/offlineSettlement";
 import {
   applyLoanRepayment,
   coverCasualShortfall,
@@ -153,6 +155,47 @@ export function createGameCommands(savePort: SavePort) {
     return next;
   }
 
+  function assertNowMs(nowMs: number, label = "离线检查点"): void {
+    if (!Number.isSafeInteger(nowMs) || nowMs < 0) {
+      throw new Error(`${label}必须是非负安全整数`);
+    }
+  }
+
+  function projectOperationsDay(state: GameState, nowMs?: number): GameState {
+    if (state.phase !== "open" || !state.roomBlueprint) {
+      throw new Error("酒店尚未开业");
+    }
+    const operations = state.operations;
+    if (!operations) throw new Error("经营系统尚未初始化");
+    if (nowMs !== undefined) {
+      assertNowMs(nowMs, "日结时间");
+      if (
+        operations.lastOfflineCheckpointMs !== null
+        && nowMs < operations.lastOfflineCheckpointMs
+      ) throw new Error("离线检查点不能倒退");
+    }
+    const settled = settleOperationsDay({
+      day: state.currentDay + 1,
+      cashCents: state.cashCents,
+      operations,
+      offers: projectRoomOffers(state),
+    });
+    const periodic = projectPeriodicReports(settled.operations);
+    const nextOperations: OperationsState = {
+      ...settled.operations,
+      ...periodic,
+      lastOfflineCheckpointMs: nowMs ?? settled.operations.lastOfflineCheckpointMs,
+    };
+    return {
+      ...state,
+      currentDay: settled.report.day,
+      cashCents: settled.cashCents,
+      operations: nextOperations,
+      reports: [...state.reports, settled.legacyReport],
+      latestReport: settled.legacyReport,
+    };
+  }
+
   return {
     async takeLoan(
       state: GameState,
@@ -202,6 +245,34 @@ export function createGameCommands(savePort: SavePort) {
       return persist(state, {
         ...state,
         operations: { ...operations, difficulty },
+      });
+    },
+
+    async setTimeSpeed(
+      state: GameState,
+      speed: OperationsState["timeSpeed"],
+    ): Promise<GameState> {
+      const operations = state.operations;
+      if (!operations) throw new Error("经营系统尚未初始化");
+      if (speed !== 0 && speed !== 1 && speed !== 2 && speed !== 4) {
+        throw new Error("时间速度仅支持 0、1、2、4");
+      }
+      return persist(state, {
+        ...state,
+        operations: { ...operations, timeSpeed: speed },
+      });
+    },
+
+    async checkpointOfflineTime(state: GameState, nowMs: number): Promise<GameState> {
+      assertNowMs(nowMs);
+      const operations = state.operations;
+      if (!operations) throw new Error("经营系统尚未初始化");
+      const previous = operations.lastOfflineCheckpointMs;
+      if (previous !== null && nowMs < previous) throw new Error("离线检查点不能倒退");
+      if (previous === nowMs) return state;
+      return persist(state, {
+        ...state,
+        operations: { ...operations, lastOfflineCheckpointMs: nowMs },
       });
     },
 
@@ -567,26 +638,13 @@ export function createGameCommands(savePort: SavePort) {
       return persist(state, { ...state, phase: "open" });
     },
 
-    async advanceDay(state: GameState): Promise<GameState> {
+    async advanceDay(state: GameState, nowMs?: number): Promise<GameState> {
       if (state.phase !== "open" || !state.roomBlueprint) {
         throw new Error("酒店尚未开业");
       }
 
       if (state.operations) {
-        const settled = settleOperationsDay({
-          day: state.currentDay + 1,
-          cashCents: state.cashCents,
-          operations: state.operations,
-          offers: projectRoomOffers(state),
-        });
-        return persist(state, {
-          ...state,
-          currentDay: settled.report.day,
-          cashCents: settled.cashCents,
-          operations: settled.operations,
-          reports: [...state.reports, settled.legacyReport],
-          latestReport: settled.legacyReport,
-        });
+        return persist(state, projectOperationsDay(state, nowMs));
       }
 
       const report = settleDay({
@@ -604,6 +662,54 @@ export function createGameCommands(savePort: SavePort) {
         reports: [...state.reports, report],
         latestReport: report,
       });
+    },
+
+    async advanceOperationsDays(
+      state: GameState,
+      requestedDays: number,
+      nowMs: number,
+    ): Promise<GameState> {
+      if (!Number.isSafeInteger(requestedDays) || requestedDays < 0) {
+        throw new Error("批量营业日数必须是非负安全整数");
+      }
+      assertNowMs(nowMs, "批量日结时间");
+      if (requestedDays === 0) return state;
+      let projected = state;
+      for (let index = 0; index < requestedDays; index += 1) {
+        projected = projectOperationsDay(projected, nowMs);
+      }
+      return persist(state, projected);
+    },
+
+    async settleOffline(
+      state: GameState,
+      nowMs: number,
+      millisecondsPerGameDay: number,
+    ): Promise<GameState> {
+      assertNowMs(nowMs);
+      const operations = state.operations;
+      if (!operations) throw new Error("经营系统尚未初始化");
+      const checkpoint = operations.lastOfflineCheckpointMs;
+      if (checkpoint === null) {
+        return persist(state, {
+          ...state,
+          operations: { ...operations, lastOfflineCheckpointMs: nowMs },
+        });
+      }
+      if (nowMs < checkpoint) throw new Error("离线检查点不能倒退");
+      const days = offlineDaysForElapsed(nowMs - checkpoint, millisecondsPerGameDay);
+      if (days === 0 || state.phase !== "open" || !state.roomBlueprint) {
+        if (checkpoint === nowMs) return state;
+        return persist(state, {
+          ...state,
+          operations: { ...operations, lastOfflineCheckpointMs: nowMs },
+        });
+      }
+      let projected = state;
+      for (let index = 0; index < days; index += 1) {
+        projected = projectOperationsDay(projected, nowMs);
+      }
+      return persist(state, projected);
     },
   };
 }

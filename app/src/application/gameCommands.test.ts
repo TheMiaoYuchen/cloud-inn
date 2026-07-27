@@ -1238,6 +1238,162 @@ describe("game commands", () => {
     expect(await store.load(state.saveId)).toEqual(persisted);
   });
 
+  it.each([0, 1, 2, 4] as const)("sets supported operations time speed %s atomically", async (speed) => {
+    const store = new InMemorySavePort();
+    const commands = createGameCommands(store);
+    const state = await commands.initializeOperations(createNewGame(`save-speed-${speed}`));
+
+    const next = await commands.setTimeSpeed(state, speed);
+
+    expect(next.operations?.timeSpeed).toBe(speed);
+    await expectSavedRevision(state, next, store);
+  });
+
+  it.each([-1, 3, 5, Number.NaN, 1.5])("rejects unsupported operations time speed %s", async (speed) => {
+    const store = new InMemorySavePort();
+    const commands = createGameCommands(store);
+    const state = await commands.initializeOperations(createNewGame(`save-invalid-speed-${speed}`));
+    const persisted = await store.load(state.saveId);
+
+    await expect(commands.setTimeSpeed(state, speed as never)).rejects.toThrow("时间速度");
+    expect(await store.load(state.saveId)).toEqual(persisted);
+  });
+
+  it("settles seven days in one commit with periodic reports and matches daily settlement exactly", async () => {
+    async function opened(saveId: string) {
+      const store = new InMemorySavePort();
+      const commands = createGameCommands(store);
+      let state = await commands.saveRoomBlueprint(createNewGame(saveId), "云岫商务房", prototypeCells());
+      state = await commands.placeRoom(state, "slot-nw");
+      state = await commands.openHotel(state);
+      state = await commands.initializeOperations(state);
+      return { store, commands, state };
+    }
+    const batchFixture = await opened("save-batch-seven");
+    const dailyFixture = await opened("save-daily-seven");
+
+    const batch = await batchFixture.commands.advanceOperationsDays(batchFixture.state, 7, 70_000);
+    let daily = dailyFixture.state;
+    for (let day = 1; day <= 7; day += 1) {
+      daily = await dailyFixture.commands.advanceDay(daily, day * 10_000);
+    }
+
+    expect({
+      ...batch,
+      saveId: "same",
+      revision: 0,
+    }).toEqual({
+      ...daily,
+      saveId: "same",
+      revision: 0,
+    });
+    expect(batch.operations?.dailyReports).toHaveLength(7);
+    expect(batch.operations?.weeklyReports.map(({ endDay }) => endDay)).toEqual([7]);
+    expect(batch.operations?.lastOfflineCheckpointMs).toBe(70_000);
+    expect(batch.revision).toBe(batchFixture.state.revision + 1);
+  });
+
+  it("defines a zero-day batch as a reference-preserving no-op without a commit", async () => {
+    const store = new InMemorySavePort();
+    const commands = createGameCommands(store);
+    const state = await commands.initializeOperations(createNewGame("save-zero-batch"));
+    const persisted = await store.load(state.saveId);
+
+    const next = await commands.advanceOperationsDays(state, 0, 100);
+
+    expect(next).toBe(state);
+    expect(await store.load(state.saveId)).toEqual(persisted);
+  });
+
+  it("rejects an invalid day inside a batch without a partial commit", async () => {
+    const store = new InMemorySavePort();
+    const baseCommands = createGameCommands(store);
+    let state = await baseCommands.saveRoomBlueprint(createNewGame("save-batch-failure"), "云岫商务房", prototypeCells());
+    state = await baseCommands.placeRoom(state, "slot-nw");
+    state = await baseCommands.openHotel(state);
+    state = await baseCommands.initializeOperations(state);
+    const snapshot = structuredClone(state);
+    const persisted = await store.load(state.saveId);
+    state.operations!.dailyReports = [{
+      day: 2, segments: [], revenueCents: 0, operatingCostCents: 0, financeCostCents: 0,
+      netIncomeCents: 0, endingCashCents: state.cashCents, reputationBps: 5_000,
+    }];
+
+    await expect(baseCommands.advanceOperationsDays(state, 2, 1_000)).rejects.toThrow("营业日");
+    expect(state.operations?.dailyReports).toHaveLength(1);
+    expect(snapshot.currentDay).toBe(0);
+    expect(await store.load(state.saveId)).toEqual(persisted);
+  });
+
+  it("settles offline elapsed whole days, caps at seven, and checkpoints supplied time", async () => {
+    const store = new InMemorySavePort();
+    const commands = createGameCommands(store);
+    let state = await commands.saveRoomBlueprint(createNewGame("save-offline-cap"), "云岫商务房", prototypeCells());
+    state = await commands.placeRoom(state, "slot-nw");
+    state = await commands.openHotel(state);
+    state = await commands.initializeOperations(state);
+    state = await commands.checkpointOfflineTime(state, 1_000);
+
+    const settled = await commands.settleOffline(state, 1_000 + 20 * 60_000, 60_000);
+
+    expect(settled.currentDay).toBe(7);
+    expect(settled.operations?.lastOfflineCheckpointMs).toBe(1_201_000);
+    expect(settled.operations?.weeklyReports).toHaveLength(1);
+    expect(settled.revision).toBe(state.revision + 1);
+  });
+
+  it("checkpoints elapsed time without inventing operating days before the hotel opens", async () => {
+    const store = new InMemorySavePort();
+    const commands = createGameCommands(store);
+    let state = await commands.initializeOperations(createNewGame("save-offline-before-open"));
+    state = await commands.checkpointOfflineTime(state, 1_000);
+
+    const caughtUp = await commands.settleOffline(state, 121_000, 60_000);
+
+    expect(caughtUp.currentDay).toBe(0);
+    expect(caughtUp.operations?.dailyReports).toEqual([]);
+    expect(caughtUp.operations?.lastOfflineCheckpointMs).toBe(121_000);
+  });
+
+  it("updates the checkpoint for zero elapsed and does not repeat a live interval after reload", async () => {
+    const store = new InMemorySavePort();
+    const commands = createGameCommands(store);
+    let state = await commands.saveRoomBlueprint(createNewGame("save-offline-reload"), "云岫商务房", prototypeCells());
+    state = await commands.placeRoom(state, "slot-nw");
+    state = await commands.openHotel(state);
+    state = await commands.initializeOperations(state);
+    state = await commands.checkpointOfflineTime(state, 10_000);
+    state = await commands.advanceDay(state, 70_000);
+    const reloaded = await store.load(state.saveId);
+
+    expect(reloaded?.operations?.lastOfflineCheckpointMs).toBe(70_000);
+    const caughtUp = await commands.settleOffline(reloaded!, 70_000, 60_000);
+
+    expect(caughtUp.currentDay).toBe(1);
+    expect(caughtUp.operations?.dailyReports).toHaveLength(1);
+    expect(caughtUp.operations?.lastOfflineCheckpointMs).toBe(70_000);
+  });
+
+  it.each([-1, Number.NaN, Number.MAX_SAFE_INTEGER + 1])("rejects invalid offline now %s", async (nowMs) => {
+    const store = new InMemorySavePort();
+    const commands = createGameCommands(store);
+    const state = await commands.initializeOperations(createNewGame(`save-offline-now-${nowMs}`));
+
+    await expect(commands.checkpointOfflineTime(state, nowMs)).rejects.toThrow("检查点");
+    await expect(commands.settleOffline(state, nowMs, 60_000)).rejects.toThrow();
+  });
+
+  it("keeps checkpoint monotonic and accepts the same value idempotently", async () => {
+    const store = new InMemorySavePort();
+    const commands = createGameCommands(store);
+    let state = await commands.initializeOperations(createNewGame("save-checkpoint-monotonic"));
+    state = await commands.checkpointOfflineTime(state, 1_000);
+    const same = await commands.checkpointOfflineTime(state, 1_000);
+
+    expect(same).toBe(state);
+    await expect(commands.checkpointOfflineTime(state, 999)).rejects.toThrow("倒退");
+  });
+
   it("rejects a stale command and preserves the first divergent save", async () => {
     const store = new InMemorySavePort();
     const commands = createGameCommands(store);
