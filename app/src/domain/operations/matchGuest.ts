@@ -74,6 +74,9 @@ function hardFailure(
       ? "requires-family-capacity"
       : "requires-minimum-capacity";
   }
+  if (segment.id === "family" && offer.bedType !== "twin") {
+    return "requires-family-capacity";
+  }
   const minimumArea = segment.hardRequirements.minimumAreaSquareMeters;
   if (minimumArea !== undefined && offer.areaSquareMeters < minimumArea) {
     return "requires-minimum-area";

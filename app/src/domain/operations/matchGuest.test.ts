@@ -169,6 +169,21 @@ describe("guest matching", () => {
     });
   });
 
+  it.each(["king", "double"] as const)(
+    "rejects a capacity-three %s room because families still need separate beds",
+    (bedType) => {
+      expect(matchGuest(getGuestSegment("family"), offer({
+        bedType,
+        capacity: 3,
+      }))).toMatchObject({
+        eligible: false,
+        hardFailure: "requires-family-capacity",
+        preferenceScoreBps: null,
+        factors: [],
+      });
+    },
+  );
+
   it("allows a family-friendly twin offer to proceed to preference scoring", () => {
     expect(matchGuest(getGuestSegment("family"), offer({
       bedType: "twin",
