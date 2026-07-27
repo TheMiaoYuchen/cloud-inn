@@ -16,6 +16,7 @@ import type {
 } from "../design/designTypes";
 import type { RoomMaster } from "../design/roomSeries";
 import type { Opening } from "../room/editRoom";
+import type { OperationsState } from "../operations/operationsTypes";
 
 export type ZoneKind = "bedroom" | "bathroom";
 
@@ -110,6 +111,7 @@ export interface GameState {
   reports: DailyReport[];
   latestReport: DailyReport | null;
   phase2?: Phase2DesignState;
+  operations?: OperationsState;
 }
 
 export function createNewGame(saveId: SaveId): GameState {

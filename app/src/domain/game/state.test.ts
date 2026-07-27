@@ -15,6 +15,7 @@ describe("createNewGame", () => {
     expect(state.rateCents).toBe(80_000);
     expect(state.latestReport).toBeNull();
     expect(state.revision).toBe(0);
+    expect(state.operations).toBeUndefined();
   });
 });
 
