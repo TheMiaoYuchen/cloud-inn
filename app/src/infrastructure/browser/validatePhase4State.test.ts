@@ -1,8 +1,13 @@
 import { describe, expect, it } from "vitest";
 
 import duplicateFloorId from "../../../src-tauri/tests/fixtures/phase4-invalid/duplicate-floor-id.json";
+import duplicateRecordValueId from "../../../src-tauri/tests/fixtures/phase4-invalid/duplicate-record-value-id.json";
+import malformedRecordKey from "../../../src-tauri/tests/fixtures/phase4-invalid/malformed-record-key.json";
+import nonObjectRecordValue from "../../../src-tauri/tests/fixtures/phase4-invalid/non-object-record-value.json";
+import recordKeyIdMismatch from "../../../src-tauri/tests/fixtures/phase4-invalid/record-key-id-mismatch.json";
 import unknownRoomFloor from "../../../src-tauri/tests/fixtures/phase4-invalid/unknown-room-floor.json";
 import unsafeMoney from "../../../src-tauri/tests/fixtures/phase4-invalid/unsafe-money.json";
+import wrongContainingFloor from "../../../src-tauri/tests/fixtures/phase4-invalid/wrong-containing-floor.json";
 import sharedPhase4Fixture from "../../../src-tauri/tests/fixtures/phase4-valid.json";
 import { createPhase4AcceptanceState } from "../../testing/phase4Fixtures";
 import { validateBrowserGameState } from "./validateBrowserGameState";
@@ -35,6 +40,11 @@ describe("minimal Phase 4 browser persistence validation", () => {
     ["duplicate floor ID", duplicateFloorId, "楼层编号重复"],
     ["room with unknown floor", unknownRoomFloor, "客房楼层引用无效"],
     ["unsafe construction money", unsafeMoney, "施工金额必须是安全整数"],
+    ["room owned by another existing floor", wrongContainingFloor, "客房必须属于所在楼层"],
+    ["malformed identity record key", malformedRecordKey, "记录键必须是稳定 ID"],
+    ["non-object identity record value", nonObjectRecordValue, "公共空间蓝图结构无效"],
+    ["identity record key and ID mismatch", recordKeyIdMismatch, "记录键与编号不一致"],
+    ["duplicate identity record value ID", duplicateRecordValueId, "公共空间编号重复"],
   ])("rejects a shared snapshot with %s", (_label, snapshot, message) => {
     expect(() =>
       validateBrowserGameState(structuredClone(snapshot), "phase4-shared"),

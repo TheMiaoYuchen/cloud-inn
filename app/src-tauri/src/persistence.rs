@@ -955,6 +955,29 @@ fn validate_phase4_stable_ids(value: &Value) -> Result<(), String> {
     Ok(())
 }
 
+fn validate_phase4_identity_record(value: &Value, label: &str) -> Result<(), String> {
+    let definitions = phase4_object(value, label)?;
+    let mut ids = HashSet::new();
+    for (key, raw_definition) in definitions {
+        phase4_stable_id(&Value::String(key.clone()), "记录键")?;
+        let definition = phase4_object(raw_definition, label)?;
+        let id = phase4_stable_id(
+            phase4_field(definition, "id", &format!("{label}编号"))?,
+            &format!("{label}编号"),
+        )?;
+        if !ids.insert(id) {
+            return Err(phase4_error(&format!("{label}编号重复")));
+        }
+    }
+    for (key, raw_definition) in definitions {
+        let definition = phase4_object(raw_definition, label)?;
+        if definition.get("id").and_then(Value::as_str) != Some(key) {
+            return Err(phase4_error("记录键与编号不一致"));
+        }
+    }
+    Ok(())
+}
+
 fn validate_phase4(value: &Value) -> Result<(), String> {
     let phase4 = phase4_object(value, "状态")?;
     if phase4.get("rulesetVersion").and_then(Value::as_str) != Some("content-scale-v1") {
@@ -971,6 +994,14 @@ fn validate_phase4(value: &Value) -> Result<(), String> {
         phase4_object(phase4_field(phase4, key, label)?, label)?;
     }
     validate_phase4_stable_ids(value)?;
+    for (key, label) in [
+        ("floorTemplates", "楼层模板"),
+        ("spaceBlueprints", "公共空间蓝图"),
+        ("publicSpaces", "公共空间"),
+        ("facilities", "设施"),
+    ] {
+        validate_phase4_identity_record(phase4_field(phase4, key, label)?, label)?;
+    }
     let floors = phase4_array(phase4_field(phase4, "floors", "楼层")?, "楼层")?;
     match phase4.get("recentFlowSnapshot") {
         Some(Value::Null | Value::Object(_)) => {}
@@ -979,7 +1010,7 @@ fn validate_phase4(value: &Value) -> Result<(), String> {
 
     let mut floor_ids = HashSet::new();
     let mut room_ids = HashSet::new();
-    let mut room_floor_ids = Vec::new();
+    let mut room_owners = Vec::new();
     for raw_floor in floors {
         let floor = phase4_object(raw_floor, "楼层")?;
         let floor_id = phase4_stable_id(phase4_field(floor, "id", "楼层编号")?, "楼层编号")?;
@@ -992,31 +1023,35 @@ fn validate_phase4(value: &Value) -> Result<(), String> {
             if !room_ids.insert(room_id) {
                 return Err(phase4_error("客房编号重复"));
             }
-            room_floor_ids.push(phase4_stable_id(
-                phase4_field(room, "floorId", "客房楼层编号")?,
-                "客房楼层编号",
-            )?);
+            room_owners.push((
+                phase4_stable_id(
+                    phase4_field(room, "floorId", "客房楼层编号")?,
+                    "客房楼层编号",
+                )?,
+                floor_id,
+            ));
             validate_phase4_money(phase4_field(room, "committedBuildCostCents", "施工金额")?)?;
         }
     }
-    if room_floor_ids
+    if room_owners
         .iter()
-        .any(|floor_id| !floor_ids.contains(floor_id))
+        .any(|(floor_id, _)| !floor_ids.contains(floor_id))
     {
         return Err(phase4_error("客房楼层引用无效"));
     }
+    if room_owners
+        .iter()
+        .any(|(floor_id, containing_floor_id)| floor_id != containing_floor_id)
+    {
+        return Err(phase4_error("客房必须属于所在楼层"));
+    }
 
-    let mut public_space_ids = HashSet::new();
     let public_spaces = phase4_object(
         phase4_field(phase4, "publicSpaces", "公共空间")?,
         "公共空间",
     )?;
     for raw_space in public_spaces.values() {
         let space = phase4_object(raw_space, "公共空间")?;
-        let id = phase4_stable_id(phase4_field(space, "id", "公共空间编号")?, "公共空间编号")?;
-        if !public_space_ids.insert(id) {
-            return Err(phase4_error("公共空间编号重复"));
-        }
         validate_phase4_money(phase4_field(space, "committedBuildCostCents", "施工金额")?)?;
     }
     let blueprints = phase4_object(
@@ -3163,6 +3198,31 @@ mod tests {
                 include_str!("../tests/fixtures/phase4-invalid/unsafe-money.json"),
                 "施工金额必须是安全整数",
             ),
+            (
+                "wrong-containing-floor",
+                include_str!("../tests/fixtures/phase4-invalid/wrong-containing-floor.json"),
+                "客房必须属于所在楼层",
+            ),
+            (
+                "malformed-record-key",
+                include_str!("../tests/fixtures/phase4-invalid/malformed-record-key.json"),
+                "记录键必须是稳定 ID",
+            ),
+            (
+                "non-object-record-value",
+                include_str!("../tests/fixtures/phase4-invalid/non-object-record-value.json"),
+                "公共空间蓝图结构无效",
+            ),
+            (
+                "record-key-id-mismatch",
+                include_str!("../tests/fixtures/phase4-invalid/record-key-id-mismatch.json"),
+                "记录键与编号不一致",
+            ),
+            (
+                "duplicate-record-value-id",
+                include_str!("../tests/fixtures/phase4-invalid/duplicate-record-value-id.json"),
+                "公共空间编号重复",
+            ),
         ] {
             let repository = SaveRepository::new(root(&format!("phase4-invalid-{name}")));
             let mut invalid = phase4_fixture(raw);
@@ -3237,6 +3297,18 @@ mod tests {
         let error = repository.commit_game(1, invalid).unwrap_err();
 
         assert!(error.contains("施工金额必须是安全整数"));
+        assert_eq!(
+            repository.load_game("phase4-shared").unwrap(),
+            Some(valid.clone())
+        );
+
+        let mut wrong_owner = phase4_fixture(include_str!(
+            "../tests/fixtures/phase4-invalid/wrong-containing-floor.json"
+        ));
+        wrong_owner["revision"] = json!(2);
+        let error = repository.commit_game(1, wrong_owner).unwrap_err();
+
+        assert!(error.contains("客房必须属于所在楼层"));
         assert_eq!(repository.load_game("phase4-shared").unwrap(), Some(valid));
     }
 

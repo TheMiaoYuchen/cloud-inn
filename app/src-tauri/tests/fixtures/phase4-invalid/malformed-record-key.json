@@ -1,0 +1,2812 @@
+{
+  "schemaVersion": 1,
+  "rulesetVersion": "prototype-v1",
+  "saveId": "phase4-shared",
+  "revision": 0,
+  "phase": "design",
+  "currentDay": 0,
+  "cashCents": 100000000,
+  "rateCents": 80000,
+  "roomBlueprint": null,
+  "floor": {
+    "id": "prototype-floor",
+    "rooms": []
+  },
+  "reports": [],
+  "latestReport": null,
+  "phase2": {
+    "hotelGene": {
+      "palette": "cloud-neutral",
+      "materials": [
+        "oak",
+        "linen"
+      ],
+      "metal": "brushed-brass",
+      "lighting": "warm",
+      "mood": "calm"
+    },
+    "roomMaster": {
+      "id": "room-blueprint:standard-king",
+      "name": "Standard King",
+      "columns": 8,
+      "rows": 12,
+      "cells": [
+        {
+          "x": 0,
+          "y": 0,
+          "zone": "bedroom"
+        },
+        {
+          "x": 1,
+          "y": 0,
+          "zone": "bedroom"
+        },
+        {
+          "x": 2,
+          "y": 0,
+          "zone": "bedroom"
+        },
+        {
+          "x": 3,
+          "y": 0,
+          "zone": "bedroom"
+        },
+        {
+          "x": 4,
+          "y": 0,
+          "zone": "bedroom"
+        },
+        {
+          "x": 5,
+          "y": 0,
+          "zone": "bedroom"
+        },
+        {
+          "x": 6,
+          "y": 0,
+          "zone": "bathroom"
+        },
+        {
+          "x": 7,
+          "y": 0,
+          "zone": "bathroom"
+        },
+        {
+          "x": 0,
+          "y": 1,
+          "zone": "bedroom"
+        },
+        {
+          "x": 1,
+          "y": 1,
+          "zone": "bedroom"
+        },
+        {
+          "x": 2,
+          "y": 1,
+          "zone": "bedroom"
+        },
+        {
+          "x": 3,
+          "y": 1,
+          "zone": "bedroom"
+        },
+        {
+          "x": 4,
+          "y": 1,
+          "zone": "bedroom"
+        },
+        {
+          "x": 5,
+          "y": 1,
+          "zone": "bedroom"
+        },
+        {
+          "x": 6,
+          "y": 1,
+          "zone": "bathroom"
+        },
+        {
+          "x": 7,
+          "y": 1,
+          "zone": "bathroom"
+        },
+        {
+          "x": 0,
+          "y": 2,
+          "zone": "bedroom"
+        },
+        {
+          "x": 1,
+          "y": 2,
+          "zone": "bedroom"
+        },
+        {
+          "x": 2,
+          "y": 2,
+          "zone": "bedroom"
+        },
+        {
+          "x": 3,
+          "y": 2,
+          "zone": "bedroom"
+        },
+        {
+          "x": 4,
+          "y": 2,
+          "zone": "bedroom"
+        },
+        {
+          "x": 5,
+          "y": 2,
+          "zone": "bedroom"
+        },
+        {
+          "x": 6,
+          "y": 2,
+          "zone": "bathroom"
+        },
+        {
+          "x": 7,
+          "y": 2,
+          "zone": "bathroom"
+        },
+        {
+          "x": 0,
+          "y": 3,
+          "zone": "bedroom"
+        },
+        {
+          "x": 1,
+          "y": 3,
+          "zone": "bedroom"
+        },
+        {
+          "x": 2,
+          "y": 3,
+          "zone": "bedroom"
+        },
+        {
+          "x": 3,
+          "y": 3,
+          "zone": "bedroom"
+        },
+        {
+          "x": 4,
+          "y": 3,
+          "zone": "bedroom"
+        },
+        {
+          "x": 5,
+          "y": 3,
+          "zone": "bedroom"
+        },
+        {
+          "x": 6,
+          "y": 3,
+          "zone": "bathroom"
+        },
+        {
+          "x": 7,
+          "y": 3,
+          "zone": "bathroom"
+        },
+        {
+          "x": 0,
+          "y": 4,
+          "zone": "bedroom"
+        },
+        {
+          "x": 1,
+          "y": 4,
+          "zone": "bedroom"
+        },
+        {
+          "x": 2,
+          "y": 4,
+          "zone": "bedroom"
+        },
+        {
+          "x": 3,
+          "y": 4,
+          "zone": "bedroom"
+        },
+        {
+          "x": 4,
+          "y": 4,
+          "zone": "bedroom"
+        },
+        {
+          "x": 5,
+          "y": 4,
+          "zone": "bedroom"
+        },
+        {
+          "x": 6,
+          "y": 4,
+          "zone": "bathroom"
+        },
+        {
+          "x": 7,
+          "y": 4,
+          "zone": "bathroom"
+        },
+        {
+          "x": 0,
+          "y": 5,
+          "zone": "bedroom"
+        },
+        {
+          "x": 1,
+          "y": 5,
+          "zone": "bedroom"
+        },
+        {
+          "x": 2,
+          "y": 5,
+          "zone": "bedroom"
+        },
+        {
+          "x": 3,
+          "y": 5,
+          "zone": "bedroom"
+        },
+        {
+          "x": 4,
+          "y": 5,
+          "zone": "bedroom"
+        },
+        {
+          "x": 5,
+          "y": 5,
+          "zone": "bedroom"
+        },
+        {
+          "x": 6,
+          "y": 5,
+          "zone": "bathroom"
+        },
+        {
+          "x": 7,
+          "y": 5,
+          "zone": "bathroom"
+        },
+        {
+          "x": 0,
+          "y": 6,
+          "zone": "bedroom"
+        },
+        {
+          "x": 1,
+          "y": 6,
+          "zone": "bedroom"
+        },
+        {
+          "x": 2,
+          "y": 6,
+          "zone": "bedroom"
+        },
+        {
+          "x": 3,
+          "y": 6,
+          "zone": "bedroom"
+        },
+        {
+          "x": 4,
+          "y": 6,
+          "zone": "bedroom"
+        },
+        {
+          "x": 5,
+          "y": 6,
+          "zone": "bedroom"
+        },
+        {
+          "x": 6,
+          "y": 6,
+          "zone": "bathroom"
+        },
+        {
+          "x": 7,
+          "y": 6,
+          "zone": "bathroom"
+        },
+        {
+          "x": 0,
+          "y": 7,
+          "zone": "bedroom"
+        },
+        {
+          "x": 1,
+          "y": 7,
+          "zone": "bedroom"
+        },
+        {
+          "x": 2,
+          "y": 7,
+          "zone": "bedroom"
+        },
+        {
+          "x": 3,
+          "y": 7,
+          "zone": "bedroom"
+        },
+        {
+          "x": 4,
+          "y": 7,
+          "zone": "bedroom"
+        },
+        {
+          "x": 5,
+          "y": 7,
+          "zone": "bedroom"
+        },
+        {
+          "x": 6,
+          "y": 7,
+          "zone": "bathroom"
+        },
+        {
+          "x": 7,
+          "y": 7,
+          "zone": "bathroom"
+        },
+        {
+          "x": 0,
+          "y": 8,
+          "zone": "bedroom"
+        },
+        {
+          "x": 1,
+          "y": 8,
+          "zone": "bedroom"
+        },
+        {
+          "x": 2,
+          "y": 8,
+          "zone": "bedroom"
+        },
+        {
+          "x": 3,
+          "y": 8,
+          "zone": "bedroom"
+        },
+        {
+          "x": 4,
+          "y": 8,
+          "zone": "bedroom"
+        },
+        {
+          "x": 5,
+          "y": 8,
+          "zone": "bedroom"
+        },
+        {
+          "x": 6,
+          "y": 8,
+          "zone": "bathroom"
+        },
+        {
+          "x": 7,
+          "y": 8,
+          "zone": "bathroom"
+        },
+        {
+          "x": 0,
+          "y": 9,
+          "zone": "bedroom"
+        },
+        {
+          "x": 1,
+          "y": 9,
+          "zone": "bedroom"
+        },
+        {
+          "x": 2,
+          "y": 9,
+          "zone": "bedroom"
+        },
+        {
+          "x": 3,
+          "y": 9,
+          "zone": "bedroom"
+        },
+        {
+          "x": 4,
+          "y": 9,
+          "zone": "bedroom"
+        },
+        {
+          "x": 5,
+          "y": 9,
+          "zone": "bedroom"
+        },
+        {
+          "x": 6,
+          "y": 9,
+          "zone": "bathroom"
+        },
+        {
+          "x": 7,
+          "y": 9,
+          "zone": "bathroom"
+        },
+        {
+          "x": 0,
+          "y": 10,
+          "zone": "bedroom"
+        },
+        {
+          "x": 1,
+          "y": 10,
+          "zone": "bedroom"
+        },
+        {
+          "x": 2,
+          "y": 10,
+          "zone": "bedroom"
+        },
+        {
+          "x": 3,
+          "y": 10,
+          "zone": "bedroom"
+        },
+        {
+          "x": 4,
+          "y": 10,
+          "zone": "bedroom"
+        },
+        {
+          "x": 5,
+          "y": 10,
+          "zone": "bedroom"
+        },
+        {
+          "x": 6,
+          "y": 10,
+          "zone": "bathroom"
+        },
+        {
+          "x": 7,
+          "y": 10,
+          "zone": "bathroom"
+        },
+        {
+          "x": 0,
+          "y": 11,
+          "zone": "bedroom"
+        },
+        {
+          "x": 1,
+          "y": 11,
+          "zone": "bedroom"
+        },
+        {
+          "x": 2,
+          "y": 11,
+          "zone": "bedroom"
+        },
+        {
+          "x": 3,
+          "y": 11,
+          "zone": "bedroom"
+        },
+        {
+          "x": 4,
+          "y": 11,
+          "zone": "bedroom"
+        },
+        {
+          "x": 5,
+          "y": 11,
+          "zone": "bedroom"
+        },
+        {
+          "x": 6,
+          "y": 11,
+          "zone": "bathroom"
+        },
+        {
+          "x": 7,
+          "y": 11,
+          "zone": "bathroom"
+        }
+      ],
+      "metrics": {
+        "areaSquareMeters": 24,
+        "buildCostCents": 11600000,
+        "suggestedRateCents": 80000,
+        "businessFitBps": 8500
+      },
+      "visual": {
+        "status": "idle"
+      },
+      "gene": {
+        "palette": "cloud-neutral",
+        "materials": [
+          "oak",
+          "linen"
+        ],
+        "metal": "brushed-brass",
+        "lighting": "warm",
+        "mood": "calm"
+      },
+      "openings": {
+        "walls": [],
+        "doors": [],
+        "windows": []
+      }
+    },
+    "roomVariants": [],
+    "corridorTemplate": null
+  },
+  "phase4": {
+    "rulesetVersion": "content-scale-v1",
+    "building": {
+      "templateId": "building-template:first-tower",
+      "entranceFloorId": "floor:01",
+      "skyLobbyFloorIds": [
+        "floor:02"
+      ],
+      "purchasedFloorIds": [
+        "floor:01",
+        "floor:02",
+        "floor:03",
+        "floor:04",
+        "floor:05",
+        "floor:06",
+        "floor:07",
+        "floor:08",
+        "floor:09",
+        "floor:10",
+        "floor:11",
+        "floor:12",
+        "floor:13",
+        "floor:14",
+        "floor:15",
+        "floor:16"
+      ],
+      "availableExpansionFloorNumbers": [
+        17,
+        18,
+        19,
+        20
+      ]
+    },
+    "floorTemplates": {
+      "Bad Key": {
+        "id": "template:entrance:standard",
+        "use": "entrance",
+        "columns": 24,
+        "rows": 24,
+        "cellAreaSquareMeters": 1,
+        "roomPlacements": [],
+        "publicSpaceSlots": []
+      },
+      "template:facility:standard": {
+        "id": "template:facility:standard",
+        "use": "facility",
+        "columns": 24,
+        "rows": 24,
+        "cellAreaSquareMeters": 1,
+        "roomPlacements": [],
+        "publicSpaceSlots": [
+          {
+            "id": "space:01",
+            "permittedTypes": [
+              "executive-lounge"
+            ]
+          },
+          {
+            "id": "space:02",
+            "permittedTypes": [
+              "spa"
+            ]
+          },
+          {
+            "id": "space:03",
+            "permittedTypes": [
+              "pool"
+            ]
+          },
+          {
+            "id": "space:04",
+            "permittedTypes": [
+              "gym"
+            ]
+          }
+        ]
+      },
+      "template:facility:upper": {
+        "id": "template:facility:upper",
+        "use": "facility",
+        "columns": 24,
+        "rows": 24,
+        "cellAreaSquareMeters": 1,
+        "roomPlacements": [],
+        "publicSpaceSlots": [
+          {
+            "id": "space:01",
+            "permittedTypes": [
+              "ballroom"
+            ]
+          },
+          {
+            "id": "space:02",
+            "permittedTypes": [
+              "meeting-room"
+            ]
+          },
+          {
+            "id": "space:03",
+            "permittedTypes": [
+              "garden-terrace"
+            ]
+          },
+          {
+            "id": "space:04",
+            "permittedTypes": [
+              "boutique"
+            ]
+          }
+        ]
+      },
+      "template:guest:dense-ring": {
+        "id": "template:guest:dense-ring",
+        "use": "guest",
+        "columns": 24,
+        "rows": 60,
+        "cellAreaSquareMeters": 1,
+        "roomPlacements": [
+          {
+            "id": "placement:001",
+            "roomBlueprintId": "room-blueprint:standard-king",
+            "anchorX": 0,
+            "anchorY": 0,
+            "width": 4,
+            "height": 6,
+            "rotation": 0,
+            "mirrored": false
+          },
+          {
+            "id": "placement:002",
+            "roomBlueprintId": "room-blueprint:standard-king",
+            "anchorX": 8,
+            "anchorY": 0,
+            "width": 4,
+            "height": 6,
+            "rotation": 180,
+            "mirrored": true
+          },
+          {
+            "id": "placement:003",
+            "roomBlueprintId": "room-blueprint:standard-king",
+            "anchorX": 0,
+            "anchorY": 6,
+            "width": 4,
+            "height": 6,
+            "rotation": 0,
+            "mirrored": false
+          },
+          {
+            "id": "placement:004",
+            "roomBlueprintId": "room-blueprint:standard-king",
+            "anchorX": 8,
+            "anchorY": 6,
+            "width": 4,
+            "height": 6,
+            "rotation": 180,
+            "mirrored": true
+          },
+          {
+            "id": "placement:005",
+            "roomBlueprintId": "room-blueprint:standard-king",
+            "anchorX": 0,
+            "anchorY": 12,
+            "width": 4,
+            "height": 6,
+            "rotation": 0,
+            "mirrored": false
+          },
+          {
+            "id": "placement:006",
+            "roomBlueprintId": "room-blueprint:standard-king",
+            "anchorX": 8,
+            "anchorY": 12,
+            "width": 4,
+            "height": 6,
+            "rotation": 180,
+            "mirrored": true
+          },
+          {
+            "id": "placement:007",
+            "roomBlueprintId": "room-blueprint:standard-king",
+            "anchorX": 0,
+            "anchorY": 18,
+            "width": 4,
+            "height": 6,
+            "rotation": 0,
+            "mirrored": false
+          },
+          {
+            "id": "placement:008",
+            "roomBlueprintId": "room-blueprint:standard-king",
+            "anchorX": 8,
+            "anchorY": 18,
+            "width": 4,
+            "height": 6,
+            "rotation": 180,
+            "mirrored": true
+          },
+          {
+            "id": "placement:009",
+            "roomBlueprintId": "room-blueprint:standard-king",
+            "anchorX": 0,
+            "anchorY": 24,
+            "width": 4,
+            "height": 6,
+            "rotation": 0,
+            "mirrored": false
+          },
+          {
+            "id": "placement:010",
+            "roomBlueprintId": "room-blueprint:standard-king",
+            "anchorX": 8,
+            "anchorY": 24,
+            "width": 4,
+            "height": 6,
+            "rotation": 180,
+            "mirrored": true
+          }
+        ],
+        "publicSpaceSlots": []
+      },
+      "template:sky-lobby:standard": {
+        "id": "template:sky-lobby:standard",
+        "use": "sky-lobby",
+        "columns": 24,
+        "rows": 24,
+        "cellAreaSquareMeters": 1,
+        "roomPlacements": [],
+        "publicSpaceSlots": [
+          {
+            "id": "space:01",
+            "permittedTypes": [
+              "sky-lobby"
+            ]
+          },
+          {
+            "id": "space:02",
+            "permittedTypes": [
+              "all-day-dining"
+            ]
+          },
+          {
+            "id": "space:03",
+            "permittedTypes": [
+              "chinese-restaurant"
+            ]
+          },
+          {
+            "id": "space:04",
+            "permittedTypes": [
+              "bar"
+            ]
+          }
+        ]
+      }
+    },
+    "floors": [
+      {
+        "id": "floor:01",
+        "floorNumber": 1,
+        "use": "entrance",
+        "templateId": "template:entrance:standard",
+        "purchased": true,
+        "rooms": [],
+        "publicSpaceInstanceIds": []
+      },
+      {
+        "id": "floor:02",
+        "floorNumber": 2,
+        "use": "sky-lobby",
+        "templateId": "template:sky-lobby:standard",
+        "purchased": true,
+        "rooms": [],
+        "publicSpaceInstanceIds": [
+          "public-space:floor:02:space:01",
+          "public-space:floor:02:space:02",
+          "public-space:floor:02:space:03",
+          "public-space:floor:02:space:04"
+        ]
+      },
+      {
+        "id": "floor:03",
+        "floorNumber": 3,
+        "use": "facility",
+        "templateId": "template:facility:standard",
+        "purchased": true,
+        "rooms": [],
+        "publicSpaceInstanceIds": [
+          "public-space:floor:03:space:01",
+          "public-space:floor:03:space:02",
+          "public-space:floor:03:space:03",
+          "public-space:floor:03:space:04"
+        ]
+      },
+      {
+        "id": "floor:04",
+        "floorNumber": 4,
+        "use": "facility",
+        "templateId": "template:facility:upper",
+        "purchased": true,
+        "rooms": [],
+        "publicSpaceInstanceIds": [
+          "public-space:floor:04:space:01",
+          "public-space:floor:04:space:02",
+          "public-space:floor:04:space:03",
+          "public-space:floor:04:space:04"
+        ]
+      },
+      {
+        "id": "floor:05",
+        "floorNumber": 5,
+        "use": "guest",
+        "templateId": "template:guest:dense-ring",
+        "purchased": true,
+        "rooms": [
+          {
+            "id": "room:floor:05:placement:001",
+            "floorId": "floor:05",
+            "localPlacementId": "placement:001",
+            "roomBlueprintId": "room-blueprint:standard-king",
+            "committedBuildCostCents": 2500000
+          },
+          {
+            "id": "room:floor:05:placement:002",
+            "floorId": "floor:05",
+            "localPlacementId": "placement:002",
+            "roomBlueprintId": "room-blueprint:standard-king",
+            "committedBuildCostCents": 2500000
+          },
+          {
+            "id": "room:floor:05:placement:003",
+            "floorId": "floor:05",
+            "localPlacementId": "placement:003",
+            "roomBlueprintId": "room-blueprint:standard-king",
+            "committedBuildCostCents": 2500000
+          },
+          {
+            "id": "room:floor:05:placement:004",
+            "floorId": "floor:05",
+            "localPlacementId": "placement:004",
+            "roomBlueprintId": "room-blueprint:standard-king",
+            "committedBuildCostCents": 2500000
+          },
+          {
+            "id": "room:floor:05:placement:005",
+            "floorId": "floor:05",
+            "localPlacementId": "placement:005",
+            "roomBlueprintId": "room-blueprint:standard-king",
+            "committedBuildCostCents": 2500000
+          },
+          {
+            "id": "room:floor:05:placement:006",
+            "floorId": "floor:05",
+            "localPlacementId": "placement:006",
+            "roomBlueprintId": "room-blueprint:standard-king",
+            "committedBuildCostCents": 2500000
+          },
+          {
+            "id": "room:floor:05:placement:007",
+            "floorId": "floor:05",
+            "localPlacementId": "placement:007",
+            "roomBlueprintId": "room-blueprint:standard-king",
+            "committedBuildCostCents": 2500000
+          },
+          {
+            "id": "room:floor:05:placement:008",
+            "floorId": "floor:05",
+            "localPlacementId": "placement:008",
+            "roomBlueprintId": "room-blueprint:standard-king",
+            "committedBuildCostCents": 2500000
+          },
+          {
+            "id": "room:floor:05:placement:009",
+            "floorId": "floor:05",
+            "localPlacementId": "placement:009",
+            "roomBlueprintId": "room-blueprint:standard-king",
+            "committedBuildCostCents": 2500000
+          },
+          {
+            "id": "room:floor:05:placement:010",
+            "floorId": "floor:05",
+            "localPlacementId": "placement:010",
+            "roomBlueprintId": "room-blueprint:standard-king",
+            "committedBuildCostCents": 2500000
+          }
+        ],
+        "publicSpaceInstanceIds": []
+      },
+      {
+        "id": "floor:06",
+        "floorNumber": 6,
+        "use": "guest",
+        "templateId": "template:guest:dense-ring",
+        "purchased": true,
+        "rooms": [
+          {
+            "id": "room:floor:06:placement:001",
+            "floorId": "floor:06",
+            "localPlacementId": "placement:001",
+            "roomBlueprintId": "room-blueprint:standard-king",
+            "committedBuildCostCents": 2500000
+          },
+          {
+            "id": "room:floor:06:placement:002",
+            "floorId": "floor:06",
+            "localPlacementId": "placement:002",
+            "roomBlueprintId": "room-blueprint:standard-king",
+            "committedBuildCostCents": 2500000
+          },
+          {
+            "id": "room:floor:06:placement:003",
+            "floorId": "floor:06",
+            "localPlacementId": "placement:003",
+            "roomBlueprintId": "room-blueprint:standard-king",
+            "committedBuildCostCents": 2500000
+          },
+          {
+            "id": "room:floor:06:placement:004",
+            "floorId": "floor:06",
+            "localPlacementId": "placement:004",
+            "roomBlueprintId": "room-blueprint:standard-king",
+            "committedBuildCostCents": 2500000
+          },
+          {
+            "id": "room:floor:06:placement:005",
+            "floorId": "floor:06",
+            "localPlacementId": "placement:005",
+            "roomBlueprintId": "room-blueprint:standard-king",
+            "committedBuildCostCents": 2500000
+          },
+          {
+            "id": "room:floor:06:placement:006",
+            "floorId": "floor:06",
+            "localPlacementId": "placement:006",
+            "roomBlueprintId": "room-blueprint:standard-king",
+            "committedBuildCostCents": 2500000
+          },
+          {
+            "id": "room:floor:06:placement:007",
+            "floorId": "floor:06",
+            "localPlacementId": "placement:007",
+            "roomBlueprintId": "room-blueprint:standard-king",
+            "committedBuildCostCents": 2500000
+          },
+          {
+            "id": "room:floor:06:placement:008",
+            "floorId": "floor:06",
+            "localPlacementId": "placement:008",
+            "roomBlueprintId": "room-blueprint:standard-king",
+            "committedBuildCostCents": 2500000
+          },
+          {
+            "id": "room:floor:06:placement:009",
+            "floorId": "floor:06",
+            "localPlacementId": "placement:009",
+            "roomBlueprintId": "room-blueprint:standard-king",
+            "committedBuildCostCents": 2500000
+          },
+          {
+            "id": "room:floor:06:placement:010",
+            "floorId": "floor:06",
+            "localPlacementId": "placement:010",
+            "roomBlueprintId": "room-blueprint:standard-king",
+            "committedBuildCostCents": 2500000
+          }
+        ],
+        "publicSpaceInstanceIds": []
+      },
+      {
+        "id": "floor:07",
+        "floorNumber": 7,
+        "use": "guest",
+        "templateId": "template:guest:dense-ring",
+        "purchased": true,
+        "rooms": [
+          {
+            "id": "room:floor:07:placement:001",
+            "floorId": "floor:07",
+            "localPlacementId": "placement:001",
+            "roomBlueprintId": "room-blueprint:standard-king",
+            "committedBuildCostCents": 2500000
+          },
+          {
+            "id": "room:floor:07:placement:002",
+            "floorId": "floor:07",
+            "localPlacementId": "placement:002",
+            "roomBlueprintId": "room-blueprint:standard-king",
+            "committedBuildCostCents": 2500000
+          },
+          {
+            "id": "room:floor:07:placement:003",
+            "floorId": "floor:07",
+            "localPlacementId": "placement:003",
+            "roomBlueprintId": "room-blueprint:standard-king",
+            "committedBuildCostCents": 2500000
+          },
+          {
+            "id": "room:floor:07:placement:004",
+            "floorId": "floor:07",
+            "localPlacementId": "placement:004",
+            "roomBlueprintId": "room-blueprint:standard-king",
+            "committedBuildCostCents": 2500000
+          },
+          {
+            "id": "room:floor:07:placement:005",
+            "floorId": "floor:07",
+            "localPlacementId": "placement:005",
+            "roomBlueprintId": "room-blueprint:standard-king",
+            "committedBuildCostCents": 2500000
+          },
+          {
+            "id": "room:floor:07:placement:006",
+            "floorId": "floor:07",
+            "localPlacementId": "placement:006",
+            "roomBlueprintId": "room-blueprint:standard-king",
+            "committedBuildCostCents": 2500000
+          },
+          {
+            "id": "room:floor:07:placement:007",
+            "floorId": "floor:07",
+            "localPlacementId": "placement:007",
+            "roomBlueprintId": "room-blueprint:standard-king",
+            "committedBuildCostCents": 2500000
+          },
+          {
+            "id": "room:floor:07:placement:008",
+            "floorId": "floor:07",
+            "localPlacementId": "placement:008",
+            "roomBlueprintId": "room-blueprint:standard-king",
+            "committedBuildCostCents": 2500000
+          },
+          {
+            "id": "room:floor:07:placement:009",
+            "floorId": "floor:07",
+            "localPlacementId": "placement:009",
+            "roomBlueprintId": "room-blueprint:standard-king",
+            "committedBuildCostCents": 2500000
+          },
+          {
+            "id": "room:floor:07:placement:010",
+            "floorId": "floor:07",
+            "localPlacementId": "placement:010",
+            "roomBlueprintId": "room-blueprint:standard-king",
+            "committedBuildCostCents": 2500000
+          }
+        ],
+        "publicSpaceInstanceIds": []
+      },
+      {
+        "id": "floor:08",
+        "floorNumber": 8,
+        "use": "guest",
+        "templateId": "template:guest:dense-ring",
+        "purchased": true,
+        "rooms": [
+          {
+            "id": "room:floor:08:placement:001",
+            "floorId": "floor:08",
+            "localPlacementId": "placement:001",
+            "roomBlueprintId": "room-blueprint:standard-king",
+            "committedBuildCostCents": 2500000
+          },
+          {
+            "id": "room:floor:08:placement:002",
+            "floorId": "floor:08",
+            "localPlacementId": "placement:002",
+            "roomBlueprintId": "room-blueprint:standard-king",
+            "committedBuildCostCents": 2500000
+          },
+          {
+            "id": "room:floor:08:placement:003",
+            "floorId": "floor:08",
+            "localPlacementId": "placement:003",
+            "roomBlueprintId": "room-blueprint:standard-king",
+            "committedBuildCostCents": 2500000
+          },
+          {
+            "id": "room:floor:08:placement:004",
+            "floorId": "floor:08",
+            "localPlacementId": "placement:004",
+            "roomBlueprintId": "room-blueprint:standard-king",
+            "committedBuildCostCents": 2500000
+          },
+          {
+            "id": "room:floor:08:placement:005",
+            "floorId": "floor:08",
+            "localPlacementId": "placement:005",
+            "roomBlueprintId": "room-blueprint:standard-king",
+            "committedBuildCostCents": 2500000
+          },
+          {
+            "id": "room:floor:08:placement:006",
+            "floorId": "floor:08",
+            "localPlacementId": "placement:006",
+            "roomBlueprintId": "room-blueprint:standard-king",
+            "committedBuildCostCents": 2500000
+          },
+          {
+            "id": "room:floor:08:placement:007",
+            "floorId": "floor:08",
+            "localPlacementId": "placement:007",
+            "roomBlueprintId": "room-blueprint:standard-king",
+            "committedBuildCostCents": 2500000
+          },
+          {
+            "id": "room:floor:08:placement:008",
+            "floorId": "floor:08",
+            "localPlacementId": "placement:008",
+            "roomBlueprintId": "room-blueprint:standard-king",
+            "committedBuildCostCents": 2500000
+          },
+          {
+            "id": "room:floor:08:placement:009",
+            "floorId": "floor:08",
+            "localPlacementId": "placement:009",
+            "roomBlueprintId": "room-blueprint:standard-king",
+            "committedBuildCostCents": 2500000
+          },
+          {
+            "id": "room:floor:08:placement:010",
+            "floorId": "floor:08",
+            "localPlacementId": "placement:010",
+            "roomBlueprintId": "room-blueprint:standard-king",
+            "committedBuildCostCents": 2500000
+          }
+        ],
+        "publicSpaceInstanceIds": []
+      },
+      {
+        "id": "floor:09",
+        "floorNumber": 9,
+        "use": "guest",
+        "templateId": "template:guest:dense-ring",
+        "purchased": true,
+        "rooms": [
+          {
+            "id": "room:floor:09:placement:001",
+            "floorId": "floor:09",
+            "localPlacementId": "placement:001",
+            "roomBlueprintId": "room-blueprint:standard-king",
+            "committedBuildCostCents": 2500000
+          },
+          {
+            "id": "room:floor:09:placement:002",
+            "floorId": "floor:09",
+            "localPlacementId": "placement:002",
+            "roomBlueprintId": "room-blueprint:standard-king",
+            "committedBuildCostCents": 2500000
+          },
+          {
+            "id": "room:floor:09:placement:003",
+            "floorId": "floor:09",
+            "localPlacementId": "placement:003",
+            "roomBlueprintId": "room-blueprint:standard-king",
+            "committedBuildCostCents": 2500000
+          },
+          {
+            "id": "room:floor:09:placement:004",
+            "floorId": "floor:09",
+            "localPlacementId": "placement:004",
+            "roomBlueprintId": "room-blueprint:standard-king",
+            "committedBuildCostCents": 2500000
+          },
+          {
+            "id": "room:floor:09:placement:005",
+            "floorId": "floor:09",
+            "localPlacementId": "placement:005",
+            "roomBlueprintId": "room-blueprint:standard-king",
+            "committedBuildCostCents": 2500000
+          },
+          {
+            "id": "room:floor:09:placement:006",
+            "floorId": "floor:09",
+            "localPlacementId": "placement:006",
+            "roomBlueprintId": "room-blueprint:standard-king",
+            "committedBuildCostCents": 2500000
+          },
+          {
+            "id": "room:floor:09:placement:007",
+            "floorId": "floor:09",
+            "localPlacementId": "placement:007",
+            "roomBlueprintId": "room-blueprint:standard-king",
+            "committedBuildCostCents": 2500000
+          },
+          {
+            "id": "room:floor:09:placement:008",
+            "floorId": "floor:09",
+            "localPlacementId": "placement:008",
+            "roomBlueprintId": "room-blueprint:standard-king",
+            "committedBuildCostCents": 2500000
+          },
+          {
+            "id": "room:floor:09:placement:009",
+            "floorId": "floor:09",
+            "localPlacementId": "placement:009",
+            "roomBlueprintId": "room-blueprint:standard-king",
+            "committedBuildCostCents": 2500000
+          },
+          {
+            "id": "room:floor:09:placement:010",
+            "floorId": "floor:09",
+            "localPlacementId": "placement:010",
+            "roomBlueprintId": "room-blueprint:standard-king",
+            "committedBuildCostCents": 2500000
+          }
+        ],
+        "publicSpaceInstanceIds": []
+      },
+      {
+        "id": "floor:10",
+        "floorNumber": 10,
+        "use": "guest",
+        "templateId": "template:guest:dense-ring",
+        "purchased": true,
+        "rooms": [
+          {
+            "id": "room:floor:10:placement:001",
+            "floorId": "floor:10",
+            "localPlacementId": "placement:001",
+            "roomBlueprintId": "room-blueprint:standard-king",
+            "committedBuildCostCents": 2500000
+          },
+          {
+            "id": "room:floor:10:placement:002",
+            "floorId": "floor:10",
+            "localPlacementId": "placement:002",
+            "roomBlueprintId": "room-blueprint:standard-king",
+            "committedBuildCostCents": 2500000
+          },
+          {
+            "id": "room:floor:10:placement:003",
+            "floorId": "floor:10",
+            "localPlacementId": "placement:003",
+            "roomBlueprintId": "room-blueprint:standard-king",
+            "committedBuildCostCents": 2500000
+          },
+          {
+            "id": "room:floor:10:placement:004",
+            "floorId": "floor:10",
+            "localPlacementId": "placement:004",
+            "roomBlueprintId": "room-blueprint:standard-king",
+            "committedBuildCostCents": 2500000
+          },
+          {
+            "id": "room:floor:10:placement:005",
+            "floorId": "floor:10",
+            "localPlacementId": "placement:005",
+            "roomBlueprintId": "room-blueprint:standard-king",
+            "committedBuildCostCents": 2500000
+          },
+          {
+            "id": "room:floor:10:placement:006",
+            "floorId": "floor:10",
+            "localPlacementId": "placement:006",
+            "roomBlueprintId": "room-blueprint:standard-king",
+            "committedBuildCostCents": 2500000
+          },
+          {
+            "id": "room:floor:10:placement:007",
+            "floorId": "floor:10",
+            "localPlacementId": "placement:007",
+            "roomBlueprintId": "room-blueprint:standard-king",
+            "committedBuildCostCents": 2500000
+          },
+          {
+            "id": "room:floor:10:placement:008",
+            "floorId": "floor:10",
+            "localPlacementId": "placement:008",
+            "roomBlueprintId": "room-blueprint:standard-king",
+            "committedBuildCostCents": 2500000
+          },
+          {
+            "id": "room:floor:10:placement:009",
+            "floorId": "floor:10",
+            "localPlacementId": "placement:009",
+            "roomBlueprintId": "room-blueprint:standard-king",
+            "committedBuildCostCents": 2500000
+          },
+          {
+            "id": "room:floor:10:placement:010",
+            "floorId": "floor:10",
+            "localPlacementId": "placement:010",
+            "roomBlueprintId": "room-blueprint:standard-king",
+            "committedBuildCostCents": 2500000
+          }
+        ],
+        "publicSpaceInstanceIds": []
+      },
+      {
+        "id": "floor:11",
+        "floorNumber": 11,
+        "use": "guest",
+        "templateId": "template:guest:dense-ring",
+        "purchased": true,
+        "rooms": [
+          {
+            "id": "room:floor:11:placement:001",
+            "floorId": "floor:11",
+            "localPlacementId": "placement:001",
+            "roomBlueprintId": "room-blueprint:standard-king",
+            "committedBuildCostCents": 2500000
+          },
+          {
+            "id": "room:floor:11:placement:002",
+            "floorId": "floor:11",
+            "localPlacementId": "placement:002",
+            "roomBlueprintId": "room-blueprint:standard-king",
+            "committedBuildCostCents": 2500000
+          },
+          {
+            "id": "room:floor:11:placement:003",
+            "floorId": "floor:11",
+            "localPlacementId": "placement:003",
+            "roomBlueprintId": "room-blueprint:standard-king",
+            "committedBuildCostCents": 2500000
+          },
+          {
+            "id": "room:floor:11:placement:004",
+            "floorId": "floor:11",
+            "localPlacementId": "placement:004",
+            "roomBlueprintId": "room-blueprint:standard-king",
+            "committedBuildCostCents": 2500000
+          },
+          {
+            "id": "room:floor:11:placement:005",
+            "floorId": "floor:11",
+            "localPlacementId": "placement:005",
+            "roomBlueprintId": "room-blueprint:standard-king",
+            "committedBuildCostCents": 2500000
+          },
+          {
+            "id": "room:floor:11:placement:006",
+            "floorId": "floor:11",
+            "localPlacementId": "placement:006",
+            "roomBlueprintId": "room-blueprint:standard-king",
+            "committedBuildCostCents": 2500000
+          },
+          {
+            "id": "room:floor:11:placement:007",
+            "floorId": "floor:11",
+            "localPlacementId": "placement:007",
+            "roomBlueprintId": "room-blueprint:standard-king",
+            "committedBuildCostCents": 2500000
+          },
+          {
+            "id": "room:floor:11:placement:008",
+            "floorId": "floor:11",
+            "localPlacementId": "placement:008",
+            "roomBlueprintId": "room-blueprint:standard-king",
+            "committedBuildCostCents": 2500000
+          },
+          {
+            "id": "room:floor:11:placement:009",
+            "floorId": "floor:11",
+            "localPlacementId": "placement:009",
+            "roomBlueprintId": "room-blueprint:standard-king",
+            "committedBuildCostCents": 2500000
+          },
+          {
+            "id": "room:floor:11:placement:010",
+            "floorId": "floor:11",
+            "localPlacementId": "placement:010",
+            "roomBlueprintId": "room-blueprint:standard-king",
+            "committedBuildCostCents": 2500000
+          }
+        ],
+        "publicSpaceInstanceIds": []
+      },
+      {
+        "id": "floor:12",
+        "floorNumber": 12,
+        "use": "guest",
+        "templateId": "template:guest:dense-ring",
+        "purchased": true,
+        "rooms": [
+          {
+            "id": "room:floor:12:placement:001",
+            "floorId": "floor:12",
+            "localPlacementId": "placement:001",
+            "roomBlueprintId": "room-blueprint:standard-king",
+            "committedBuildCostCents": 2500000
+          },
+          {
+            "id": "room:floor:12:placement:002",
+            "floorId": "floor:12",
+            "localPlacementId": "placement:002",
+            "roomBlueprintId": "room-blueprint:standard-king",
+            "committedBuildCostCents": 2500000
+          },
+          {
+            "id": "room:floor:12:placement:003",
+            "floorId": "floor:12",
+            "localPlacementId": "placement:003",
+            "roomBlueprintId": "room-blueprint:standard-king",
+            "committedBuildCostCents": 2500000
+          },
+          {
+            "id": "room:floor:12:placement:004",
+            "floorId": "floor:12",
+            "localPlacementId": "placement:004",
+            "roomBlueprintId": "room-blueprint:standard-king",
+            "committedBuildCostCents": 2500000
+          },
+          {
+            "id": "room:floor:12:placement:005",
+            "floorId": "floor:12",
+            "localPlacementId": "placement:005",
+            "roomBlueprintId": "room-blueprint:standard-king",
+            "committedBuildCostCents": 2500000
+          },
+          {
+            "id": "room:floor:12:placement:006",
+            "floorId": "floor:12",
+            "localPlacementId": "placement:006",
+            "roomBlueprintId": "room-blueprint:standard-king",
+            "committedBuildCostCents": 2500000
+          },
+          {
+            "id": "room:floor:12:placement:007",
+            "floorId": "floor:12",
+            "localPlacementId": "placement:007",
+            "roomBlueprintId": "room-blueprint:standard-king",
+            "committedBuildCostCents": 2500000
+          },
+          {
+            "id": "room:floor:12:placement:008",
+            "floorId": "floor:12",
+            "localPlacementId": "placement:008",
+            "roomBlueprintId": "room-blueprint:standard-king",
+            "committedBuildCostCents": 2500000
+          },
+          {
+            "id": "room:floor:12:placement:009",
+            "floorId": "floor:12",
+            "localPlacementId": "placement:009",
+            "roomBlueprintId": "room-blueprint:standard-king",
+            "committedBuildCostCents": 2500000
+          },
+          {
+            "id": "room:floor:12:placement:010",
+            "floorId": "floor:12",
+            "localPlacementId": "placement:010",
+            "roomBlueprintId": "room-blueprint:standard-king",
+            "committedBuildCostCents": 2500000
+          }
+        ],
+        "publicSpaceInstanceIds": []
+      },
+      {
+        "id": "floor:13",
+        "floorNumber": 13,
+        "use": "guest",
+        "templateId": "template:guest:dense-ring",
+        "purchased": true,
+        "rooms": [
+          {
+            "id": "room:floor:13:placement:001",
+            "floorId": "floor:13",
+            "localPlacementId": "placement:001",
+            "roomBlueprintId": "room-blueprint:standard-king",
+            "committedBuildCostCents": 2500000
+          },
+          {
+            "id": "room:floor:13:placement:002",
+            "floorId": "floor:13",
+            "localPlacementId": "placement:002",
+            "roomBlueprintId": "room-blueprint:standard-king",
+            "committedBuildCostCents": 2500000
+          },
+          {
+            "id": "room:floor:13:placement:003",
+            "floorId": "floor:13",
+            "localPlacementId": "placement:003",
+            "roomBlueprintId": "room-blueprint:standard-king",
+            "committedBuildCostCents": 2500000
+          },
+          {
+            "id": "room:floor:13:placement:004",
+            "floorId": "floor:13",
+            "localPlacementId": "placement:004",
+            "roomBlueprintId": "room-blueprint:standard-king",
+            "committedBuildCostCents": 2500000
+          },
+          {
+            "id": "room:floor:13:placement:005",
+            "floorId": "floor:13",
+            "localPlacementId": "placement:005",
+            "roomBlueprintId": "room-blueprint:standard-king",
+            "committedBuildCostCents": 2500000
+          },
+          {
+            "id": "room:floor:13:placement:006",
+            "floorId": "floor:13",
+            "localPlacementId": "placement:006",
+            "roomBlueprintId": "room-blueprint:standard-king",
+            "committedBuildCostCents": 2500000
+          },
+          {
+            "id": "room:floor:13:placement:007",
+            "floorId": "floor:13",
+            "localPlacementId": "placement:007",
+            "roomBlueprintId": "room-blueprint:standard-king",
+            "committedBuildCostCents": 2500000
+          },
+          {
+            "id": "room:floor:13:placement:008",
+            "floorId": "floor:13",
+            "localPlacementId": "placement:008",
+            "roomBlueprintId": "room-blueprint:standard-king",
+            "committedBuildCostCents": 2500000
+          },
+          {
+            "id": "room:floor:13:placement:009",
+            "floorId": "floor:13",
+            "localPlacementId": "placement:009",
+            "roomBlueprintId": "room-blueprint:standard-king",
+            "committedBuildCostCents": 2500000
+          },
+          {
+            "id": "room:floor:13:placement:010",
+            "floorId": "floor:13",
+            "localPlacementId": "placement:010",
+            "roomBlueprintId": "room-blueprint:standard-king",
+            "committedBuildCostCents": 2500000
+          }
+        ],
+        "publicSpaceInstanceIds": []
+      },
+      {
+        "id": "floor:14",
+        "floorNumber": 14,
+        "use": "guest",
+        "templateId": "template:guest:dense-ring",
+        "purchased": true,
+        "rooms": [
+          {
+            "id": "room:floor:14:placement:001",
+            "floorId": "floor:14",
+            "localPlacementId": "placement:001",
+            "roomBlueprintId": "room-blueprint:standard-king",
+            "committedBuildCostCents": 2500000
+          },
+          {
+            "id": "room:floor:14:placement:002",
+            "floorId": "floor:14",
+            "localPlacementId": "placement:002",
+            "roomBlueprintId": "room-blueprint:standard-king",
+            "committedBuildCostCents": 2500000
+          },
+          {
+            "id": "room:floor:14:placement:003",
+            "floorId": "floor:14",
+            "localPlacementId": "placement:003",
+            "roomBlueprintId": "room-blueprint:standard-king",
+            "committedBuildCostCents": 2500000
+          },
+          {
+            "id": "room:floor:14:placement:004",
+            "floorId": "floor:14",
+            "localPlacementId": "placement:004",
+            "roomBlueprintId": "room-blueprint:standard-king",
+            "committedBuildCostCents": 2500000
+          },
+          {
+            "id": "room:floor:14:placement:005",
+            "floorId": "floor:14",
+            "localPlacementId": "placement:005",
+            "roomBlueprintId": "room-blueprint:standard-king",
+            "committedBuildCostCents": 2500000
+          },
+          {
+            "id": "room:floor:14:placement:006",
+            "floorId": "floor:14",
+            "localPlacementId": "placement:006",
+            "roomBlueprintId": "room-blueprint:standard-king",
+            "committedBuildCostCents": 2500000
+          },
+          {
+            "id": "room:floor:14:placement:007",
+            "floorId": "floor:14",
+            "localPlacementId": "placement:007",
+            "roomBlueprintId": "room-blueprint:standard-king",
+            "committedBuildCostCents": 2500000
+          },
+          {
+            "id": "room:floor:14:placement:008",
+            "floorId": "floor:14",
+            "localPlacementId": "placement:008",
+            "roomBlueprintId": "room-blueprint:standard-king",
+            "committedBuildCostCents": 2500000
+          },
+          {
+            "id": "room:floor:14:placement:009",
+            "floorId": "floor:14",
+            "localPlacementId": "placement:009",
+            "roomBlueprintId": "room-blueprint:standard-king",
+            "committedBuildCostCents": 2500000
+          },
+          {
+            "id": "room:floor:14:placement:010",
+            "floorId": "floor:14",
+            "localPlacementId": "placement:010",
+            "roomBlueprintId": "room-blueprint:standard-king",
+            "committedBuildCostCents": 2500000
+          }
+        ],
+        "publicSpaceInstanceIds": []
+      },
+      {
+        "id": "floor:15",
+        "floorNumber": 15,
+        "use": "guest",
+        "templateId": "template:guest:dense-ring",
+        "purchased": true,
+        "rooms": [
+          {
+            "id": "room:floor:15:placement:001",
+            "floorId": "floor:15",
+            "localPlacementId": "placement:001",
+            "roomBlueprintId": "room-blueprint:standard-king",
+            "committedBuildCostCents": 2500000
+          },
+          {
+            "id": "room:floor:15:placement:002",
+            "floorId": "floor:15",
+            "localPlacementId": "placement:002",
+            "roomBlueprintId": "room-blueprint:standard-king",
+            "committedBuildCostCents": 2500000
+          },
+          {
+            "id": "room:floor:15:placement:003",
+            "floorId": "floor:15",
+            "localPlacementId": "placement:003",
+            "roomBlueprintId": "room-blueprint:standard-king",
+            "committedBuildCostCents": 2500000
+          },
+          {
+            "id": "room:floor:15:placement:004",
+            "floorId": "floor:15",
+            "localPlacementId": "placement:004",
+            "roomBlueprintId": "room-blueprint:standard-king",
+            "committedBuildCostCents": 2500000
+          },
+          {
+            "id": "room:floor:15:placement:005",
+            "floorId": "floor:15",
+            "localPlacementId": "placement:005",
+            "roomBlueprintId": "room-blueprint:standard-king",
+            "committedBuildCostCents": 2500000
+          },
+          {
+            "id": "room:floor:15:placement:006",
+            "floorId": "floor:15",
+            "localPlacementId": "placement:006",
+            "roomBlueprintId": "room-blueprint:standard-king",
+            "committedBuildCostCents": 2500000
+          },
+          {
+            "id": "room:floor:15:placement:007",
+            "floorId": "floor:15",
+            "localPlacementId": "placement:007",
+            "roomBlueprintId": "room-blueprint:standard-king",
+            "committedBuildCostCents": 2500000
+          },
+          {
+            "id": "room:floor:15:placement:008",
+            "floorId": "floor:15",
+            "localPlacementId": "placement:008",
+            "roomBlueprintId": "room-blueprint:standard-king",
+            "committedBuildCostCents": 2500000
+          },
+          {
+            "id": "room:floor:15:placement:009",
+            "floorId": "floor:15",
+            "localPlacementId": "placement:009",
+            "roomBlueprintId": "room-blueprint:standard-king",
+            "committedBuildCostCents": 2500000
+          },
+          {
+            "id": "room:floor:15:placement:010",
+            "floorId": "floor:15",
+            "localPlacementId": "placement:010",
+            "roomBlueprintId": "room-blueprint:standard-king",
+            "committedBuildCostCents": 2500000
+          }
+        ],
+        "publicSpaceInstanceIds": []
+      },
+      {
+        "id": "floor:16",
+        "floorNumber": 16,
+        "use": "guest",
+        "templateId": "template:guest:dense-ring",
+        "purchased": true,
+        "rooms": [
+          {
+            "id": "room:floor:16:placement:001",
+            "floorId": "floor:16",
+            "localPlacementId": "placement:001",
+            "roomBlueprintId": "room-blueprint:standard-king",
+            "committedBuildCostCents": 2500000
+          },
+          {
+            "id": "room:floor:16:placement:002",
+            "floorId": "floor:16",
+            "localPlacementId": "placement:002",
+            "roomBlueprintId": "room-blueprint:standard-king",
+            "committedBuildCostCents": 2500000
+          },
+          {
+            "id": "room:floor:16:placement:003",
+            "floorId": "floor:16",
+            "localPlacementId": "placement:003",
+            "roomBlueprintId": "room-blueprint:standard-king",
+            "committedBuildCostCents": 2500000
+          },
+          {
+            "id": "room:floor:16:placement:004",
+            "floorId": "floor:16",
+            "localPlacementId": "placement:004",
+            "roomBlueprintId": "room-blueprint:standard-king",
+            "committedBuildCostCents": 2500000
+          },
+          {
+            "id": "room:floor:16:placement:005",
+            "floorId": "floor:16",
+            "localPlacementId": "placement:005",
+            "roomBlueprintId": "room-blueprint:standard-king",
+            "committedBuildCostCents": 2500000
+          },
+          {
+            "id": "room:floor:16:placement:006",
+            "floorId": "floor:16",
+            "localPlacementId": "placement:006",
+            "roomBlueprintId": "room-blueprint:standard-king",
+            "committedBuildCostCents": 2500000
+          },
+          {
+            "id": "room:floor:16:placement:007",
+            "floorId": "floor:16",
+            "localPlacementId": "placement:007",
+            "roomBlueprintId": "room-blueprint:standard-king",
+            "committedBuildCostCents": 2500000
+          },
+          {
+            "id": "room:floor:16:placement:008",
+            "floorId": "floor:16",
+            "localPlacementId": "placement:008",
+            "roomBlueprintId": "room-blueprint:standard-king",
+            "committedBuildCostCents": 2500000
+          },
+          {
+            "id": "room:floor:16:placement:009",
+            "floorId": "floor:16",
+            "localPlacementId": "placement:009",
+            "roomBlueprintId": "room-blueprint:standard-king",
+            "committedBuildCostCents": 2500000
+          },
+          {
+            "id": "room:floor:16:placement:010",
+            "floorId": "floor:16",
+            "localPlacementId": "placement:010",
+            "roomBlueprintId": "room-blueprint:standard-king",
+            "committedBuildCostCents": 2500000
+          }
+        ],
+        "publicSpaceInstanceIds": []
+      }
+    ],
+    "spaceBlueprints": {
+      "space-blueprint:all-day-dining": {
+        "id": "space-blueprint:all-day-dining",
+        "type": "all-day-dining",
+        "name": "all-day-dining",
+        "columns": 8,
+        "rows": 8,
+        "cells": [
+          {
+            "x": 0,
+            "y": 0,
+            "zoneId": "zone:guest"
+          }
+        ],
+        "placedItems": [],
+        "committedBuildCostCents": 5100000
+      },
+      "space-blueprint:ballroom": {
+        "id": "space-blueprint:ballroom",
+        "type": "ballroom",
+        "name": "ballroom",
+        "columns": 8,
+        "rows": 8,
+        "cells": [
+          {
+            "x": 0,
+            "y": 0,
+            "zoneId": "zone:guest"
+          }
+        ],
+        "placedItems": [],
+        "committedBuildCostCents": 5800000
+      },
+      "space-blueprint:bar": {
+        "id": "space-blueprint:bar",
+        "type": "bar",
+        "name": "bar",
+        "columns": 8,
+        "rows": 8,
+        "cells": [
+          {
+            "x": 0,
+            "y": 0,
+            "zoneId": "zone:guest"
+          }
+        ],
+        "placedItems": [],
+        "committedBuildCostCents": 5300000
+      },
+      "space-blueprint:boutique": {
+        "id": "space-blueprint:boutique",
+        "type": "boutique",
+        "name": "boutique",
+        "columns": 8,
+        "rows": 8,
+        "cells": [
+          {
+            "x": 0,
+            "y": 0,
+            "zoneId": "zone:guest"
+          }
+        ],
+        "placedItems": [],
+        "committedBuildCostCents": 6100000
+      },
+      "space-blueprint:chinese-restaurant": {
+        "id": "space-blueprint:chinese-restaurant",
+        "type": "chinese-restaurant",
+        "name": "chinese-restaurant",
+        "columns": 8,
+        "rows": 8,
+        "cells": [
+          {
+            "x": 0,
+            "y": 0,
+            "zoneId": "zone:guest"
+          }
+        ],
+        "placedItems": [],
+        "committedBuildCostCents": 5200000
+      },
+      "space-blueprint:executive-lounge": {
+        "id": "space-blueprint:executive-lounge",
+        "type": "executive-lounge",
+        "name": "executive-lounge",
+        "columns": 8,
+        "rows": 8,
+        "cells": [
+          {
+            "x": 0,
+            "y": 0,
+            "zoneId": "zone:guest"
+          }
+        ],
+        "placedItems": [],
+        "committedBuildCostCents": 5400000
+      },
+      "space-blueprint:garden-terrace": {
+        "id": "space-blueprint:garden-terrace",
+        "type": "garden-terrace",
+        "name": "garden-terrace",
+        "columns": 8,
+        "rows": 8,
+        "cells": [
+          {
+            "x": 0,
+            "y": 0,
+            "zoneId": "zone:guest"
+          }
+        ],
+        "placedItems": [],
+        "committedBuildCostCents": 6000000
+      },
+      "space-blueprint:gym": {
+        "id": "space-blueprint:gym",
+        "type": "gym",
+        "name": "gym",
+        "columns": 8,
+        "rows": 8,
+        "cells": [
+          {
+            "x": 0,
+            "y": 0,
+            "zoneId": "zone:guest"
+          }
+        ],
+        "placedItems": [],
+        "committedBuildCostCents": 5700000
+      },
+      "space-blueprint:meeting-room": {
+        "id": "space-blueprint:meeting-room",
+        "type": "meeting-room",
+        "name": "meeting-room",
+        "columns": 8,
+        "rows": 8,
+        "cells": [
+          {
+            "x": 0,
+            "y": 0,
+            "zoneId": "zone:guest"
+          }
+        ],
+        "placedItems": [],
+        "committedBuildCostCents": 5900000
+      },
+      "space-blueprint:pool": {
+        "id": "space-blueprint:pool",
+        "type": "pool",
+        "name": "pool",
+        "columns": 8,
+        "rows": 8,
+        "cells": [
+          {
+            "x": 0,
+            "y": 0,
+            "zoneId": "zone:guest"
+          }
+        ],
+        "placedItems": [],
+        "committedBuildCostCents": 5600000
+      },
+      "space-blueprint:sky-lobby": {
+        "id": "space-blueprint:sky-lobby",
+        "type": "sky-lobby",
+        "name": "sky-lobby",
+        "columns": 8,
+        "rows": 8,
+        "cells": [
+          {
+            "x": 0,
+            "y": 0,
+            "zoneId": "zone:guest"
+          }
+        ],
+        "placedItems": [],
+        "committedBuildCostCents": 5000000
+      },
+      "space-blueprint:spa": {
+        "id": "space-blueprint:spa",
+        "type": "spa",
+        "name": "spa",
+        "columns": 8,
+        "rows": 8,
+        "cells": [
+          {
+            "x": 0,
+            "y": 0,
+            "zoneId": "zone:guest"
+          }
+        ],
+        "placedItems": [],
+        "committedBuildCostCents": 5500000
+      }
+    },
+    "publicSpaces": {
+      "public-space:floor:02:space:01": {
+        "id": "public-space:floor:02:space:01",
+        "floorId": "floor:02",
+        "localPlacementId": "space:01",
+        "blueprintId": "space-blueprint:sky-lobby",
+        "type": "sky-lobby",
+        "committedBuildCostCents": 5000000
+      },
+      "public-space:floor:02:space:02": {
+        "id": "public-space:floor:02:space:02",
+        "floorId": "floor:02",
+        "localPlacementId": "space:02",
+        "blueprintId": "space-blueprint:all-day-dining",
+        "type": "all-day-dining",
+        "committedBuildCostCents": 5100000
+      },
+      "public-space:floor:02:space:03": {
+        "id": "public-space:floor:02:space:03",
+        "floorId": "floor:02",
+        "localPlacementId": "space:03",
+        "blueprintId": "space-blueprint:chinese-restaurant",
+        "type": "chinese-restaurant",
+        "committedBuildCostCents": 5200000
+      },
+      "public-space:floor:02:space:04": {
+        "id": "public-space:floor:02:space:04",
+        "floorId": "floor:02",
+        "localPlacementId": "space:04",
+        "blueprintId": "space-blueprint:bar",
+        "type": "bar",
+        "committedBuildCostCents": 5300000
+      },
+      "public-space:floor:03:space:01": {
+        "id": "public-space:floor:03:space:01",
+        "floorId": "floor:03",
+        "localPlacementId": "space:01",
+        "blueprintId": "space-blueprint:executive-lounge",
+        "type": "executive-lounge",
+        "committedBuildCostCents": 5400000
+      },
+      "public-space:floor:03:space:02": {
+        "id": "public-space:floor:03:space:02",
+        "floorId": "floor:03",
+        "localPlacementId": "space:02",
+        "blueprintId": "space-blueprint:spa",
+        "type": "spa",
+        "committedBuildCostCents": 5500000
+      },
+      "public-space:floor:03:space:03": {
+        "id": "public-space:floor:03:space:03",
+        "floorId": "floor:03",
+        "localPlacementId": "space:03",
+        "blueprintId": "space-blueprint:pool",
+        "type": "pool",
+        "committedBuildCostCents": 5600000
+      },
+      "public-space:floor:03:space:04": {
+        "id": "public-space:floor:03:space:04",
+        "floorId": "floor:03",
+        "localPlacementId": "space:04",
+        "blueprintId": "space-blueprint:gym",
+        "type": "gym",
+        "committedBuildCostCents": 5700000
+      },
+      "public-space:floor:04:space:01": {
+        "id": "public-space:floor:04:space:01",
+        "floorId": "floor:04",
+        "localPlacementId": "space:01",
+        "blueprintId": "space-blueprint:ballroom",
+        "type": "ballroom",
+        "committedBuildCostCents": 5800000
+      },
+      "public-space:floor:04:space:02": {
+        "id": "public-space:floor:04:space:02",
+        "floorId": "floor:04",
+        "localPlacementId": "space:02",
+        "blueprintId": "space-blueprint:meeting-room",
+        "type": "meeting-room",
+        "committedBuildCostCents": 5900000
+      },
+      "public-space:floor:04:space:03": {
+        "id": "public-space:floor:04:space:03",
+        "floorId": "floor:04",
+        "localPlacementId": "space:03",
+        "blueprintId": "space-blueprint:garden-terrace",
+        "type": "garden-terrace",
+        "committedBuildCostCents": 6000000
+      },
+      "public-space:floor:04:space:04": {
+        "id": "public-space:floor:04:space:04",
+        "floorId": "floor:04",
+        "localPlacementId": "space:04",
+        "blueprintId": "space-blueprint:boutique",
+        "type": "boutique",
+        "committedBuildCostCents": 6100000
+      }
+    },
+    "facilities": {
+      "facility:floor:02:all-day-dining": {
+        "id": "facility:floor:02:all-day-dining",
+        "type": "all-day-dining",
+        "publicSpaceInstanceId": "public-space:floor:02:space:02",
+        "status": "operating",
+        "enabled": true,
+        "dailyOperatingCostCents": 52500,
+        "segmentInputs": {
+          "business": {
+            "appealBps": 5000,
+            "satisfactionBps": 5500,
+            "dailyDemand": 12
+          },
+          "couple": {
+            "appealBps": 5250,
+            "satisfactionBps": 5700,
+            "dailyDemand": 13
+          },
+          "family": {
+            "appealBps": 5500,
+            "satisfactionBps": 5900,
+            "dailyDemand": 14
+          },
+          "leisure": {
+            "appealBps": 5750,
+            "satisfactionBps": 6100,
+            "dailyDemand": 15
+          },
+          "high-net-worth": {
+            "appealBps": 6000,
+            "satisfactionBps": 6300,
+            "dailyDemand": 16
+          },
+          "cultural-experience": {
+            "appealBps": 6250,
+            "satisfactionBps": 6500,
+            "dailyDemand": 17
+          }
+        },
+        "policy": {
+          "positioningId": "positioning:all-day-dining:standard",
+          "priceBandId": "price-band:premium",
+          "capacity": 25,
+          "openingPolicyId": "opening-policy:daily",
+          "serviceBudgetCents": 52500,
+          "signatureOfferingId": "offering:dish:all-day-dining"
+        },
+        "menuSelection": {
+          "menuStructureId": "menu:all-day-dining:standard",
+          "selectedItemIds": []
+        },
+        "developedOfferingIds": [
+          "offering:dish:all-day-dining"
+        ],
+        "dailyResults": []
+      },
+      "facility:floor:02:bar": {
+        "id": "facility:floor:02:bar",
+        "type": "bar",
+        "publicSpaceInstanceId": "public-space:floor:02:space:04",
+        "status": "operating",
+        "enabled": true,
+        "dailyOperatingCostCents": 57500,
+        "segmentInputs": {
+          "business": {
+            "appealBps": 5000,
+            "satisfactionBps": 5500,
+            "dailyDemand": 12
+          },
+          "couple": {
+            "appealBps": 5250,
+            "satisfactionBps": 5700,
+            "dailyDemand": 13
+          },
+          "family": {
+            "appealBps": 5500,
+            "satisfactionBps": 5900,
+            "dailyDemand": 14
+          },
+          "leisure": {
+            "appealBps": 5750,
+            "satisfactionBps": 6100,
+            "dailyDemand": 15
+          },
+          "high-net-worth": {
+            "appealBps": 6000,
+            "satisfactionBps": 6300,
+            "dailyDemand": 16
+          },
+          "cultural-experience": {
+            "appealBps": 6250,
+            "satisfactionBps": 6500,
+            "dailyDemand": 17
+          }
+        },
+        "policy": {
+          "positioningId": "positioning:bar:standard",
+          "priceBandId": "price-band:premium",
+          "capacity": 35,
+          "openingPolicyId": "opening-policy:daily",
+          "serviceBudgetCents": 57500,
+          "signatureOfferingId": "offering:drink:bar"
+        },
+        "menuSelection": {
+          "menuStructureId": "menu:bar:standard",
+          "selectedItemIds": []
+        },
+        "developedOfferingIds": [
+          "offering:drink:bar"
+        ],
+        "dailyResults": []
+      },
+      "facility:floor:02:chinese-restaurant": {
+        "id": "facility:floor:02:chinese-restaurant",
+        "type": "chinese-restaurant",
+        "publicSpaceInstanceId": "public-space:floor:02:space:03",
+        "status": "operating",
+        "enabled": true,
+        "dailyOperatingCostCents": 55000,
+        "segmentInputs": {
+          "business": {
+            "appealBps": 5000,
+            "satisfactionBps": 5500,
+            "dailyDemand": 12
+          },
+          "couple": {
+            "appealBps": 5250,
+            "satisfactionBps": 5700,
+            "dailyDemand": 13
+          },
+          "family": {
+            "appealBps": 5500,
+            "satisfactionBps": 5900,
+            "dailyDemand": 14
+          },
+          "leisure": {
+            "appealBps": 5750,
+            "satisfactionBps": 6100,
+            "dailyDemand": 15
+          },
+          "high-net-worth": {
+            "appealBps": 6000,
+            "satisfactionBps": 6300,
+            "dailyDemand": 16
+          },
+          "cultural-experience": {
+            "appealBps": 6250,
+            "satisfactionBps": 6500,
+            "dailyDemand": 17
+          }
+        },
+        "policy": {
+          "positioningId": "positioning:chinese-restaurant:standard",
+          "priceBandId": "price-band:premium",
+          "capacity": 30,
+          "openingPolicyId": "opening-policy:daily",
+          "serviceBudgetCents": 55000,
+          "signatureOfferingId": "offering:dish:chinese-restaurant"
+        },
+        "menuSelection": {
+          "menuStructureId": "menu:chinese-restaurant:standard",
+          "selectedItemIds": []
+        },
+        "developedOfferingIds": [
+          "offering:dish:chinese-restaurant"
+        ],
+        "dailyResults": []
+      },
+      "facility:floor:02:sky-lobby": {
+        "id": "facility:floor:02:sky-lobby",
+        "type": "sky-lobby",
+        "publicSpaceInstanceId": "public-space:floor:02:space:01",
+        "status": "planned",
+        "enabled": false,
+        "dailyOperatingCostCents": 50000,
+        "segmentInputs": {
+          "business": {
+            "appealBps": 5000,
+            "satisfactionBps": 5500,
+            "dailyDemand": 12
+          },
+          "couple": {
+            "appealBps": 5250,
+            "satisfactionBps": 5700,
+            "dailyDemand": 13
+          },
+          "family": {
+            "appealBps": 5500,
+            "satisfactionBps": 5900,
+            "dailyDemand": 14
+          },
+          "leisure": {
+            "appealBps": 5750,
+            "satisfactionBps": 6100,
+            "dailyDemand": 15
+          },
+          "high-net-worth": {
+            "appealBps": 6000,
+            "satisfactionBps": 6300,
+            "dailyDemand": 16
+          },
+          "cultural-experience": {
+            "appealBps": 6250,
+            "satisfactionBps": 6500,
+            "dailyDemand": 17
+          }
+        },
+        "policy": null,
+        "menuSelection": null,
+        "developedOfferingIds": [],
+        "dailyResults": []
+      },
+      "facility:floor:03:executive-lounge": {
+        "id": "facility:floor:03:executive-lounge",
+        "type": "executive-lounge",
+        "publicSpaceInstanceId": "public-space:floor:03:space:01",
+        "status": "planned",
+        "enabled": false,
+        "dailyOperatingCostCents": 60000,
+        "segmentInputs": {
+          "business": {
+            "appealBps": 5000,
+            "satisfactionBps": 5500,
+            "dailyDemand": 12
+          },
+          "couple": {
+            "appealBps": 5250,
+            "satisfactionBps": 5700,
+            "dailyDemand": 13
+          },
+          "family": {
+            "appealBps": 5500,
+            "satisfactionBps": 5900,
+            "dailyDemand": 14
+          },
+          "leisure": {
+            "appealBps": 5750,
+            "satisfactionBps": 6100,
+            "dailyDemand": 15
+          },
+          "high-net-worth": {
+            "appealBps": 6000,
+            "satisfactionBps": 6300,
+            "dailyDemand": 16
+          },
+          "cultural-experience": {
+            "appealBps": 6250,
+            "satisfactionBps": 6500,
+            "dailyDemand": 17
+          }
+        },
+        "policy": null,
+        "menuSelection": null,
+        "developedOfferingIds": [],
+        "dailyResults": []
+      },
+      "facility:floor:03:gym": {
+        "id": "facility:floor:03:gym",
+        "type": "gym",
+        "publicSpaceInstanceId": "public-space:floor:03:space:04",
+        "status": "operating",
+        "enabled": true,
+        "dailyOperatingCostCents": 67500,
+        "segmentInputs": {
+          "business": {
+            "appealBps": 5000,
+            "satisfactionBps": 5500,
+            "dailyDemand": 12
+          },
+          "couple": {
+            "appealBps": 5250,
+            "satisfactionBps": 5700,
+            "dailyDemand": 13
+          },
+          "family": {
+            "appealBps": 5500,
+            "satisfactionBps": 5900,
+            "dailyDemand": 14
+          },
+          "leisure": {
+            "appealBps": 5750,
+            "satisfactionBps": 6100,
+            "dailyDemand": 15
+          },
+          "high-net-worth": {
+            "appealBps": 6000,
+            "satisfactionBps": 6300,
+            "dailyDemand": 16
+          },
+          "cultural-experience": {
+            "appealBps": 6250,
+            "satisfactionBps": 6500,
+            "dailyDemand": 17
+          }
+        },
+        "policy": null,
+        "menuSelection": null,
+        "developedOfferingIds": [],
+        "dailyResults": []
+      },
+      "facility:floor:03:pool": {
+        "id": "facility:floor:03:pool",
+        "type": "pool",
+        "publicSpaceInstanceId": "public-space:floor:03:space:03",
+        "status": "planned",
+        "enabled": false,
+        "dailyOperatingCostCents": 65000,
+        "segmentInputs": {
+          "business": {
+            "appealBps": 5000,
+            "satisfactionBps": 5500,
+            "dailyDemand": 12
+          },
+          "couple": {
+            "appealBps": 5250,
+            "satisfactionBps": 5700,
+            "dailyDemand": 13
+          },
+          "family": {
+            "appealBps": 5500,
+            "satisfactionBps": 5900,
+            "dailyDemand": 14
+          },
+          "leisure": {
+            "appealBps": 5750,
+            "satisfactionBps": 6100,
+            "dailyDemand": 15
+          },
+          "high-net-worth": {
+            "appealBps": 6000,
+            "satisfactionBps": 6300,
+            "dailyDemand": 16
+          },
+          "cultural-experience": {
+            "appealBps": 6250,
+            "satisfactionBps": 6500,
+            "dailyDemand": 17
+          }
+        },
+        "policy": null,
+        "menuSelection": null,
+        "developedOfferingIds": [],
+        "dailyResults": []
+      },
+      "facility:floor:03:spa": {
+        "id": "facility:floor:03:spa",
+        "type": "spa",
+        "publicSpaceInstanceId": "public-space:floor:03:space:02",
+        "status": "operating",
+        "enabled": true,
+        "dailyOperatingCostCents": 62500,
+        "segmentInputs": {
+          "business": {
+            "appealBps": 5000,
+            "satisfactionBps": 5500,
+            "dailyDemand": 12
+          },
+          "couple": {
+            "appealBps": 5250,
+            "satisfactionBps": 5700,
+            "dailyDemand": 13
+          },
+          "family": {
+            "appealBps": 5500,
+            "satisfactionBps": 5900,
+            "dailyDemand": 14
+          },
+          "leisure": {
+            "appealBps": 5750,
+            "satisfactionBps": 6100,
+            "dailyDemand": 15
+          },
+          "high-net-worth": {
+            "appealBps": 6000,
+            "satisfactionBps": 6300,
+            "dailyDemand": 16
+          },
+          "cultural-experience": {
+            "appealBps": 6250,
+            "satisfactionBps": 6500,
+            "dailyDemand": 17
+          }
+        },
+        "policy": {
+          "positioningId": "positioning:spa:standard",
+          "priceBandId": "price-band:premium",
+          "capacity": 45,
+          "openingPolicyId": "opening-policy:daily",
+          "serviceBudgetCents": 62500,
+          "signatureOfferingId": "offering:service-package:spa"
+        },
+        "menuSelection": null,
+        "developedOfferingIds": [
+          "offering:service-package:spa"
+        ],
+        "dailyResults": []
+      },
+      "facility:floor:04:ballroom": {
+        "id": "facility:floor:04:ballroom",
+        "type": "ballroom",
+        "publicSpaceInstanceId": "public-space:floor:04:space:01",
+        "status": "operating",
+        "enabled": true,
+        "dailyOperatingCostCents": 70000,
+        "segmentInputs": {
+          "business": {
+            "appealBps": 5000,
+            "satisfactionBps": 5500,
+            "dailyDemand": 12
+          },
+          "couple": {
+            "appealBps": 5250,
+            "satisfactionBps": 5700,
+            "dailyDemand": 13
+          },
+          "family": {
+            "appealBps": 5500,
+            "satisfactionBps": 5900,
+            "dailyDemand": 14
+          },
+          "leisure": {
+            "appealBps": 5750,
+            "satisfactionBps": 6100,
+            "dailyDemand": 15
+          },
+          "high-net-worth": {
+            "appealBps": 6000,
+            "satisfactionBps": 6300,
+            "dailyDemand": 16
+          },
+          "cultural-experience": {
+            "appealBps": 6250,
+            "satisfactionBps": 6500,
+            "dailyDemand": 17
+          }
+        },
+        "policy": {
+          "positioningId": "positioning:ballroom:standard",
+          "priceBandId": "price-band:premium",
+          "capacity": 60,
+          "openingPolicyId": "opening-policy:daily",
+          "serviceBudgetCents": 70000,
+          "signatureOfferingId": "offering:service-package:ballroom"
+        },
+        "menuSelection": null,
+        "developedOfferingIds": [
+          "offering:service-package:ballroom"
+        ],
+        "dailyResults": []
+      },
+      "facility:floor:04:boutique": {
+        "id": "facility:floor:04:boutique",
+        "type": "boutique",
+        "publicSpaceInstanceId": "public-space:floor:04:space:04",
+        "status": "planned",
+        "enabled": false,
+        "dailyOperatingCostCents": 77500,
+        "segmentInputs": {
+          "business": {
+            "appealBps": 5000,
+            "satisfactionBps": 5500,
+            "dailyDemand": 12
+          },
+          "couple": {
+            "appealBps": 5250,
+            "satisfactionBps": 5700,
+            "dailyDemand": 13
+          },
+          "family": {
+            "appealBps": 5500,
+            "satisfactionBps": 5900,
+            "dailyDemand": 14
+          },
+          "leisure": {
+            "appealBps": 5750,
+            "satisfactionBps": 6100,
+            "dailyDemand": 15
+          },
+          "high-net-worth": {
+            "appealBps": 6000,
+            "satisfactionBps": 6300,
+            "dailyDemand": 16
+          },
+          "cultural-experience": {
+            "appealBps": 6250,
+            "satisfactionBps": 6500,
+            "dailyDemand": 17
+          }
+        },
+        "policy": null,
+        "menuSelection": null,
+        "developedOfferingIds": [],
+        "dailyResults": []
+      },
+      "facility:floor:04:garden-terrace": {
+        "id": "facility:floor:04:garden-terrace",
+        "type": "garden-terrace",
+        "publicSpaceInstanceId": "public-space:floor:04:space:03",
+        "status": "planned",
+        "enabled": false,
+        "dailyOperatingCostCents": 75000,
+        "segmentInputs": {
+          "business": {
+            "appealBps": 5000,
+            "satisfactionBps": 5500,
+            "dailyDemand": 12
+          },
+          "couple": {
+            "appealBps": 5250,
+            "satisfactionBps": 5700,
+            "dailyDemand": 13
+          },
+          "family": {
+            "appealBps": 5500,
+            "satisfactionBps": 5900,
+            "dailyDemand": 14
+          },
+          "leisure": {
+            "appealBps": 5750,
+            "satisfactionBps": 6100,
+            "dailyDemand": 15
+          },
+          "high-net-worth": {
+            "appealBps": 6000,
+            "satisfactionBps": 6300,
+            "dailyDemand": 16
+          },
+          "cultural-experience": {
+            "appealBps": 6250,
+            "satisfactionBps": 6500,
+            "dailyDemand": 17
+          }
+        },
+        "policy": null,
+        "menuSelection": null,
+        "developedOfferingIds": [],
+        "dailyResults": []
+      },
+      "facility:floor:04:meeting-room": {
+        "id": "facility:floor:04:meeting-room",
+        "type": "meeting-room",
+        "publicSpaceInstanceId": "public-space:floor:04:space:02",
+        "status": "planned",
+        "enabled": false,
+        "dailyOperatingCostCents": 72500,
+        "segmentInputs": {
+          "business": {
+            "appealBps": 5000,
+            "satisfactionBps": 5500,
+            "dailyDemand": 12
+          },
+          "couple": {
+            "appealBps": 5250,
+            "satisfactionBps": 5700,
+            "dailyDemand": 13
+          },
+          "family": {
+            "appealBps": 5500,
+            "satisfactionBps": 5900,
+            "dailyDemand": 14
+          },
+          "leisure": {
+            "appealBps": 5750,
+            "satisfactionBps": 6100,
+            "dailyDemand": 15
+          },
+          "high-net-worth": {
+            "appealBps": 6000,
+            "satisfactionBps": 6300,
+            "dailyDemand": 16
+          },
+          "cultural-experience": {
+            "appealBps": 6250,
+            "satisfactionBps": 6500,
+            "dailyDemand": 17
+          }
+        },
+        "policy": {
+          "positioningId": "positioning:meeting-room:standard",
+          "priceBandId": "price-band:premium",
+          "capacity": 65,
+          "openingPolicyId": "opening-policy:daily",
+          "serviceBudgetCents": 72500,
+          "signatureOfferingId": "offering:service-package:meeting-room"
+        },
+        "menuSelection": null,
+        "developedOfferingIds": [
+          "offering:service-package:meeting-room"
+        ],
+        "dailyResults": []
+      }
+    },
+    "catalogProgress": {
+      "unlockedIds": [
+        "facility:all-day-dining",
+        "facility:ballroom",
+        "facility:bar",
+        "facility:boutique",
+        "facility:chinese-restaurant",
+        "facility:executive-lounge",
+        "facility:garden-terrace",
+        "facility:gym",
+        "facility:meeting-room",
+        "facility:pool",
+        "facility:sky-lobby",
+        "facility:spa"
+      ],
+      "discoveredMarketEntryIds": [
+        "market:business",
+        "market:couple",
+        "market:cultural-experience",
+        "market:family",
+        "market:high-net-worth",
+        "market:leisure"
+      ]
+    },
+    "recentFlowSnapshot": {
+      "day": 0,
+      "visibleFloorId": "floor:05",
+      "events": [
+        {
+          "id": "flow:001",
+          "kind": "staff",
+          "fromId": "floor:05",
+          "toId": "floor:02",
+          "count": 1
+        },
+        {
+          "id": "flow:002",
+          "kind": "guest",
+          "fromId": "floor:06",
+          "toId": "floor:02",
+          "count": 2
+        },
+        {
+          "id": "flow:003",
+          "kind": "guest",
+          "fromId": "floor:07",
+          "toId": "floor:02",
+          "count": 3
+        },
+        {
+          "id": "flow:004",
+          "kind": "staff",
+          "fromId": "floor:08",
+          "toId": "floor:02",
+          "count": 4
+        },
+        {
+          "id": "flow:005",
+          "kind": "guest",
+          "fromId": "floor:09",
+          "toId": "floor:02",
+          "count": 5
+        },
+        {
+          "id": "flow:006",
+          "kind": "guest",
+          "fromId": "floor:10",
+          "toId": "floor:02",
+          "count": 6
+        },
+        {
+          "id": "flow:007",
+          "kind": "staff",
+          "fromId": "floor:11",
+          "toId": "floor:02",
+          "count": 7
+        },
+        {
+          "id": "flow:008",
+          "kind": "guest",
+          "fromId": "floor:12",
+          "toId": "floor:02",
+          "count": 8
+        },
+        {
+          "id": "flow:009",
+          "kind": "guest",
+          "fromId": "floor:13",
+          "toId": "floor:02",
+          "count": 9
+        },
+        {
+          "id": "flow:010",
+          "kind": "staff",
+          "fromId": "floor:14",
+          "toId": "floor:02",
+          "count": 10
+        },
+        {
+          "id": "flow:011",
+          "kind": "guest",
+          "fromId": "floor:15",
+          "toId": "floor:02",
+          "count": 11
+        },
+        {
+          "id": "flow:012",
+          "kind": "guest",
+          "fromId": "floor:16",
+          "toId": "floor:02",
+          "count": 12
+        }
+      ]
+    }
+  }
+}
