@@ -16,7 +16,7 @@ import type {
   SegmentDayResult,
   WeeklyOperationsReport,
 } from "./operationsTypes";
-import { GUEST_SEGMENT_IDS } from "./operationsTypes";
+import { DEPARTMENT_IDS, GUEST_SEGMENT_IDS } from "./operationsTypes";
 
 type Equal<A, B> =
   (<T>() => T extends A ? 1 : 2) extends
@@ -37,6 +37,18 @@ type GuestSegmentCatalogIsExact = Expect<
 >;
 const guestSegmentCatalogIsExact: GuestSegmentCatalogIsExact = true;
 
+type ApprovedDepartmentId =
+  | "frontOffice"
+  | "housekeeping"
+  | "foodAndBeverage"
+  | "engineering"
+  | "security"
+  | "guestRelations";
+type DepartmentCatalogIsExact = Expect<
+  Equal<DepartmentId, ApprovedDepartmentId>
+>;
+const departmentCatalogIsExact: DepartmentCatalogIsExact = true;
+
 describe("operations state contracts", () => {
   it("exports the exact approved guest segment catalog", () => {
     expect(guestSegmentCatalogIsExact).toBe(true);
@@ -47,6 +59,18 @@ describe("operations state contracts", () => {
       "leisure",
       "high-net-worth",
       "cultural-experience",
+    ]);
+  });
+
+  it("exports the exact approved department catalog", () => {
+    expect(departmentCatalogIsExact).toBe(true);
+    expect(DEPARTMENT_IDS).toEqual([
+      "frontOffice",
+      "housekeeping",
+      "foodAndBeverage",
+      "engineering",
+      "security",
+      "guestRelations",
     ]);
   });
   it("creates the approved casual operations envelope without changing legacy state", () => {
@@ -96,6 +120,39 @@ describe("operations state contracts", () => {
         serviceStandardBps: 5_000,
       })),
     );
+  });
+
+  it("creates deeply independent operations records and collections", () => {
+    const first = createOperationsState("casual");
+    const second = createOperationsState("casual");
+
+    first.departments.frontOffice.staffing = 12;
+    first.loans.push({
+      id: "loan-mutated",
+      principalCents: 1,
+      outstandingCents: 1,
+      dailyInterestBps: 1,
+      minimumPaymentCents: 1,
+    });
+    first.discoveredNeeds.push({
+      id: "need-mutated",
+      segmentId: "business",
+      kind: "service",
+      discoveredDay: 1,
+      strengthBps: 1,
+    });
+    first.pricePolicies.mutated = {
+      roomOfferId: "mutated",
+      nightlyRateCents: 1,
+    };
+    first.offerUpgrades.mutated = {
+      roomOfferId: "mutated",
+      upgradeId: "mutated",
+      level: 1,
+    };
+    first.unlockedContent.push("mutated");
+
+    expect(second).toEqual(createOperationsState("casual"));
   });
 
   it("exposes persisted discriminated records for future simulation phases", () => {

@@ -11,13 +11,16 @@ export type GuestSegmentId = (typeof GUEST_SEGMENT_IDS)[number];
 
 export type Difficulty = "casual" | "management";
 
-export type DepartmentId =
-  | "frontOffice"
-  | "housekeeping"
-  | "foodAndBeverage"
-  | "engineering"
-  | "security"
-  | "guestRelations";
+export const DEPARTMENT_IDS = [
+  "frontOffice",
+  "housekeeping",
+  "foodAndBeverage",
+  "engineering",
+  "security",
+  "guestRelations",
+] as const;
+
+export type DepartmentId = (typeof DEPARTMENT_IDS)[number];
 
 export interface DepartmentState {
   id: DepartmentId;

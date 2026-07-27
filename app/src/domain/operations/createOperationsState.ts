@@ -4,15 +4,7 @@ import type {
   Difficulty,
   OperationsState,
 } from "./operationsTypes";
-
-const DEPARTMENT_IDS: readonly DepartmentId[] = [
-  "frontOffice",
-  "housekeeping",
-  "foodAndBeverage",
-  "engineering",
-  "security",
-  "guestRelations",
-];
+import { DEPARTMENT_IDS } from "./operationsTypes";
 
 function createDepartment(id: DepartmentId): DepartmentState {
   return {
