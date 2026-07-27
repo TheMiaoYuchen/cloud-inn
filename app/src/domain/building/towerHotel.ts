@@ -1,6 +1,6 @@
 import { projectContentUnlocks, reconcileCatalogProgress } from "../content/contentUnlocks";
 import { FLOOR_TEMPLATE_CATALOG, TOWER_CATALOG } from "../content/contentCatalog";
-import { createDenseGuestFloorTemplate } from "../floor/corridorTemplate";
+import { createDenseGuestFloorTemplate, getTransformedRoomSize } from "../floor/corridorTemplate";
 import type { GameState, RoomInstance } from "../game/state";
 import { assertSafeMoney } from "../primitives";
 import {
@@ -62,6 +62,76 @@ function emptyTemplate(id: string, use: ScaleFloorTemplate["use"]): ScaleFloorTe
   };
 }
 
+function snapshotTemplateId(targetFloorId: StableId): StableId {
+  return assertStableId(`template-snapshot:${targetFloorId}`);
+}
+
+function cloneTemplate(
+  template: Readonly<ScaleFloorTemplate>,
+  templateId: StableId = template.id,
+): ScaleFloorTemplate {
+  return {
+    ...template,
+    id: templateId,
+    roomPlacements: template.roomPlacements.map((placement) => ({ ...placement })),
+    publicSpaceSlots: template.publicSpaceSlots.map((slot) => ({
+      ...slot,
+      permittedTypes: [...slot.permittedTypes],
+    })),
+  };
+}
+
+function validateTemplateIdentity(
+  template: Readonly<ScaleFloorTemplate>,
+): void {
+  const placementIds = new Set<StableId>();
+  for (const placement of template.roomPlacements) {
+    assertStableId(placement.id);
+    if (!placementIds.add(placement.id)) {
+      throw new Error(`模板 ${template.id} 的客房放置编号重复`);
+    }
+  }
+}
+
+function existingRoomIds(state: Readonly<ContentScaleState>): Set<StableId> {
+  const roomIds = new Set<StableId>();
+  for (const floor of state.floors) {
+    for (const room of floor.rooms) {
+      if (!roomIds.add(room.id)) throw new Error(`客房编号冲突：${room.id}`);
+    }
+  }
+  return roomIds;
+}
+
+function validateGeneratedRooms(
+  rooms: readonly ScaleRoomInstance[],
+  occupiedRoomIds: Set<StableId>,
+): void {
+  for (const room of rooms) {
+    if (!occupiedRoomIds.add(room.id)) throw new Error(`客房编号冲突：${room.id}`);
+  }
+}
+
+function withGuestFloorSnapshots(
+  state: Readonly<ContentScaleState>,
+): Record<string, ScaleFloorTemplate> {
+  const floorTemplates = Object.fromEntries(
+    Object.entries(state.floorTemplates).map(([key, template]) => [
+      key,
+      cloneTemplate(template),
+    ]),
+  );
+  for (const floor of state.floors) {
+    if (floor.use !== "guest") continue;
+    const appliedId = snapshotTemplateId(floor.id);
+    if (floorTemplates[appliedId]) continue;
+    const canonical = floorTemplates[floor.templateId];
+    if (!canonical) throw new Error(`楼层 ${floor.id} 引用了未知模板`);
+    floorTemplates[appliedId] = cloneTemplate(canonical, appliedId);
+  }
+  return floorTemplates;
+}
+
 function availableExpansionFloorNumbers(firstUnownedFloor: number): number[] {
   return Array.from(
     { length: Math.max(0, MAXIMUM_TOWER_FLOOR - firstUnownedFloor + 1) },
@@ -90,6 +160,7 @@ function roomsForTemplate(
   template: Readonly<ScaleFloorTemplate>,
   previousRooms: readonly ScaleRoomInstance[] = [],
 ): ScaleRoomInstance[] {
+  validateTemplateIdentity(template);
   const previousByPlacement = new Map(
     previousRooms.map((room) => [room.localPlacementId, room]),
   );
@@ -143,7 +214,45 @@ function createLegacyGuestTemplate(state: Readonly<GameState>): ScaleFloorTempla
   if (new Set(stableLegacyRooms.map(({ stableSlotId }) => stableSlotId)).size !== stableLegacyRooms.length) {
     throw new Error("旧酒店客房槽位编号重复");
   }
+  const phase2Placements = new Map(
+    (state.phase2?.floorPlacements ?? []).map((placement) => [placement.slotId, placement]),
+  );
+  if (
+    phase2Placements.size > 0 &&
+    stableLegacyRooms.some(({ room }) => !phase2Placements.has(room.slotId))
+  ) {
+    throw new Error("旧酒店客房的二期放置不完整");
+  }
+  const corridorSlots = new Map(
+    (state.phase2?.corridorTemplate?.slots ?? []).map((slot) => [slot.id, slot]),
+  );
   const roomPlacements: ScaleRoomPlacement[] = stableLegacyRooms.map(({ room, stableSlotId }, index) => {
+    const phase2Placement = phase2Placements.get(room.slotId);
+    if (phase2Placement) {
+      const slot = corridorSlots.get(room.slotId);
+      const variant = state.phase2?.roomVariants.find(
+        ({ id }) => id === phase2Placement.variantId,
+      );
+      if (!slot || !variant) throw new Error(`旧酒店客房 ${room.id} 的二期放置引用无效`);
+      const dimensions = getTransformedRoomSize(
+        variant.cells,
+        phase2Placement.rotation,
+      );
+      if (dimensions.width > slot.width || dimensions.height > slot.height) {
+        throw new Error(`旧酒店客房 ${room.id} 的二期放置尺寸无效`);
+      }
+      return {
+        id: stableSlotId,
+        roomBlueprintId: assertStableId(room.roomBlueprintId),
+        variantId: assertStableId(phase2Placement.variantId),
+        anchorX: slot.anchor.x,
+        anchorY: slot.anchor.y,
+        width: dimensions.width,
+        height: dimensions.height,
+        rotation: phase2Placement.rotation,
+        mirrored: phase2Placement.mirrored,
+      };
+    }
     const dimensions = placementDimensions(authoritativeRoomArea(state, room));
     const slot = dense.slots[index];
     if (!slot) throw new Error("旧酒店客房超过首层模板容量");
@@ -191,6 +300,7 @@ function legacyRoomsForFloor(
       floorId: targetFloorId,
       localPlacementId: placement.id,
       roomBlueprintId: placement.roomBlueprintId,
+      ...(placement.variantId === undefined ? {} : { variantId: placement.variantId }),
       committedBuildCostCents: assertSafeMoney(
         legacyRoom.committedBuildCostCents,
       ),
@@ -240,6 +350,10 @@ export function upgradeLegacyToPhase4(state: Readonly<GameState>): GameState {
     catalogProgress: { unlockedIds: [], discoveredMarketEntryIds: [] },
     recentFlowSnapshot: null,
   };
+  phase4.floorTemplates[snapshotTemplateId(guestFloorId)] = cloneTemplate(
+    guestTemplate,
+    snapshotTemplateId(guestFloorId),
+  );
   const withPhase4: GameState = { ...state, phase4 };
   return {
     ...withPhase4,
@@ -278,6 +392,12 @@ export function copyGuestFloor(
     (floor) => floor.id === stableSourceFloorId && floor.use === "guest",
   );
   if (!source) throw new Error("找不到源客房楼层");
+  const canonicalTemplate = state.floorTemplates[source.templateId];
+  if (!canonicalTemplate) throw new Error(`楼层 ${source.id} 引用了未知模板`);
+  const sourcePlacementIds = canonicalTemplate.roomPlacements.map(({ id }) => id);
+  if (new Set(sourcePlacementIds).size !== sourcePlacementIds.length) {
+    throw new Error(`模板 ${canonicalTemplate.id} 的客房放置编号重复`);
+  }
   if (state.floors.some((floor) => floor.floorNumber === floorNumber)) throw new Error("目标楼层已存在");
   const targetFloorId = floorId(floorNumber);
   if (state.floors.some(({ id }) => id === targetFloorId)) throw new Error("目标楼层编号重复");
@@ -292,10 +412,22 @@ export function copyGuestFloor(
     })),
     publicSpaceInstanceIds: [],
   };
+  const occupiedRoomIds = existingRoomIds(state);
+  for (const room of floor.rooms) {
+    if (occupiedRoomIds.has(room.id)) throw new Error(`客房编号冲突：${room.id}`);
+    occupiedRoomIds.add(room.id);
+  }
   const floors = [...state.floors.map(cloneFloor), floor]
     .sort((left, right) => left.floorNumber - right.floorNumber || left.id.localeCompare(right.id));
   assertFloorCount(floors.length);
   assertRoomCount(floors.reduce((total, candidate) => total + candidate.rooms.length, 0));
+  const floorTemplates = withGuestFloorSnapshots(state);
+  const sourceSnapshotId = snapshotTemplateId(source.id);
+  const targetSnapshotId = snapshotTemplateId(targetFloorId);
+  floorTemplates[targetSnapshotId] = cloneTemplate(
+    floorTemplates[sourceSnapshotId],
+    targetSnapshotId,
+  );
   return {
     floor,
     phase4: {
@@ -307,6 +439,7 @@ export function copyGuestFloor(
         availableExpansionFloorNumbers: state.building.availableExpansionFloorNumbers
           .filter((candidate) => candidate !== floorNumber),
       },
+      floorTemplates,
       floors,
     },
   };
@@ -330,19 +463,24 @@ export function applyExpansion(
   };
 }
 
-function roomSnapshotMatchesTemplate(
-  floor: Readonly<HotelFloor>,
-  template: Readonly<ScaleFloorTemplate>,
+function placementSnapshotMatchesTemplate(
+  applied: Readonly<ScaleFloorTemplate>,
+  canonical: Readonly<ScaleFloorTemplate>,
 ): boolean {
-  const roomsByPlacement = new Map(
-    floor.rooms.map((room) => [room.localPlacementId, room]),
+  const appliedById = new Map(
+    applied.roomPlacements.map((placement) => [placement.id, placement]),
   );
-  return roomsByPlacement.size === template.roomPlacements.length &&
-    template.roomPlacements.every((placement) => {
-      const room = roomsByPlacement.get(placement.id);
-      return room?.localPlacementId === placement.id &&
-        room.roomBlueprintId === placement.roomBlueprintId &&
-        room.variantId === placement.variantId;
+  return appliedById.size === canonical.roomPlacements.length &&
+    canonical.roomPlacements.every((placement) => {
+      const prior = appliedById.get(placement.id);
+      return prior?.roomBlueprintId === placement.roomBlueprintId &&
+        prior.variantId === placement.variantId &&
+        prior.anchorX === placement.anchorX &&
+        prior.anchorY === placement.anchorY &&
+        prior.width === placement.width &&
+        prior.height === placement.height &&
+        prior.rotation === placement.rotation &&
+        prior.mirrored === placement.mirrored;
     });
 }
 
@@ -353,16 +491,21 @@ export function previewTemplateSync(
   const stableTemplateId = assertStableId(templateId);
   const template = state.floorTemplates[stableTemplateId];
   if (!template) throw new Error("未知楼层模板");
+  validateTemplateIdentity(template);
   return state.floors
     .filter((floor) => floor.templateId === stableTemplateId)
     .sort((left, right) => left.floorNumber - right.floorNumber || left.id.localeCompare(right.id))
-    .map((floor) => ({
-      floorId: floor.id,
-      templateId: stableTemplateId,
-      previousRoomCount: floor.rooms.length,
-      nextRoomCount: template.roomPlacements.length,
-      changed: !roomSnapshotMatchesTemplate(floor, template),
-    }));
+    .map((floor) => {
+      const applied = state.floorTemplates[snapshotTemplateId(floor.id)];
+      if (!applied) throw new Error(`楼层 ${floor.id} 缺少已应用模板快照`);
+      return {
+        floorId: floor.id,
+        templateId: stableTemplateId,
+        previousRoomCount: applied.roomPlacements.length,
+        nextRoomCount: template.roomPlacements.length,
+        changed: !placementSnapshotMatchesTemplate(applied, template),
+      };
+    });
 }
 
 export function applyTemplateSync(
@@ -370,20 +513,40 @@ export function applyTemplateSync(
   selectedFloorIds: readonly string[],
 ): ContentScaleState {
   const selected = new Set(selectedFloorIds.map(assertStableId));
-  for (const selectedFloorId of selected) {
-    if (!state.floors.some(({ id }) => id === selectedFloorId)) throw new Error(`未知楼层：${selectedFloorId}`);
+  const occupiedRoomIds = new Set<StableId>();
+  for (const floor of state.floors) {
+    for (const room of floor.rooms) {
+      if (occupiedRoomIds.has(room.id)) throw new Error(`客房编号冲突：${room.id}`);
+      occupiedRoomIds.add(room.id);
+    }
   }
+  for (const selectedFloorId of selected) {
+    const selectedFloor = state.floors.find(({ id }) => id === selectedFloorId);
+    if (!selectedFloor) throw new Error(`未知楼层：${selectedFloorId}`);
+    const selectedTemplate = state.floorTemplates[selectedFloor.templateId];
+    if (!selectedTemplate) throw new Error(`楼层 ${selectedFloorId} 引用了未知模板`);
+    const placementIds = selectedTemplate.roomPlacements.map(({ id }) => id);
+    if (new Set(placementIds).size !== placementIds.length) {
+      throw new Error(`模板 ${selectedTemplate.id} 的客房放置编号重复`);
+    }
+  }
+  const floorTemplates = withGuestFloorSnapshots(state);
   const floors = state.floors.map((floor) => {
     if (!selected.has(floor.id)) return cloneFloor(floor);
-    const template = state.floorTemplates[floor.templateId];
+    const template = floorTemplates[floor.templateId];
     if (!template) throw new Error(`楼层 ${floor.id} 引用了未知模板`);
     if (floor.use !== "guest" || template.use !== "guest") throw new Error("仅客房楼层可以同步模板");
+    const appliedId = snapshotTemplateId(floor.id);
+    floorTemplates[appliedId] = cloneTemplate(template, appliedId);
+    const rooms = roomsForTemplate(floor.id, template, floor.rooms);
+    for (const previous of floor.rooms) occupiedRoomIds.delete(previous.id);
+    validateGeneratedRooms(rooms, occupiedRoomIds);
     return {
       ...floor,
-      rooms: roomsForTemplate(floor.id, template, floor.rooms),
+      rooms,
       publicSpaceInstanceIds: [...floor.publicSpaceInstanceIds],
     };
   });
   assertRoomCount(floors.reduce((total, floor) => total + floor.rooms.length, 0));
-  return { ...state, floors };
+  return { ...state, floorTemplates, floors };
 }

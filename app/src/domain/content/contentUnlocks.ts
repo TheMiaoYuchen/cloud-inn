@@ -18,7 +18,10 @@ function prerequisiteMet(
         operations?.maximumReputationBps ?? 0,
       ) >= prerequisite.thresholdBps;
     case "discovered-need":
-      return operations?.discoveredNeeds.some(({ id }) => id === prerequisite.id) ?? false;
+      return operations?.discoveredNeeds.some(
+        ({ segmentId, kind }) =>
+          segmentId === prerequisite.segmentId && kind === prerequisite.kind,
+      ) ?? false;
     case "built-facility":
       return Object.values(state.phase4?.facilities ?? {}).some(
         ({ type }) => type === prerequisite.facilityType,

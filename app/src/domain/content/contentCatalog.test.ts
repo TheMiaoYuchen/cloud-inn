@@ -76,6 +76,50 @@ describe("content catalog", () => {
     }
   });
 
+  it("deep-freezes exported catalogs and their nested records at runtime", () => {
+    expect(Object.isFrozen(FACILITY_CATALOG)).toBe(true);
+    expect(Object.isFrozen(FACILITY_CATALOG[0])).toBe(true);
+    expect(Object.isFrozen(FACILITY_CATALOG[0].constructionCostCents)).toBe(true);
+    expect(Object.isFrozen(FACILITY_CATALOG[0].requiredZoneIds)).toBe(true);
+    expect(Object.isFrozen(FACILITY_CATALOG[0].unlockRule)).toBe(true);
+    expect(Object.isFrozen(FACILITY_CATALOG[0].unlockRule.all)).toBe(true);
+    expect(Object.isFrozen(APPROVED_PUBLIC_SPACE_TYPES)).toBe(true);
+    expect(Object.isFrozen(ZONE_CATALOG)).toBe(true);
+    expect(Object.isFrozen(ITEM_CATALOG)).toBe(true);
+    expect(Object.isFrozen(FLOOR_TEMPLATE_CATALOG)).toBe(true);
+    expect(Object.isFrozen(TOWER_CATALOG)).toBe(true);
+    expect(() => {
+      (FACILITY_CATALOG[0].constructionCostCents as { minimum: number }).minimum = 1;
+    }).toThrow();
+  });
+
+  it("rejects subsets and reordered candidates even when display order is renumbered", () => {
+    const subset = structuredClone(FACILITY_CATALOG).slice(1).map(
+      (entry, displayOrder) => ({ ...entry, displayOrder }),
+    );
+    const reordered = [...structuredClone(FACILITY_CATALOG)]
+      .reverse()
+      .map((entry, displayOrder) => ({ ...entry, displayOrder }));
+
+    expect(() => validateContentCatalog(subset)).toThrow("批准");
+    expect(() => validateContentCatalog(reordered)).toThrow("批准");
+  });
+
+  it("resolves prerequisite facility references against the supplied candidate", () => {
+    const candidate = structuredClone(FACILITY_CATALOG) as FacilityCatalogEntry[];
+    candidate[8] = {
+      ...candidate[8],
+      unlockRule: {
+        all: [
+          { source: "reputation", thresholdBps: 7_000 },
+          { source: "built-facility", facilityType: "missing" as never },
+        ],
+      },
+    };
+
+    expect(() => validateContentCatalog(candidate)).toThrow("未知设施类型");
+  });
+
   it.each([
     ["duplicate IDs", (catalog: FacilityCatalogEntry[]) => {
       catalog[1] = { ...catalog[1], id: catalog[0].id };

@@ -15,9 +15,9 @@ function eligibleState() {
   operations.reputationBps = 7_500;
   operations.maximumReputationBps = 7_500;
   operations.discoveredNeeds = [{
-    id: "need:wellness",
+    id: "need:leisure:城市景观",
     segmentId: "leisure",
-    kind: "service",
+    kind: "room-feature",
     discoveredDay: 1,
     strengthBps: 8_000,
   }];

@@ -1,19 +1,34 @@
 import { assertStableId, type StableId } from "../building/buildingTypes";
 import type { PublicSpaceType } from "../facilities/facilityTypes";
+import { GUEST_SEGMENT_IDS, type DiscoveredMarketNeed, type GuestSegmentId } from "../operations/operationsTypes";
 import { assertSafeMoney } from "../primitives";
 
-export const CONTENT_PROGRESS_SOURCES = [
+function deepFreeze<T>(value: T): Readonly<T> {
+  if (value !== null && typeof value === "object" && !Object.isFrozen(value)) {
+    for (const child of Object.values(value as Record<string, unknown>)) {
+      deepFreeze(child);
+    }
+    Object.freeze(value);
+  }
+  return value;
+}
+
+export const CONTENT_PROGRESS_SOURCES = deepFreeze([
   "reputation",
   "discovered-need",
   "built-facility",
   "completed-content-choice",
-] as const;
+] as const);
 
 export type ContentProgressSource = (typeof CONTENT_PROGRESS_SOURCES)[number];
 
 export type ContentUnlockPrerequisite =
   | { source: "reputation"; thresholdBps: number }
-  | { source: "discovered-need"; id: StableId }
+  | {
+      source: "discovered-need";
+      segmentId: GuestSegmentId;
+      kind: DiscoveredMarketNeed["kind"];
+    }
   | { source: "built-facility"; facilityType: PublicSpaceType }
   | { source: "completed-content-choice"; id: StableId };
 
@@ -58,7 +73,7 @@ interface CatalogReference {
 
 const id = (value: string) => assertStableId(value);
 
-export const ZONE_CATALOG: readonly Readonly<CatalogReference>[] = [
+export const ZONE_CATALOG: readonly Readonly<CatalogReference>[] = deepFreeze([
   { id: id("zone:arrival"), name: "Arrival" },
   { id: id("zone:seating"), name: "Seating" },
   { id: id("zone:kitchen"), name: "Kitchen or preparation" },
@@ -70,9 +85,9 @@ export const ZONE_CATALOG: readonly Readonly<CatalogReference>[] = [
   { id: id("zone:back-of-house"), name: "Back of house" },
   { id: id("zone:terrace"), name: "Terrace" },
   { id: id("zone:retail"), name: "Retail" },
-] as const;
+] as const);
 
-export const ITEM_CATALOG: readonly Readonly<CatalogReference>[] = [
+export const ITEM_CATALOG: readonly Readonly<CatalogReference>[] = deepFreeze([
   { id: id("item:reception-desk"), name: "Reception desk" },
   { id: id("item:lounge-seat"), name: "Lounge seat" },
   { id: id("item:dining-table"), name: "Dining table" },
@@ -85,15 +100,19 @@ export const ITEM_CATALOG: readonly Readonly<CatalogReference>[] = [
   { id: id("item:meeting-table"), name: "Meeting table" },
   { id: id("item:planter"), name: "Planter" },
   { id: id("item:display-case"), name: "Display case" },
-] as const;
+] as const);
 
 const reputation = (thresholdBps: number): ContentUnlockPrerequisite => ({
   source: "reputation",
   thresholdBps,
 });
-const need = (needId: string): ContentUnlockPrerequisite => ({
+const need = (
+  segmentId: GuestSegmentId,
+  kind: DiscoveredMarketNeed["kind"],
+): ContentUnlockPrerequisite => ({
   source: "discovered-need",
-  id: id(needId),
+  segmentId,
+  kind,
 });
 const built = (facilityType: PublicSpaceType): ContentUnlockPrerequisite => ({
   source: "built-facility",
@@ -130,25 +149,37 @@ const facility = (
   unlockRule: { all: prerequisites },
 });
 
-export const FACILITY_CATALOG: readonly Readonly<FacilityCatalogEntry>[] = [
+export const FACILITY_CATALOG: readonly Readonly<FacilityCatalogEntry>[] = deepFreeze([
   facility("sky-lobby", "Sky Lobby", "arrival", 0, [3_000_000, 9_000_000], [20, 120], "boost", ["zone:arrival"], ["item:reception-desk", "item:lounge-seat"], [reputation(0)]),
   facility("all-day-dining", "All-Day Dining", "food-and-beverage", 1, [5_000_000, 18_000_000], [30, 180], "dining", ["zone:seating", "zone:kitchen"], ["item:dining-table", "item:service-counter"], [reputation(0)]),
   facility("chinese-restaurant", "Chinese Restaurant", "food-and-beverage", 2, [7_000_000, 24_000_000], [24, 160], "dining", ["zone:seating", "zone:kitchen"], ["item:dining-table", "item:service-counter"], [reputation(6_000)]),
   facility("bar", "Bar", "food-and-beverage", 3, [3_500_000, 14_000_000], [16, 100], "bar", ["zone:seating", "zone:bar-service"], ["item:lounge-seat", "item:bar-counter"], [reputation(5_500)]),
   facility("executive-lounge", "Executive Lounge", "arrival", 4, [4_000_000, 12_000_000], [16, 80], "boost", ["zone:quiet"], ["item:lounge-seat", "item:service-counter"], [reputation(6_500)]),
-  facility("spa", "Spa", "wellness", 5, [6_000_000, 20_000_000], [4, 36], "spa", ["zone:quiet", "zone:wet"], ["item:treatment-bed"], [reputation(7_500), need("need:wellness")]),
+  facility("spa", "Spa", "wellness", 5, [6_000_000, 20_000_000], [4, 36], "spa", ["zone:quiet", "zone:wet"], ["item:treatment-bed"], [reputation(7_500), need("leisure", "room-feature")]),
   facility("pool", "Pool", "wellness", 6, [9_000_000, 30_000_000], [12, 100], "boost", ["zone:wet"], ["item:pool", "item:lounge-seat"], [reputation(7_000)]),
   facility("gym", "Gym", "wellness", 7, [3_000_000, 11_000_000], [8, 60], "boost", ["zone:fitness"], ["item:fitness-station"], [reputation(5_000)]),
   facility("ballroom", "Ballroom", "events", 8, [12_000_000, 40_000_000], [80, 500], "banquet", ["zone:event", "zone:back-of-house"], ["item:event-table", "item:service-counter"], [reputation(7_000), built("all-day-dining")]),
   facility("meeting-room", "Meeting Room", "events", 9, [2_500_000, 10_000_000], [6, 80], "banquet", ["zone:event"], ["item:meeting-table"], [reputation(6_000)]),
   facility("garden-terrace", "Garden Terrace", "leisure", 10, [3_000_000, 12_000_000], [12, 120], "boost", ["zone:terrace"], ["item:planter", "item:lounge-seat"], [choice("operations:premium-segments")]),
   facility("boutique", "Boutique", "retail", 11, [2_000_000, 8_000_000], [4, 30], "boost", ["zone:retail"], ["item:display-case"], [reputation(7_500), built("sky-lobby")]),
-] as const;
+] as const);
 
-export const APPROVED_PUBLIC_SPACE_TYPES: readonly StableId[] =
-  FACILITY_CATALOG.map(({ id: facilityId }) => facilityId);
+export const APPROVED_PUBLIC_SPACE_TYPES: readonly StableId[] = deepFreeze([
+  id("facility:sky-lobby"),
+  id("facility:all-day-dining"),
+  id("facility:chinese-restaurant"),
+  id("facility:bar"),
+  id("facility:executive-lounge"),
+  id("facility:spa"),
+  id("facility:pool"),
+  id("facility:gym"),
+  id("facility:ballroom"),
+  id("facility:meeting-room"),
+  id("facility:garden-terrace"),
+  id("facility:boutique"),
+]);
 
-export const FLOOR_TEMPLATE_CATALOG: readonly Readonly<FloorTemplateCatalogEntry>[] = [
+export const FLOOR_TEMPLATE_CATALOG: readonly Readonly<FloorTemplateCatalogEntry>[] = deepFreeze([
   {
     id: id("template:guest:dense-ring"),
     name: "Dense Ring Guest Floor",
@@ -156,9 +187,9 @@ export const FLOOR_TEMPLATE_CATALOG: readonly Readonly<FloorTemplateCatalogEntry
     slotsPerSide: 8,
     roomAreaSquareMeters: 24,
   },
-] as const;
+] as const);
 
-export const TOWER_CATALOG: readonly Readonly<TowerCatalogEntry>[] = [
+export const TOWER_CATALOG: readonly Readonly<TowerCatalogEntry>[] = deepFreeze([
   {
     id: id("building-template:first-tower"),
     name: "Cloud Inn First Tower",
@@ -169,7 +200,7 @@ export const TOWER_CATALOG: readonly Readonly<TowerCatalogEntry>[] = [
     serviceFloorNumber: 3,
     guestTemplateId: FLOOR_TEMPLATE_CATALOG[0].id,
   },
-] as const;
+] as const);
 
 function validateReferenceCatalog(values: readonly Readonly<CatalogReference>[], label: string): Set<string> {
   const ids = new Set<string>();
@@ -194,6 +225,16 @@ export function validateContentCatalog(
   const itemIds = validateReferenceCatalog(ITEM_CATALOG, "物件");
   const facilityIds = new Set<string>();
   const facilityTypes = new Set<PublicSpaceType>();
+  const candidateTypes = new Set(catalog.map(({ type }) => type));
+  const candidateIds = catalog.map(({ id: facilityId }) => facilityId);
+  if (
+    candidateIds.length !== APPROVED_PUBLIC_SPACE_TYPES.length ||
+    candidateIds.some(
+      (facilityId, index) => facilityId !== APPROVED_PUBLIC_SPACE_TYPES[index],
+    )
+  ) {
+    throw new Error("设施目录必须包含批准的 12 项并保持批准顺序");
+  }
 
   catalog.forEach((entry, index) => {
     assertStableId(entry.id);
@@ -215,8 +256,12 @@ export function validateContentCatalog(
     for (const prerequisite of entry.unlockRule.all) {
       if (!(CONTENT_PROGRESS_SOURCES as readonly string[]).includes(prerequisite.source)) throw new Error("解锁进度来源无效");
       if (prerequisite.source === "reputation" && (!Number.isSafeInteger(prerequisite.thresholdBps) || prerequisite.thresholdBps < 0 || prerequisite.thresholdBps > 10_000)) throw new Error("解锁声誉无效");
-      if (prerequisite.source === "discovered-need" || prerequisite.source === "completed-content-choice") assertStableId(prerequisite.id);
-      if (prerequisite.source === "built-facility" && !FACILITY_CATALOG.some(({ type }) => type === prerequisite.facilityType)) throw new Error("解锁引用了未知设施类型");
+      if (prerequisite.source === "discovered-need") {
+        if (!(GUEST_SEGMENT_IDS as readonly string[]).includes(prerequisite.segmentId)) throw new Error("解锁引用了未知客群");
+        if (!( ["room-feature", "service", "price"] as readonly string[]).includes(prerequisite.kind)) throw new Error("解锁引用了未知需求类型");
+      }
+      if (prerequisite.source === "completed-content-choice") assertStableId(prerequisite.id);
+      if (prerequisite.source === "built-facility" && !candidateTypes.has(prerequisite.facilityType)) throw new Error("解锁引用了未知设施类型");
     }
   });
 
