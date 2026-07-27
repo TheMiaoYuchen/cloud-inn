@@ -71,4 +71,40 @@ describe("useOperationsClock", () => {
     await act(async () => vi.advanceTimersByTimeAsync(15_000));
     expect(advance).toHaveBeenCalledTimes(2);
   });
+
+  it("keeps the pending lock across a speed change", async () => {
+    let release!: () => void;
+    const advance = vi.fn(() => new Promise<void>((resolve) => { release = resolve; }));
+    const { rerender } = renderHook(
+      ({ speed }) => useOperationsClock({ speed, advance, nowMs: () => 1 }),
+      { initialProps: { speed: 1 as 0 | 1 | 2 | 4 } },
+    );
+    await act(async () => vi.advanceTimersByTimeAsync(60_000));
+    expect(advance).toHaveBeenCalledTimes(1);
+
+    rerender({ speed: 4 });
+    await act(async () => vi.advanceTimersByTimeAsync(45_000));
+    expect(advance).toHaveBeenCalledTimes(1);
+
+    await act(async () => release());
+    await act(async () => vi.advanceTimersByTimeAsync(15_000));
+    expect(advance).toHaveBeenCalledTimes(2);
+  });
+
+  it("does not dispatch or update after unmount while an advance is pending", async () => {
+    let release!: () => void;
+    const advance = vi.fn(() => new Promise<void>((resolve) => { release = resolve; }));
+    const { unmount } = renderHook(() =>
+      useOperationsClock({ speed: 4, advance, nowMs: () => 1 }),
+    );
+    await act(async () => vi.advanceTimersByTimeAsync(15_000));
+    expect(advance).toHaveBeenCalledTimes(1);
+
+    unmount();
+    await act(async () => release());
+    await act(async () => vi.advanceTimersByTimeAsync(60_000));
+
+    expect(advance).toHaveBeenCalledTimes(1);
+    expect(vi.getTimerCount()).toBe(0);
+  });
 });

@@ -236,7 +236,7 @@ describe('GameProvider flow', () => {
       return <><output>{`${state?.currentDay}:${state?.operations?.lastOfflineCheckpointMs}`}</output><button onClick={() => void commands.advanceDay()}>advance</button></>;
     }
     const user = userEvent.setup();
-    render(<GameProvider savePort={port} saveId={initial.saveId} nowMs={() => values.shift() ?? 500}><Probe /></GameProvider>);
+    const firstRender = render(<GameProvider savePort={port} saveId={initial.saveId} nowMs={() => values.shift() ?? 500}><Probe /></GameProvider>);
     await screen.findByText('0:100');
 
     await user.click(screen.getByRole('button', { name: 'advance' }));
@@ -246,5 +246,10 @@ describe('GameProvider flow', () => {
     expect(saved?.currentDay).toBe(1);
     expect(saved?.operations?.lastOfflineCheckpointMs).toBe(500);
     expect(saved?.revision).toBe(2);
+
+    firstRender.unmount();
+    render(<GameProvider savePort={port} saveId={initial.saveId} nowMs={() => 500}><Probe /></GameProvider>);
+    expect(await screen.findByText('1:500')).toBeInTheDocument();
+    expect((await port.load(initial.saveId))?.revision).toBe(2);
   });
 });

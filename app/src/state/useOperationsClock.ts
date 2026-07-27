@@ -21,18 +21,18 @@ export function useOperationsClock({
 }: OperationsClockOptions): void {
   const advanceRef = useRef(advance);
   const nowRef = useRef(nowMs);
+  const inFlightRef = useRef(false);
   advanceRef.current = advance;
   nowRef.current = nowMs;
 
   useEffect(() => {
     if (speed === 0) return;
     let alive = true;
-    let inFlight = false;
     const timer = window.setInterval(() => {
-      if (!alive || inFlight) return;
-      inFlight = true;
+      if (!alive || inFlightRef.current) return;
+      inFlightRef.current = true;
       Promise.resolve(advanceRef.current(nowRef.current())).finally(() => {
-        inFlight = false;
+        inFlightRef.current = false;
       });
     }, OPERATIONS_DAY_INTERVAL_MS[speed]);
     return () => {

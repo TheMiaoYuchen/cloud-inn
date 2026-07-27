@@ -1194,13 +1194,14 @@ describe("game commands", () => {
     state = await commands.openHotel(state);
     state = await commands.initializeOperations(state, "casual");
 
-    const settled = await commands.advanceDay(state);
+    const settled = await commands.advanceDay(state, 10_000);
     const operationsReport = settled.operations?.dailyReports[0];
 
     expect(operationsReport).toBeDefined();
     expect(settled.currentDay).toBe(1);
     expect(settled.cashCents).toBe(operationsReport?.endingCashCents);
     expect(settled.operations?.reputationBps).toBe(operationsReport?.reputationBps);
+    expect(settled.operations?.lastOfflineCheckpointMs).toBe(10_000);
     expect(settled.reports).toHaveLength(1);
     expect(settled.latestReport).toBe(settled.reports[0]);
     expect(settled.reports[0]).toMatchObject({
@@ -1233,9 +1234,31 @@ describe("game commands", () => {
       },
     });
 
-    await expect(commands.advanceDay(state)).rejects.toThrow("磁盘写入失败");
+    await expect(commands.advanceDay(state, 10_000)).rejects.toThrow("磁盘写入失败");
     expect(state).toEqual(snapshot);
     expect(await store.load(state.saveId)).toEqual(persisted);
+  });
+
+  it("rejects operations advancement without application time and keeps state and save unchanged", async () => {
+    const store = new InMemorySavePort();
+    const commands = createGameCommands(store);
+    let state = await commands.saveRoomBlueprint(
+      createNewGame("save-operations-time-required"),
+      "云岫商务房",
+      prototypeCells(),
+    );
+    state = await commands.placeRoom(state, "slot-nw");
+    state = await commands.openHotel(state);
+    state = await commands.initializeOperations(state);
+    state = await commands.checkpointOfflineTime(state, 1_000);
+    const snapshot = structuredClone(state);
+    const persisted = await store.load(state.saveId);
+
+    await expect(commands.advanceDay(state)).rejects.toThrow("日结时间");
+
+    expect(state).toEqual(snapshot);
+    expect(await store.load(state.saveId)).toEqual(persisted);
+    expect(state.operations?.lastOfflineCheckpointMs).toBe(1_000);
   });
 
   it.each([0, 1, 2, 4] as const)("sets supported operations time speed %s atomically", async (speed) => {

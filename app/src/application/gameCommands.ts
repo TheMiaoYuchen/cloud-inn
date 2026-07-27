@@ -161,19 +161,17 @@ export function createGameCommands(savePort: SavePort) {
     }
   }
 
-  function projectOperationsDay(state: GameState, nowMs?: number): GameState {
+  function projectOperationsDay(state: GameState, nowMs: number): GameState {
     if (state.phase !== "open" || !state.roomBlueprint) {
       throw new Error("酒店尚未开业");
     }
     const operations = state.operations;
     if (!operations) throw new Error("经营系统尚未初始化");
-    if (nowMs !== undefined) {
-      assertNowMs(nowMs, "日结时间");
-      if (
-        operations.lastOfflineCheckpointMs !== null
-        && nowMs < operations.lastOfflineCheckpointMs
-      ) throw new Error("离线检查点不能倒退");
-    }
+    assertNowMs(nowMs, "日结时间");
+    if (
+      operations.lastOfflineCheckpointMs !== null
+      && nowMs < operations.lastOfflineCheckpointMs
+    ) throw new Error("离线检查点不能倒退");
     const settled = settleOperationsDay({
       day: state.currentDay + 1,
       cashCents: state.cashCents,
@@ -184,7 +182,7 @@ export function createGameCommands(savePort: SavePort) {
     const nextOperations: OperationsState = {
       ...settled.operations,
       ...periodic,
-      lastOfflineCheckpointMs: nowMs ?? settled.operations.lastOfflineCheckpointMs,
+      lastOfflineCheckpointMs: nowMs,
     };
     return {
       ...state,
@@ -644,6 +642,7 @@ export function createGameCommands(savePort: SavePort) {
       }
 
       if (state.operations) {
+        if (nowMs === undefined) throw new Error("日结时间必须由应用层提供");
         return persist(state, projectOperationsDay(state, nowMs));
       }
 
