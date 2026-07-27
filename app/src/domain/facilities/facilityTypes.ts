@@ -99,12 +99,10 @@ export interface FacilityState {
   publicSpaceInstanceId: StableId;
   status: FacilityStatus;
   enabled: boolean;
-  capacity: number;
   dailyOperatingCostCents: number;
   segmentInputs: Record<GuestSegmentId, FacilitySegmentInput>;
   policy: FacilityPolicy | null;
   menuSelection: FacilityMenuSelection | null;
-  selectedSignatureOfferingId: StableId | null;
   developedOfferingIds: StableId[];
   dailyResults: FacilityDailyResult[];
 }

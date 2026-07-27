@@ -40,6 +40,18 @@ const OPERATING_FACILITY_TYPES = new Set<PublicSpaceType>(
   FACILITY_TYPES.slice(0, 6),
 );
 
+const RESTAURANT_TYPES = new Set<PublicSpaceType>([
+  "all-day-dining",
+  "chinese-restaurant",
+  "bar",
+]);
+
+const SERVICE_PACKAGE_TYPES = new Set<PublicSpaceType>([
+  "spa",
+  "ballroom",
+  "meeting-room",
+]);
+
 const PUBLIC_SPACE_PLACEMENTS = FACILITY_TYPES.map((type, index) => ({
   type,
   floorNumber: 2 + Math.min(Math.floor(index / 4), 2),
@@ -85,10 +97,10 @@ function createGuestTemplate(): ScaleFloorTemplate {
         `placement:${String(index + 1).padStart(3, "0")}`,
       ),
       roomBlueprintId: assertStableId("room-blueprint:standard-king"),
-      anchorX: index % 2 === 0 ? 0 : 16,
-      anchorY: Math.floor(index / 2) * 12,
-      width: 8,
-      height: 12,
+      anchorX: index % 2 === 0 ? 0 : 8,
+      anchorY: Math.floor(index / 2) * 6,
+      width: 4,
+      height: 6,
       rotation: index % 2 === 0 ? 0 : 180,
       mirrored: index % 2 !== 0,
     })),
@@ -159,6 +171,13 @@ function createPublicSpaceRecords(floors: HotelFloor[]): {
         `public-space:${floorId}:${localPlacementId}`,
       );
       const facilityId = assertStableId(`facility:${floorId}:${type}`);
+      const signatureOfferingId = RESTAURANT_TYPES.has(type)
+        ? assertStableId(
+            `offering:${type === "bar" ? "drink" : "dish"}:${type}`,
+          )
+        : SERVICE_PACKAGE_TYPES.has(type)
+          ? assertStableId(`offering:service-package:${type}`)
+          : undefined;
 
       blueprints.push({
         id: blueprintId,
@@ -184,7 +203,6 @@ function createPublicSpaceRecords(floors: HotelFloor[]): {
         publicSpaceInstanceId: instanceId,
         status: OPERATING_FACILITY_TYPES.has(type) ? "operating" : "planned",
         enabled: OPERATING_FACILITY_TYPES.has(type),
-        capacity: 20 + index * 5,
         dailyOperatingCostCents: 50_000 + index * 2_500,
         segmentInputs: createSegmentInputs(),
         policy: {
@@ -193,18 +211,17 @@ function createPublicSpaceRecords(floors: HotelFloor[]): {
           capacity: 20 + index * 5,
           openingPolicyId: assertStableId("opening-policy:daily"),
           serviceBudgetCents: 50_000 + index * 2_500,
-          signatureOfferingId: assertStableId(`offering:${type}:signature`),
+          signatureOfferingId,
         },
-        menuSelection: {
-          menuStructureId: assertStableId(`menu:${type}:standard`),
-          selectedItemIds: [],
-        },
-        selectedSignatureOfferingId: assertStableId(
-          `offering:${type}:signature`,
-        ),
-        developedOfferingIds: [
-          assertStableId(`offering:${type}:signature`),
-        ],
+        menuSelection: RESTAURANT_TYPES.has(type)
+          ? {
+              menuStructureId: assertStableId(`menu:${type}:standard`),
+              selectedItemIds: [],
+            }
+          : null,
+        developedOfferingIds: signatureOfferingId
+          ? [signatureOfferingId]
+          : [],
         dailyResults: [],
       });
 

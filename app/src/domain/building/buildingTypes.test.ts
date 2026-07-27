@@ -84,6 +84,15 @@ type StoredSpaceReferenceIsBranded = Expect<
 type StoredPolicyIdIsBranded = Expect<
   Equal<FacilityPolicy["positioningId"], StableId>
 >;
+type FacilityCapacityIsSingleSource = Expect<
+  Equal<"capacity" extends keyof FacilityState ? true : false, false>
+>;
+type FacilitySignatureIsSingleSource = Expect<
+  Equal<
+    "selectedSignatureOfferingId" extends keyof FacilityState ? true : false,
+    false
+  >
+>;
 const storedIdsAreBranded: [
   StoredRoomIdIsBranded,
   StoredFloorIdIsBranded,
@@ -94,13 +103,17 @@ const storedIdsAreBranded: [
   StoredFacilityIdIsBranded,
   StoredSpaceReferenceIsBranded,
   StoredPolicyIdIsBranded,
-] = [true, true, true, true, true, true, true, true, true];
+  FacilityCapacityIsSingleSource,
+  FacilitySignatureIsSingleSource,
+] = [true, true, true, true, true, true, true, true, true, true, true];
 
 describe("Phase 4 state contracts", () => {
   it("exports the exact floor and public-space catalogs", () => {
     expect(floorUseIsExact).toBe(true);
     expect(publicSpaceTypeIsExact).toBe(true);
     expect(storedIdsAreBranded).toEqual([
+      true,
+      true,
       true,
       true,
       true,
@@ -238,17 +251,16 @@ describe("Phase 4 state contracts", () => {
     expect(policy).toMatchObject({
       positioningId: expect.any(String),
       priceBandId: expect.any(String),
-      capacity: facility.capacity,
+      capacity: expect.any(Number),
       openingPolicyId: expect.any(String),
       serviceBudgetCents: expect.any(Number),
-      signatureOfferingId: facility.selectedSignatureOfferingId,
+      signatureOfferingId: expect.any(String),
     });
     expect(menuSelection).toMatchObject({
       menuStructureId: expect.any(String),
     });
-    expect(facility.selectedSignatureOfferingId).toEqual(expect.any(String));
     expect(facility.developedOfferingIds).toContain(
-      facility.selectedSignatureOfferingId,
+      facility.policy?.signatureOfferingId,
     );
     expect(facility.dailyResults).toEqual([]);
     expect(offering.kind).toBe("dish");
@@ -256,13 +268,92 @@ describe("Phase 4 state contracts", () => {
     expect(() => JSON.stringify(facility)).not.toThrow();
   });
 
+  it.each([
+    ["all-day-dining", "dish"],
+    ["chinese-restaurant", "dish"],
+    ["bar", "drink"],
+  ] as const)(
+    "persists restaurant menu and offering state for %s",
+    (type, offeringKind) => {
+      const facilities = Object.values(
+        createPhase4AcceptanceState("phase4-commercial-food").phase4!
+          .facilities,
+      );
+      const facility = facilities.find((candidate) => candidate.type === type)!;
+
+      expect(facility.menuSelection).not.toBeNull();
+      expect(facility.policy?.signatureOfferingId).toEqual(expect.any(String));
+      expect(facility.developedOfferingIds).toEqual([
+        facility.policy?.signatureOfferingId,
+      ]);
+      expect(
+        facility.policy?.signatureOfferingId?.split(":")[1],
+      ).toBe(offeringKind);
+    },
+  );
+
+  it.each(["spa", "ballroom", "meeting-room"] as const)(
+    "persists service-package state without restaurant menu for %s",
+    (type) => {
+      const facilities = Object.values(
+        createPhase4AcceptanceState("phase4-service-packages").phase4!
+          .facilities,
+      );
+      const facility = facilities.find((candidate) => candidate.type === type)!;
+
+      expect(facility.menuSelection).toBeNull();
+      expect(facility.policy?.signatureOfferingId).toMatch(
+        /^offering:service-package:/,
+      );
+      expect(facility.developedOfferingIds).toEqual([
+        facility.policy?.signatureOfferingId,
+      ]);
+    },
+  );
+
+  it.each([
+    "sky-lobby",
+    "executive-lounge",
+    "pool",
+    "gym",
+    "garden-terrace",
+    "boutique",
+  ] as const)("omits irrelevant menu and offering state for %s", (type) => {
+    const facilities = Object.values(
+      createPhase4AcceptanceState("phase4-boost-facilities").phase4!.facilities,
+    );
+    const facility = facilities.find((candidate) => candidate.type === type)!;
+
+    expect(facility.menuSelection).toBeNull();
+    expect(facility.policy?.signatureOfferingId).toBeUndefined();
+    expect(facility.developedOfferingIds).toEqual([]);
+  });
+
   it("defines integer true-size transforms for all 120 room placements", () => {
-    const phase4 = createPhase4AcceptanceState("phase4-room-geometry").phase4!;
+    const state = createPhase4AcceptanceState("phase4-room-geometry");
+    const phase4 = state.phase4!;
+    const designs = [
+      ...(state.phase2?.roomMaster ? [state.phase2.roomMaster] : []),
+      ...(state.phase2?.roomVariants ?? []),
+    ];
     let resolvedRoomCount = 0;
 
     for (const floor of phase4.floors) {
       const template = phase4.floorTemplates[floor.templateId];
       expect(template.cellAreaSquareMeters).toBe(1);
+      expect(new Set(template.roomPlacements.map(({ id }) => id)).size).toBe(
+        template.roomPlacements.length,
+      );
+      for (const [index, placement] of template.roomPlacements.entries()) {
+        for (const other of template.roomPlacements.slice(index + 1)) {
+          const separated =
+            placement.anchorX + placement.width <= other.anchorX ||
+            other.anchorX + other.width <= placement.anchorX ||
+            placement.anchorY + placement.height <= other.anchorY ||
+            other.anchorY + other.height <= placement.anchorY;
+          expect(separated, `${placement.id}/${other.id}`).toBe(true);
+        }
+      }
       for (const room of floor.rooms) {
         const placements = template.roomPlacements.filter(
           (placement) => placement.id === room.localPlacementId,
@@ -292,6 +383,15 @@ describe("Phase 4 state contracts", () => {
         expect(
           placements[0].anchorY + placements[0].height,
         ).toBeLessThanOrEqual(template.rows);
+        const design = designs.find(
+          (candidate) => candidate.id === room.roomBlueprintId,
+        )!;
+        expect(design.metrics, room.id).toBeDefined();
+        expect(
+          placements[0].width *
+            placements[0].height *
+            template.cellAreaSquareMeters,
+        ).toBe(design.metrics!.areaSquareMeters);
         resolvedRoomCount += 1;
       }
     }
