@@ -59,6 +59,32 @@ export interface SegmentDayResult {
   satisfactionBps: number;
 }
 
+export type LostBookingReasonCode =
+  | "hard-requirement"
+  | "price"
+  | "service"
+  | "no-inventory";
+
+export interface LostBookingReason {
+  segmentId: GuestSegmentId;
+  code: LostBookingReasonCode;
+  count: number;
+  explanation: string;
+}
+
+export interface GuestReview {
+  segmentId: GuestSegmentId;
+  ratingBps: number;
+  text: string;
+}
+
+export interface RoomBooking {
+  segmentId: GuestSegmentId;
+  roomId: string;
+  offerId: string;
+  rateCents: number;
+}
+
 export interface OperationsDailyReport {
   day: number;
   segments: SegmentDayResult[];
@@ -68,6 +94,18 @@ export interface OperationsDailyReport {
   netIncomeCents: number;
   endingCashCents: number;
   reputationBps: number;
+  availableRooms?: number;
+  soldRooms?: number;
+  occupancyBps?: number;
+  departmentCostCents?: number;
+  roomRevenueCents?: number;
+  loanInterestCents?: number;
+  cashShortfallCents?: number;
+  lostBookings?: LostBookingReason[];
+  reviews?: GuestReview[];
+  bookings?: RoomBooking[];
+  reputationDeltaBps?: number;
+  discoveredNeeds?: DiscoveredMarketNeed[];
 }
 
 export interface WeeklyOperationsReport {
@@ -107,6 +145,7 @@ export interface OperationsState {
   offerUpgrades: Record<string, RoomOfferUpgrade>;
   loans: LoanState[];
   discoveredNeeds: DiscoveredMarketNeed[];
+  segmentMix?: Partial<Record<GuestSegmentId, number>>;
   dailyReports: OperationsDailyReport[];
   weeklyReports: WeeklyOperationsReport[];
   monthlyCloses: MonthlyOperationsClose[];

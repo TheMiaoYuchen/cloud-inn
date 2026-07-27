@@ -39,6 +39,7 @@ import {
   validateDepartmentConfiguration,
   type DepartmentConfiguration,
 } from "../domain/operations/departmentCatalog";
+import { settleOperationsDay } from "../domain/operations/settleOperationsDay";
 
 const DEPARTMENT_TRAINING_SAFETY_LOAN_ID = "safety-loan:department-training";
 
@@ -536,6 +537,23 @@ export function createGameCommands(savePort: SavePort) {
     async advanceDay(state: GameState): Promise<GameState> {
       if (state.phase !== "open" || !state.roomBlueprint) {
         throw new Error("酒店尚未开业");
+      }
+
+      if (state.operations) {
+        const settled = settleOperationsDay({
+          day: state.currentDay + 1,
+          cashCents: state.cashCents,
+          operations: state.operations,
+          offers: projectRoomOffers(state),
+        });
+        return persist(state, {
+          ...state,
+          currentDay: settled.report.day,
+          cashCents: settled.cashCents,
+          operations: settled.operations,
+          reports: [...state.reports, settled.legacyReport],
+          latestReport: settled.legacyReport,
+        });
       }
 
       const report = settleDay({

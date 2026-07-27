@@ -1,7 +1,8 @@
 import { describe, expect, it } from "vitest";
 
 import { prototypeConfig } from "../config/prototypeConfig";
-import { settleDay } from "./settleDay";
+import { settleDay, settleOperationsDay } from "./settleDay";
+import { createApprovedSettlementInput } from "../operations/operationsFixtures";
 
 describe("settleDay", () => {
   const approvedInput = {
@@ -29,6 +30,14 @@ describe("settleDay", () => {
         "房价处于建议价，需求转化正常",
       ],
     });
+  });
+
+  it("keeps legacy settlement unchanged while exposing the Phase 3 entry", () => {
+    expect(settleOperationsDay(createApprovedSettlementInput()).report.day).toBe(1);
+    expect(settleDay(approvedInput).reasons).toEqual([
+      "24㎡满足商务客的面积期望",
+      "房价处于建议价，需求转化正常",
+    ]);
   });
 
   it("sells no rooms at twice the suggested price", () => {

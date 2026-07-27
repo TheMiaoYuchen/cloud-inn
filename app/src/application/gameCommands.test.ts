@@ -966,6 +966,62 @@ describe("game commands", () => {
     expect(settled.latestReport).toBe(settled.reports[0]);
   });
 
+  it("atomically persists rich operations settlement and its legacy projection", async () => {
+    const store = new InMemorySavePort();
+    const commands = createGameCommands(store);
+    let state = await commands.saveRoomBlueprint(
+      createNewGame("save-operations-settlement"),
+      "云岫商务房",
+      prototypeCells(),
+    );
+    state = await commands.placeRoom(state, "slot-nw");
+    state = await commands.openHotel(state);
+    state = await commands.initializeOperations(state, "casual");
+
+    const settled = await commands.advanceDay(state);
+    const operationsReport = settled.operations?.dailyReports[0];
+
+    expect(operationsReport).toBeDefined();
+    expect(settled.currentDay).toBe(1);
+    expect(settled.cashCents).toBe(operationsReport?.endingCashCents);
+    expect(settled.operations?.reputationBps).toBe(operationsReport?.reputationBps);
+    expect(settled.reports).toHaveLength(1);
+    expect(settled.latestReport).toBe(settled.reports[0]);
+    expect(settled.reports[0]).toMatchObject({
+      day: operationsReport?.day,
+      soldRooms: operationsReport?.soldRooms,
+      revenueCents: operationsReport?.revenueCents,
+      netIncomeCents: operationsReport?.netIncomeCents,
+      endingCashCents: operationsReport?.endingCashCents,
+    });
+    expect(await store.load(state.saveId)).toEqual(settled);
+  });
+
+  it("does not partially apply operations settlement when its single commit fails", async () => {
+    const store = new InMemorySavePort();
+    const baseCommands = createGameCommands(store);
+    let state = await baseCommands.saveRoomBlueprint(
+      createNewGame("save-operations-settlement-failure"),
+      "云岫商务房",
+      prototypeCells(),
+    );
+    state = await baseCommands.placeRoom(state, "slot-nw");
+    state = await baseCommands.openHotel(state);
+    state = await baseCommands.initializeOperations(state, "casual");
+    const snapshot = structuredClone(state);
+    const persisted = await store.load(state.saveId);
+    const commands = createGameCommands({
+      load: (saveId) => store.load(saveId),
+      commit: async () => {
+        throw new Error("磁盘写入失败");
+      },
+    });
+
+    await expect(commands.advanceDay(state)).rejects.toThrow("磁盘写入失败");
+    expect(state).toEqual(snapshot);
+    expect(await store.load(state.saveId)).toEqual(persisted);
+  });
+
   it("rejects a stale command and preserves the first divergent save", async () => {
     const store = new InMemorySavePort();
     const commands = createGameCommands(store);

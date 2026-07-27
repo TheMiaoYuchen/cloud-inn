@@ -2,6 +2,8 @@ import { prototypeConfig } from "../config/prototypeConfig";
 import type { DailyReport } from "../game/state";
 import { assertSafeMoney } from "../primitives";
 
+export { settleOperationsDay } from "../operations/settleOperationsDay";
+
 export interface SettlementInput {
   day: number;
   cashCents: number;
