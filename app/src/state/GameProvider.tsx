@@ -8,27 +8,38 @@ import { createNewGame, type Cell, type GameState } from '../domain/game/state';
 import { OPERATIONS_DAY_INTERVAL_MS, useOperationsClock } from './useOperationsClock';
 
 type Commands = ReturnType<typeof createGameCommands>;
-type Ctx = { state: GameState | null; loading: boolean; commandPending: boolean; visualPending: boolean; error: string | null; commands: { [K in keyof Commands]: (...args: any[]) => Promise<boolean> }; visualProvider: VisualProvider };
+export type StartupNotice = { message: string; settledDays: number; checkpointMs: number | null };
+type Ctx = { state: GameState | null; loading: boolean; commandPending: boolean; visualPending: boolean; error: string | null; startupNotice: StartupNotice | null; commands: { [K in keyof Commands]: (...args: any[]) => Promise<boolean> }; visualProvider: VisualProvider };
 export type RoomDraft = { name: string; cells: Cell[]; activeZone: 'bedroom'|'bathroom'; tool: 'paint'|'erase'|'rectangle'; visualPending: boolean };
 const GameContext = createContext<(Ctx & { draft: RoomDraft; setDraftName:(v:string)=>void; setDraftCells:(v:Cell[])=>void; setActiveZone:(zone:RoomDraft['activeZone'])=>void; setTool:(tool:RoomDraft['tool'])=>void; applyDraftCell:(x:number,y:number)=>void; applyDraftRectangle:(x1:number,y1:number,x2:number,y2:number)=>void; clearDraft:()=>void }) | null>(null);
-type InitResult = { state: GameState; port: SavePort; warning: string | null };
+type InitResult = { state: GameState; port: SavePort; warning: string | null; startupNotice: StartupNotice | null };
 
 async function initialize(port: SavePort, saveId: string, allowMemoryFallback: boolean, nowMs: number, millisecondsPerGameDay: number): Promise<InitResult> {
   try {
     let state = await port.load(saveId as any);
+    const loadedState = state ? structuredClone(state) : null;
     if (!state) {
       state = { ...createNewGame(saveId as any), revision: 1 };
       await port.commit(0, state);
     } else if (state.operations) {
       state = await createGameCommands(port).settleOffline(state, nowMs, millisecondsPerGameDay);
     }
-    return { state, port, warning: null };
+    const startupNotice = state.operations ? {
+      message: state.currentDay > (loadedState?.currentDay ?? state.currentDay)
+        ? `本次离线补算 ${state.currentDay - (loadedState?.currentDay ?? state.currentDay)} 天`
+        : loadedState?.operations?.lastOfflineCheckpointMs === null
+          ? '无需补算，已建立检查点'
+          : '无需补算，检查点已更新',
+      settledDays: Math.max(0, state.currentDay - (loadedState?.currentDay ?? state.currentDay)),
+      checkpointMs: state.operations.lastOfflineCheckpointMs,
+    } : null;
+    return { state, port, warning: null, startupNotice };
   } catch (error) {
     if (!allowMemoryFallback) throw error;
     const fallback = new InMemorySavePort();
     const fresh = { ...createNewGame(saveId as any), revision: 1 };
     await fallback.commit(0, fresh);
-    return { state: fresh, port: fallback, warning: error instanceof Error ? error.message : '加载存档失败' };
+    return { state: fresh, port: fallback, warning: error instanceof Error ? error.message : '加载存档失败', startupNotice: null };
   }
 }
 
@@ -37,6 +48,7 @@ export function GameProvider({ children, savePort: port, saveId = 'save-1', visu
   const [draft, setDraft] = useState<RoomDraft>({name:'',cells:[],activeZone:'bedroom',tool:'paint',visualPending:false});
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [startupNotice, setStartupNotice] = useState<StartupNotice | null>(null);
   const [activePort, setActivePort] = useState<SavePort>(port);
   const [commandPending, setCommandPending] = useState(false); const [visualPending, setVisualPending] = useState(false); const stateRef = useRef(state); stateRef.current = state; const queue = useRef<Promise<unknown>>(Promise.resolve()); const pendingCount = useRef(0);
   const lifecycleRef = useRef({ port, saveId, allowMemoryFallback, millisecondsPerGameDay, generation: 0 });
@@ -50,13 +62,13 @@ export function GameProvider({ children, savePort: port, saveId = 'save-1', visu
   useEffect(() => {
     let alive = true;
     const generation = lifecycleRef.current.generation;
-    setLoading(true); setState(null); stateRef.current = null; setActivePort(port); setError(null); setCommandPending(false); setVisualPending(false);
+    setLoading(true); setState(null); stateRef.current = null; setActivePort(port); setError(null); setStartupNotice(null); setCommandPending(false); setVisualPending(false);
     if (!initRef.current || initRef.current.generation !== generation) {
       initRef.current = { generation, task: initialize(port, saveId, allowMemoryFallback, nowMs(), millisecondsPerGameDay) };
     }
     initRef.current.task.then(result => {
       if (!alive || lifecycleRef.current.generation !== generation) return;
-      setState(result.state); stateRef.current = result.state;
+      setState(result.state); stateRef.current = result.state; setStartupNotice(result.startupNotice);
       setDraft(result.state.roomBlueprint ? { name: result.state.roomBlueprint.name, cells: structuredClone(result.state.roomBlueprint.cells), activeZone: 'bedroom', tool: 'paint', visualPending: false } : {name:'',cells:[],activeZone:'bedroom',tool:'paint',visualPending:false});
       setActivePort(result.port); setError(result.warning); setLoading(false);
     }, failure => {
@@ -72,7 +84,7 @@ export function GameProvider({ children, savePort: port, saveId = 'save-1', visu
   useEffect(() => { const checkpoint = () => { if (document.visibilityState === 'hidden' && stateRef.current?.operations) void commands.checkpointOfflineTime(nowMs()); }; document.addEventListener('visibilitychange', checkpoint); return () => document.removeEventListener('visibilitychange', checkpoint); }, [commands, nowMs]);
   const applyDraftCell=(x:number,y:number)=>setDraft(d=>{if(d.tool==='erase') return {...d,cells:d.cells.filter(c=>!(c.x===x&&c.y===y))}; return {...d,cells:[...d.cells.filter(c=>!(c.x===x&&c.y===y)),{x,y,zone:d.activeZone}]};});
   const applyDraftRectangle=(x1:number,y1:number,x2:number,y2:number)=>{const cells:Cell[]=[]; for(let y=Math.min(y1,y2);y<=Math.max(y1,y2);y++)for(let x=Math.min(x1,x2);x<=Math.max(x1,x2);x++)cells.push({x,y,zone:draft.activeZone}); setDraft(d=>({...d,cells:[...d.cells.filter(c=>!cells.some(n=>n.x===c.x&&n.y===c.y)),...cells]}));};
-  return <GameContext.Provider value={{ state, loading, commandPending, visualPending, error, commands, draft, setDraftName:(name)=>setDraft(d=>({...d,name})), setDraftCells:(cells)=>setDraft(d=>({...d,cells})), setActiveZone:(activeZone)=>setDraft(d=>({...d,activeZone})), setTool:(tool)=>setDraft(d=>({...d,tool})), applyDraftCell, applyDraftRectangle, clearDraft:()=>setDraft(d=>({...d,cells:[]})), visualProvider: visualProvider ?? new PlaceholderVisualProvider() }}>{children}</GameContext.Provider>;
+  return <GameContext.Provider value={{ state, loading, commandPending, visualPending, error, startupNotice, commands, draft, setDraftName:(name)=>setDraft(d=>({...d,name})), setDraftCells:(cells)=>setDraft(d=>({...d,cells})), setActiveZone:(activeZone)=>setDraft(d=>({...d,activeZone})), setTool:(tool)=>setDraft(d=>({...d,tool})), applyDraftCell, applyDraftRectangle, clearDraft:()=>setDraft(d=>({...d,cells:[]})), visualProvider: visualProvider ?? new PlaceholderVisualProvider() }}>{children}</GameContext.Provider>;
 }
 export function useGame() { const c = useContext(GameContext); if (!c) throw new Error('GameProvider missing'); return c; }
 export type { Cell };

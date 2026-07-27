@@ -5,7 +5,9 @@ import { createOperationsState } from '../domain/operations/createOperationsStat
 import type { OperationsDailyReport } from '../domain/operations/operationsTypes';
 import { createNewGame, type GameState } from '../domain/game/state';
 import { InMemorySavePort } from '../infrastructure/memory/InMemorySavePort';
+import type { SavePort } from '../application/ports/SavePort';
 import { GameProvider } from '../state/GameProvider';
+import { useGame } from '../state/GameProvider';
 import { OperationsPage } from './OperationsPage';
 
 const checkpoint = 1_000;
@@ -90,6 +92,27 @@ function activeState(withReport = true): GameState {
 afterEach(() => vi.useRealTimers());
 
 describe('Phase 3 operations center', () => {
+  it('shows actual startup offline catch-up days and a calm checkpoint notice', async () => {
+    const state = activeState(false);
+    const port = await portWith(state);
+    function Probe() { const { startupNotice } = useGame(); return <output>{startupNotice?.message ?? '无提示'}</output>; }
+    render(<GameProvider savePort={port} saveId={state.saveId} nowMs={() => 121_000} millisecondsPerGameDay={60_000}><Probe /></GameProvider>);
+    expect(await screen.findByText('本次离线补算 2 天')).toBeInTheDocument();
+
+    const checkpointState = activeState(false);
+    checkpointState.operations!.lastOfflineCheckpointMs = null;
+    const checkpointPort = await portWith(checkpointState);
+    render(<GameProvider savePort={checkpointPort} saveId={checkpointState.saveId} nowMs={() => checkpoint} millisecondsPerGameDay={60_000}><Probe /></GameProvider>);
+    expect(await screen.findByText('无需补算，已建立检查点')).toBeInTheDocument();
+  });
+
+  it('renders a readable load error instead of a blank operations page', async () => {
+    const failingPort: SavePort = { load: async () => { throw new Error('桌面存档不可用'); }, commit: async () => {} };
+    render(<GameProvider savePort={failingPort}><OperationsPage /></GameProvider>);
+    expect(await screen.findByRole('alert')).toHaveTextContent('桌面存档不可用');
+    expect(screen.getByText('无法加载经营存档')).toBeInTheDocument();
+  });
+
   it('offers one clear casual operations initialization from ready or open Phase 2 states', async () => {
     const user = userEvent.setup();
     const initial = roomState('ready');
@@ -208,6 +231,10 @@ describe('Phase 3 operations center', () => {
     expect(within(renovation).getByText(/改造后/)).toBeInTheDocument();
     expect(within(renovation).getByText(/停业 2 天/)).toBeInTheDocument();
     expect(within(renovation).getByText(/客群匹配变化/)).toBeInTheDocument();
+    await user.selectOptions(within(renovation).getByRole('combobox', { name: '改造项目' }), 'privacy');
+    await user.click(within(renovation).getByRole('button', { name: '预览改造' }));
+    expect(within(renovation).getByText(/改造前：.*私密性/)).toBeInTheDocument();
+    expect(within(renovation).getByText(/改造后：.*私密性/)).toBeInTheDocument();
     await user.click(within(renovation).getByRole('button', { name: '确认改造' }));
     expect(await within(renovation).findByText('改造已安排，施工期间该产品暂停销售')).toBeInTheDocument();
   });

@@ -95,6 +95,7 @@ button:focus-visible { outline:2px solid var(--gold); outline-offset:2px; }
 .section-heading h2, .section-heading p { margin:.1rem 0; }
 .section-heading p, .muted { color:#aebfb8; }
 .empty-state { padding:1rem; border:1px dashed #607d74; border-radius:10px; color:#d2ae67; }
+.startup-notice { margin:1rem 0; padding:.75rem 1rem; background:#21483d; border:1px solid #4b806e; border-radius:9px; color:#cfe9df; }
 .metric-grid { display:grid; grid-template-columns:repeat(7,minmax(125px,1fr)); gap:.75rem; }
 .metric-card { min-height:86px; display:flex; flex-direction:column; justify-content:space-between; padding:1rem; background:linear-gradient(145deg,#1d4035,#17372e); border:1px solid #31584b; border-radius:12px; }
 .metric-card small { color:#aebfb8; }
