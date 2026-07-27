@@ -65,11 +65,14 @@ export interface OperationsState {
   reputationBps: number;
   departments: Record<DepartmentId, DepartmentState>;
   pricePolicies: Record<string, RoomPricePolicy>;
+  offerUpgrades: Record<string, RoomOfferUpgrade>;
   loans: LoanState[];
   discoveredNeeds: DiscoveredMarketNeed[];
   dailyReports: OperationsDailyReport[];
   weeklyReports: WeeklyOperationsReport[];
   monthlyCloses: MonthlyOperationsClose[];
+  maximumReputationBps: number;
+  unlockedContent: string[];
   timeSpeed: 0 | 1 | 2 | 4;
   lastOfflineCheckpointMs: number | null;
 }
@@ -156,7 +159,7 @@ git commit -m "feat: add guest segment matching"
 
 - [ ] **Step 1: Write failing pricing tests**
 
-Test integer base/min/max validation, manual lock, demand/reputation/remaining-inventory adjustments, range clamping, stable explanation factors, and rejection without save mutation.
+Test integer base/min/max validation, manual lock, seasonal demand, trailing occupancy, segment demand, reputation, remaining-inventory adjustments, range clamping, stable explanation factors, and rejection without save mutation. Use a deterministic four-season calendar derived from the integer game day; never read the wall clock.
 
 ```ts
 expect(suggestRate(policy, context)).toEqual({
@@ -175,7 +178,7 @@ Expected: FAIL because pricing policies and commands are absent.
 
 - [ ] **Step 3: Implement pure pricing functions**
 
-Use only integer cents/basis points. Export `validatePricePolicy`, `suggestRate`, and `effectiveRate`. Never mutate a policy or context.
+Use only integer cents/basis points. `PricingContext` includes `season`, trailing seven-day `occupancyBps`, segment demand, reputation, and remaining inventory. Export `validatePricePolicy`, `suggestRate`, and `effectiveRate`. Never mutate a policy or context.
 
 - [ ] **Step 4: Add atomic commands**
 
@@ -318,7 +321,7 @@ Run: `cd app && npm test -- src/domain/operations/finance.test.ts src/domain/ope
 
 - [ ] **Step 3: Implement finance and unlock projections**
 
-Use integer cents and explicit loan IDs. Unlocks are a set of content keys earned from maximum historical reputation and never removed.
+Use integer cents and explicit loan IDs. Update the persisted `maximumReputationBps` monotonically and union earned content keys into `unlockedContent`; unlocks survive reputation decline and reload.
 
 - [ ] **Step 4: Add `takeLoan`, `repayLoan`, and `setDifficulty` commands**
 
@@ -344,10 +347,12 @@ git commit -m "feat: add operations finance and reputation"
 - Create: `app/src/domain/operations/offlineSettlement.test.ts`
 - Modify: `app/src/application/gameCommands.ts`
 - Modify: `app/src/state/GameProvider.tsx`
+- Create: `app/src/state/useOperationsClock.ts`
+- Create: `app/src/state/useOperationsClock.test.tsx`
 
 - [ ] **Step 1: Write failing reporting and offline tests**
 
-Assert daily summary every day, one weekly report at days 7/14/21/28, one monthly close at day 30, exact aggregate totals, pause/1x/2x/4x validation, zero-day offline result, seven-day cap, and deterministic equivalence between batch and repeated daily settlement.
+Assert daily summary every day, one weekly report at days 7/14/21/28, one monthly close at day 30, exact aggregate totals, pause/1x/2x/4x validation, fake-timer advancement at each speed, no advancement while paused, zero-day offline result, seven-day cap, startup elapsed calculation, checkpoint update, and deterministic equivalence between batch and repeated daily settlement.
 
 - [ ] **Step 2: Run focused tests and confirm RED**
 
@@ -363,7 +368,7 @@ Export `offlineDaysForElapsed(elapsedMs, millisecondsPerGameDay)` and `settleOff
 
 - [ ] **Step 5: Add commands and provider exposure**
 
-Add `setTimeSpeed`, `advanceOperationsDays`, and `settleOffline`. The provider serializes them through the existing command queue. Do not add real-time timers to domain code.
+Add `setTimeSpeed`, `advanceOperationsDays`, `settleOffline`, and `checkpointOfflineTime`. The provider serializes them through the existing command queue. `useOperationsClock` owns the application timer, converts 1x/2x/4x into documented real-time intervals, dispatches one serialized day at each interval, and is verified with fake timers; no timer or wall-clock read enters domain code. During provider initialization, the application receives an injectable `nowMs`, computes elapsed time from `lastOfflineCheckpointMs`, settles at most seven offline days, then atomically stores the new checkpoint before exposing the loaded state.
 
 - [ ] **Step 6: Verify 30-day report boundaries and compatibility**
 
@@ -376,7 +381,42 @@ git add app/src/domain/operations app/src/application/gameCommands.ts app/src/st
 git commit -m "feat: add operations time and reports"
 ```
 
-## Task 8: Rust and Browser Persistence Validation
+## Task 8: Renovation and Explainable Room-Offer Changes
+
+**Files:**
+- Create: `app/src/domain/operations/renovation.ts`
+- Create: `app/src/domain/operations/renovation.test.ts`
+- Modify: `app/src/application/gameCommands.ts`
+- Modify: `app/src/application/gameCommands.test.ts`
+
+- [ ] **Step 1: Write failing renovation tests**
+
+Cover a controlled room-offer upgrade (`workspace`, `view`, `familyCapacity`, or `privacy`), deterministic renovation cost, management-mode affordability rejection, casual safety-loan handling, invalid downgrade rejection, construction closure days, and before/after guest-fit explanations.
+
+- [ ] **Step 2: Run focused tests and confirm RED**
+
+Run: `cd app && npm test -- src/domain/operations/renovation.test.ts src/application/gameCommands.test.ts`
+
+- [ ] **Step 3: Implement operations-owned room upgrades**
+
+Persist an `offerUpgrades` record keyed by stable offer ID in `OperationsState`. Project upgrades on top of the Phase 2 room offer; never mutate the saved design cells or AI visuals. Cost and closure duration are fixed content rules, and the preview returns affected segment scores and reasons before commitment.
+
+- [ ] **Step 4: Add preview and commit commands**
+
+Add `previewRoomRenovation` as a pure application projection and `renovateRoomOffer` as an atomic command. Deduct cash or add a casual safety loan, record closure days, and invalidate only reports not yet settled (never rewrite history).
+
+- [ ] **Step 5: Verify settlement effects**
+
+Run: `cd app && npm test -- src/domain/operations/renovation.test.ts src/domain/operations/matchGuest.test.ts src/domain/operations/settleOperationsDay.test.ts src/application/gameCommands.test.ts && npm run typecheck`
+
+- [ ] **Step 6: Commit**
+
+```bash
+git add app/src/domain/operations/renovation* app/src/application/gameCommands*
+git commit -m "feat: add explainable room renovation"
+```
+
+## Task 9: Rust and Browser Persistence Validation
 
 **Files:**
 - Modify: `app/src-tauri/src/persistence.rs`
@@ -412,7 +452,7 @@ git add app/src-tauri/src/persistence.rs app/src/infrastructure/browser
 git commit -m "feat: persist phase three operations"
 ```
 
-## Task 9: Operations Center UI in Result -> Reason -> Action Order
+## Task 10: Operations Center UI in Result -> Reason -> Action Order
 
 **Files:**
 - Modify: `app/src/pages/OperationsPage.tsx`
@@ -427,7 +467,7 @@ git commit -m "feat: persist phase three operations"
 
 - [ ] **Step 1: Write failing UI tests**
 
-Test the default casual initialization, headline occupancy/ADR/revenue/net/reputation/cash/debt, ordered reason cards, actionable price/department controls, hard-requirement lost reasons, discovered needs, daily/weekly/monthly timeline, difficulty control, pause/1x/2x/4x, and readable command errors.
+Test the default casual initialization, headline occupancy/ADR/revenue/net/reputation/cash/debt, ordered reason cards, actionable seasonal/occupancy-aware price controls, department leader assignment and reload, staffing/training/budget/standards, room renovation preview/commit, hard-requirement lost reasons, discovered needs, daily/weekly/monthly timeline, difficulty control, working pause/1x/2x/4x, offline-catch-up notice, and readable command errors.
 
 - [ ] **Step 2: Run focused tests and confirm RED**
 
@@ -443,7 +483,7 @@ Components receive already-calculated state and dispatch commands. They must not
 
 - [ ] **Step 5: Add time controls without test-time waiting**
 
-Render pause/1x/2x/4x state and an explicit `推进一天` action. Automatic real-time advancement can be layered later; Phase 3 acceptance uses deterministic explicit advancement and batch replay.
+Render pause/1x/2x/4x state and an explicit `推进一天` action. Mount `useOperationsClock` so an open hotel actually advances at each nonzero speed; component tests use fake timers and never wait in real time.
 
 - [ ] **Step 6: Run UI, Phase 1/2 regressions, typecheck, and build**
 
@@ -456,7 +496,7 @@ git add app/src/pages/OperationsPage.tsx app/src/pages/Phase3OperationsRegressio
 git commit -m "feat: add operations center UI"
 ```
 
-## Task 10: Browser Closed Loop, 30-Day Acceptance, and Desktop Smoke
+## Task 11: Browser Closed Loop, 30-Day Acceptance, and Desktop Smoke
 
 **Files:**
 - Create: `app/e2e/phase3-operations.spec.ts`
@@ -465,7 +505,7 @@ git commit -m "feat: add operations center UI"
 
 - [ ] **Step 1: Write the failing browser flow**
 
-Create/load a hotel, initialize casual operations, inspect six segments, change one price policy, increase housekeeping capacity, settle seven days, see a weekly report, settle through day 30, see the monthly close, reload, and verify cash/reputation/debt/report counts restore.
+Create/load a hotel, initialize casual operations, inspect six segments, change one season/occupancy-aware price policy, assign a housekeeping leader and increase capacity, preview and commit one workspace renovation, verify the business fit/reason changes, use 4x with a test-configured short application interval to advance a day, simulate an offline checkpoint and verify capped catch-up on reload, settle seven days and see a weekly report, settle through day 30 and see the monthly close, reload, and verify cash/reputation/debt/unlocks/leader/renovation/report counts and offline checkpoint restore.
 
 - [ ] **Step 2: Run the new E2E and confirm RED**
 
@@ -494,7 +534,7 @@ git add app/e2e docs/testing/phase-3-desktop-smoke.md
 git commit -m "test: verify phase three operations loop"
 ```
 
-## Task 11: Final Review, Merge, and Phase Gate
+## Task 12: Final Review, Merge, and Phase Gate
 
 - [ ] Run `cd app && npm ci` only after all agents and npm processes stop.
 - [ ] Run `npm run typecheck`, all Vitest tests, Vite build, all Playwright tests, all Rust tests, Clippy with warnings denied, rustfmt, and repository `git diff --check`.
@@ -506,7 +546,7 @@ git commit -m "test: verify phase three operations loop"
 
 ## Plan Self-Review
 
-- Every Phase 3 roadmap item is assigned: segments (Task 2), pricing (Task 3), departments/service (Task 4), deterministic settlement (Task 5), loans/reputation/difficulty (Task 6), time/reports/offline (Task 7), persistence (Task 8), operations center (Task 9), and 30-day acceptance (Task 10).
+- Every Phase 3 roadmap item is assigned: segments (Task 2), seasonal/occupancy-aware pricing (Task 3), departments/service/leaders (Task 4), deterministic settlement (Task 5), loans/reputation/persisted unlocks/difficulty (Task 6), functional speed/reports/startup offline catch-up (Task 7), renovation and room-change causality (Task 8), persistence (Task 9), operations center (Task 10), and 30-day acceptance (Task 11).
 - The plan does not introduce AI dependencies, individual staff schedules, multiple hotels, public-space operations, random events, or Phase 4 content.
 - Phase 1/2 compatibility is explicitly checked in Tasks 1, 3, 5, 8, 9, and 11.
 - New gameplay functions are test-first, deterministic, integer-based, and isolated from React/Tauri/SQLite.
