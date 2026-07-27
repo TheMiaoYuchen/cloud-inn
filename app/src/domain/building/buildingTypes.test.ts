@@ -137,4 +137,24 @@ describe("Phase 4 state contracts", () => {
     expect(phase4?.catalogProgress.unlockedIds.length).toBeLessThanOrEqual(64);
     expect(phase4?.recentFlowSnapshot?.events.length).toBeLessThanOrEqual(150);
   });
+
+  it("resolves every public space to one compatible floor-template slot", () => {
+    const phase4 = createPhase4AcceptanceState("phase4-space-slots").phase4!;
+
+    for (const publicSpace of Object.values(phase4.publicSpaces)) {
+      const floor = phase4.floors.find(
+        (candidate) => candidate.id === publicSpace.floorId,
+      )!;
+      const template = phase4.floorTemplates[floor.templateId];
+      const matchingSlots = template.publicSpaceSlots.filter(
+        (slot) => slot.id === publicSpace.localPlacementId,
+      );
+
+      expect(matchingSlots, publicSpace.id).toHaveLength(1);
+      expect(
+        matchingSlots[0].permittedTypes,
+        publicSpace.id,
+      ).toContain(publicSpace.type);
+    }
+  });
 });

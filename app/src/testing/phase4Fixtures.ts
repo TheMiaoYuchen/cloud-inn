@@ -39,6 +39,12 @@ const OPERATING_FACILITY_TYPES = new Set<PublicSpaceType>(
   FACILITY_TYPES.slice(0, 6),
 );
 
+const PUBLIC_SPACE_PLACEMENTS = FACILITY_TYPES.map((type, index) => ({
+  type,
+  floorNumber: 2 + Math.min(Math.floor(index / 4), 2),
+  localPlacementId: `space:${String((index % 4) + 1).padStart(2, "0")}`,
+}));
+
 function compareStableIds(left: string, right: string): number {
   return left < right ? -1 : left > right ? 1 : 0;
 }
@@ -106,7 +112,11 @@ function createFloors(guestTemplate: ScaleFloorTemplate): HotelFloor[] {
       floorNumber,
       use,
       templateId:
-        use === "guest" ? guestTemplate.id : `template:${use}:standard`,
+        floorNumber === 4
+          ? "template:facility:upper"
+          : use === "guest"
+            ? guestTemplate.id
+            : `template:${use}:standard`,
       purchased: true,
       rooms: rooms.sort((left, right) => compareStableIds(left.id, right.id)),
       publicSpaceInstanceIds: [],
@@ -123,54 +133,54 @@ function createPublicSpaceRecords(floors: HotelFloor[]): {
   instances: Record<string, PublicSpaceInstance>;
   facilities: Record<string, FacilityState>;
 } {
-  const facilityFloorIds = [floors[1].id, floors[2].id, floors[3].id];
   const blueprints: PublicSpaceBlueprint[] = [];
   const instances: PublicSpaceInstance[] = [];
   const facilities: FacilityState[] = [];
 
-  FACILITY_TYPES.forEach((type, index) => {
-    const floorId = facilityFloorIds[Math.min(Math.floor(index / 4), 2)];
-    const localPlacementId = `space:${String((index % 4) + 1).padStart(2, "0")}`;
-    const blueprintId = assertStableId(`space-blueprint:${type}`);
-    const instanceId = assertStableId(
-      `public-space:${floorId}:${localPlacementId}`,
-    );
-    const facilityId = assertStableId(`facility:${floorId}:${type}`);
+  PUBLIC_SPACE_PLACEMENTS.forEach(
+    ({ type, floorNumber, localPlacementId }, index) => {
+      const floorId = floors[floorNumber - 1].id;
+      const blueprintId = assertStableId(`space-blueprint:${type}`);
+      const instanceId = assertStableId(
+        `public-space:${floorId}:${localPlacementId}`,
+      );
+      const facilityId = assertStableId(`facility:${floorId}:${type}`);
 
-    blueprints.push({
-      id: blueprintId,
-      type,
-      name: type,
-      columns: 8,
-      rows: 8,
-      cells: [{ x: 0, y: 0, zoneId: "zone:guest" }],
-      placedItems: [],
-      committedBuildCostCents: 5_000_000 + index * 100_000,
-    });
-    instances.push({
-      id: instanceId,
-      floorId,
-      localPlacementId,
-      blueprintId,
-      type,
-      committedBuildCostCents: 5_000_000 + index * 100_000,
-    });
-    facilities.push({
-      id: facilityId,
-      type,
-      publicSpaceInstanceId: instanceId,
-      status: OPERATING_FACILITY_TYPES.has(type) ? "operating" : "planned",
-      enabled: OPERATING_FACILITY_TYPES.has(type),
-      capacity: 20 + index * 5,
-      dailyOperatingCostCents: 50_000 + index * 2_500,
-      segmentInputs: createSegmentInputs(),
-      selectedChoiceIds: [`choice:${type}:standard`],
-    });
+      blueprints.push({
+        id: blueprintId,
+        type,
+        name: type,
+        columns: 8,
+        rows: 8,
+        cells: [{ x: 0, y: 0, zoneId: "zone:guest" }],
+        placedItems: [],
+        committedBuildCostCents: 5_000_000 + index * 100_000,
+      });
+      instances.push({
+        id: instanceId,
+        floorId,
+        localPlacementId,
+        blueprintId,
+        type,
+        committedBuildCostCents: 5_000_000 + index * 100_000,
+      });
+      facilities.push({
+        id: facilityId,
+        type,
+        publicSpaceInstanceId: instanceId,
+        status: OPERATING_FACILITY_TYPES.has(type) ? "operating" : "planned",
+        enabled: OPERATING_FACILITY_TYPES.has(type),
+        capacity: 20 + index * 5,
+        dailyOperatingCostCents: 50_000 + index * 2_500,
+        segmentInputs: createSegmentInputs(),
+        selectedChoiceIds: [`choice:${type}:standard`],
+      });
 
-    floors.find((floor) => floor.id === floorId)?.publicSpaceInstanceIds.push(
-      instanceId,
-    );
-  });
+      floors.find((floor) => floor.id === floorId)?.publicSpaceInstanceIds.push(
+        instanceId,
+      );
+    },
+  );
 
   for (const floor of floors) {
     floor.publicSpaceInstanceIds.sort();
@@ -192,6 +202,14 @@ function createPhase4State(): ContentScaleState {
   assertRoomCount(floors.reduce((total, floor) => total + floor.rooms.length, 0));
   assertPublicSpaceCount(Object.keys(instances).length);
 
+  const createPublicSpaceSlots = (floorNumber: number) =>
+    PUBLIC_SPACE_PLACEMENTS.filter(
+      (placement) => placement.floorNumber === floorNumber,
+    ).map(({ localPlacementId, type }) => ({
+      id: localPlacementId,
+      permittedTypes: [type],
+    }));
+
   const floorTemplates = stableRecord<ScaleFloorTemplate>([
     guestTemplate,
     {
@@ -204,16 +222,19 @@ function createPhase4State(): ContentScaleState {
       id: "template:facility:standard",
       use: "facility",
       roomPlacements: [],
-      publicSpaceSlots: FACILITY_TYPES.map((type, index) => ({
-        id: `space:${String(index + 1).padStart(2, "0")}`,
-        permittedTypes: [type],
-      })),
+      publicSpaceSlots: createPublicSpaceSlots(3),
+    },
+    {
+      id: "template:facility:upper",
+      use: "facility",
+      roomPlacements: [],
+      publicSpaceSlots: createPublicSpaceSlots(4),
     },
     {
       id: "template:sky-lobby:standard",
       use: "sky-lobby",
       roomPlacements: [],
-      publicSpaceSlots: [{ id: "space:01", permittedTypes: ["sky-lobby"] }],
+      publicSpaceSlots: createPublicSpaceSlots(2),
     },
   ]);
 
