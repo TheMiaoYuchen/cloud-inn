@@ -61,6 +61,50 @@ describe("room editing primitives", () => {
     );
   });
 
+  it("rejects an edge already occupied by another opening kind", () => {
+    const draft = addWall(createRoomDraft(cells, 8, 12), {
+      x: 0,
+      y: 0,
+      side: "north",
+    });
+
+    expect(() =>
+      addDoor(draft, { x: 0, y: 0, side: "north" }),
+    ).toThrow("这条边已有其他开口");
+    expect(() =>
+      addWindow(draft, { x: 0, y: 0, side: "north" }),
+    ).toThrow("这条边已有其他开口");
+  });
+
+  it.each([
+    {
+      label: "the same kind",
+      openings: {
+        walls: [],
+        doors: [
+          { x: 0, y: 0, side: "north" as const },
+          { x: 0, y: 0, side: "north" as const },
+        ],
+        windows: [],
+      },
+    },
+    {
+      label: "different kinds",
+      openings: {
+        walls: [{ x: 0, y: 0, side: "north" as const }],
+        doors: [{ x: 0, y: 0, side: "north" as const }],
+        windows: [],
+      },
+    },
+  ])("rejects duplicate opening edges across $label", ({ openings }) => {
+    const draft = { ...createRoomDraft(cells, 8, 12), ...openings };
+
+    expect(validateRoomDraft(draft)).toEqual({
+      ok: false,
+      reason: "同一房间边只能设置一个开口",
+    });
+  });
+
   it("rejects disconnected required zones", () => {
     const draft = createRoomDraft(
       [
@@ -116,7 +160,66 @@ describe("room transforms", () => {
       { x: 5, y: 2, zone: "bathroom" },
     ], 8, 12);
     const mirrored = mirrorRoom(draft, "horizontal");
-    expect(mirrored.cells.map(({ x, y }) => [x, y])).toEqual([[0, 2], [1, 2], [2, 2]]);
+    expect(mirrored.cells.map(({ x, y }) => [x, y])).toEqual([[0, 0], [1, 0], [2, 0]]);
+  });
+
+  it("normalizes rotated non-origin cells and openings using their bounding box", () => {
+    const draft = {
+      ...createRoomDraft([
+        { x: 3, y: 4, zone: "bedroom" },
+        { x: 4, y: 4, zone: "bedroom" },
+        { x: 3, y: 5, zone: "bathroom" },
+        { x: 4, y: 5, zone: "bathroom" },
+      ], 8, 12),
+      doors: [{ x: 3, y: 4, side: "west" as const }],
+    };
+
+    const rotated = rotateRoom(draft, 90);
+
+    expect(rotated.cells.map(({ x, y }) => [x, y])).toEqual([
+      [0, 0], [1, 0], [0, 1], [1, 1],
+    ]);
+    expect(rotated.doors).toEqual([{ x: 1, y: 0, side: "north" }]);
+    expect(validateRoomDraft(rotated).ok).toBe(true);
+  });
+
+  it("normalizes both axes and openings when mirroring non-origin rooms", () => {
+    const draft = {
+      ...createRoomDraft([
+        { x: 3, y: 4, zone: "bedroom" },
+        { x: 4, y: 4, zone: "bedroom" },
+        { x: 3, y: 5, zone: "bathroom" },
+        { x: 4, y: 5, zone: "bathroom" },
+      ], 8, 12),
+      windows: [{ x: 3, y: 4, side: "west" as const }],
+    };
+
+    const mirrored = mirrorRoom(draft, "horizontal");
+
+    expect(mirrored.cells.map(({ x, y }) => [x, y])).toEqual([
+      [0, 0], [1, 0], [0, 1], [1, 1],
+    ]);
+    expect(mirrored.windows).toEqual([{ x: 1, y: 0, side: "east" }]);
+    expect(validateRoomDraft(mirrored).ok).toBe(true);
+  });
+
+  it("resizes a non-origin footprint without treating its offset as room size", () => {
+    const draft = {
+      ...createRoomDraft([
+        { x: 3, y: 4, zone: "bedroom" },
+        { x: 4, y: 4, zone: "bedroom" },
+        { x: 3, y: 5, zone: "bathroom" },
+        { x: 4, y: 5, zone: "bathroom" },
+      ], 8, 12),
+      doors: [{ x: 3, y: 5, side: "south" as const }],
+    };
+
+    const resized = resizeRoom(draft, { width: 3, height: 2 });
+
+    expect(resized.cells).toHaveLength(6);
+    expect(resized.cells.every(({ x, y }) => x >= 0 && x < 3 && y >= 0 && y < 2)).toBe(true);
+    expect(resized.doors).toEqual([{ x: 0, y: 1, side: "south" }]);
+    expect(validateRoomDraft(resized).ok).toBe(true);
   });
 
   it("resizes only within the grid and preserves a valid footprint", () => {
@@ -126,5 +229,22 @@ describe("room transforms", () => {
     expect(() => resizeRoom(draft, { width: 1, height: 1 })).toThrow(
       "缩放会裁剪房间",
     );
+  });
+
+  it("moves boundary openings with a resized footprint", () => {
+    const draft = addDoor(
+      addWindow(createRoomDraft(cells, 8, 12), {
+        x: 1,
+        y: 0,
+        side: "east",
+      }),
+      { x: 0, y: 1, side: "south" },
+    );
+
+    const resized = resizeRoom(draft, { width: 3, height: 3 });
+
+    expect(resized.windows).toEqual([{ x: 2, y: 0, side: "east" }]);
+    expect(resized.doors).toEqual([{ x: 0, y: 2, side: "south" }]);
+    expect(validateRoomDraft(resized).ok).toBe(true);
   });
 });

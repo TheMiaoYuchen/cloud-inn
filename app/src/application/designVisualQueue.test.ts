@@ -22,4 +22,57 @@ describe('DesignVisualQueue', () => {
     const unsafe=new DesignVisualQueue({generate:async()=>({assetPath:'data:image/png;base64,x'})});
     expect((await unsafe.enqueue(room,[{kind:'master'}])).errors[0]?.message).toBe('效果图路径无效');
   });
+
+  it('keeps one master and up to three unique non-empty focus requests', async () => {
+    const seen: string[] = [];
+    const queue = new DesignVisualQueue({
+      generate: async (_room, request) => {
+        seen.push(request.kind === 'master' ? 'master' : request.focus);
+        return { assetPath: `/visuals/${seen.length}.png` };
+      },
+    });
+
+    await queue.enqueue(room, [
+      { kind: 'focus', focus: ' bathroom ' },
+      { kind: 'master' },
+      { kind: 'focus', focus: '' },
+      { kind: 'master' },
+      { kind: 'focus', focus: 'bathroom' },
+      { kind: 'focus', focus: 'lighting' },
+      { kind: 'focus', focus: 'view' },
+      { kind: 'focus', focus: 'extra' },
+    ]);
+
+    expect(seen).toEqual(['bathroom', 'master', 'lighting', 'view']);
+  });
+
+  it('returns assets and errors in normalized request order despite concurrency', async () => {
+    let releaseMaster!: () => void;
+    const masterWait = new Promise<void>((resolve) => { releaseMaster = resolve; });
+    const queue = new DesignVisualQueue({
+      generate: async (_room, request) => {
+        if (request.kind === 'master') await masterWait;
+        else releaseMaster();
+        if (request.kind === 'focus' && request.focus === 'lighting') {
+          throw new Error('灯光生成失败');
+        }
+        return {
+          assetPath: request.kind === 'master'
+            ? '/visuals/master.png'
+            : `/visuals/${request.focus}.png`,
+        };
+      },
+    }, 2);
+
+    const result = await queue.enqueue(room, [
+      { kind: 'master' },
+      { kind: 'focus', focus: 'bathroom' },
+      { kind: 'focus', focus: 'lighting' },
+    ]);
+
+    expect([
+      ...result.assets.map((item) => item.request.kind === 'master' ? 'master' : item.request.focus),
+      ...result.errors.map((item) => item.request.kind === 'master' ? 'master' : item.request.focus),
+    ]).toEqual(['master', 'bathroom', 'lighting']);
+  });
 });

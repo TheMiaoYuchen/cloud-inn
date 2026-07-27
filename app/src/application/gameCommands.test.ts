@@ -12,6 +12,7 @@ import {
   previewMasterSync,
   selectAllSyncChanges,
 } from "../domain/design/roomSeries";
+import { createCorridorTemplate } from "../domain/floor/corridorTemplate";
 
 function prototypeCells() {
   return [
@@ -30,6 +31,117 @@ async function expectSavedRevision(
 }
 
 describe("game commands", () => {
+  it.each(["rooms", "placements"] as const)(
+    "rejects corridor template switching when paid construction remains in %s",
+    async (evidence) => {
+      const store = new InMemorySavePort();
+      const commands = createGameCommands(store);
+      let state = await commands.saveRoomSeries(createNewGame("save-switch"), {
+        id: "master-switch",
+        name: "标准客房",
+        cells: prototypeCells(),
+        gene: CONTEMPORARY_ORIENTAL.gene,
+      });
+      state = await commands.saveRoomBlueprint(state, "标准客房", prototypeCells());
+      state = await commands.chooseCorridorTemplate(
+        state,
+        createCorridorTemplate("complete-ring"),
+      );
+      if (evidence === "rooms") {
+        state = await commands.placeRoomVariant(state, {
+          slotId: "north-west",
+          variantId: "master-switch-king",
+          rotation: 0,
+          mirrored: false,
+        });
+      } else {
+        state = {
+          ...state,
+          phase2: {
+            ...state.phase2!,
+            floorPlacements: [{
+              slotId: "north-west",
+              variantId: "master-switch-king",
+              rotation: 0,
+              mirrored: false,
+            }],
+          },
+        };
+        await store.commit(state.revision, { ...state, revision: state.revision + 1 });
+        state = { ...state, revision: state.revision + 1 };
+      }
+      const snapshot = structuredClone(state);
+
+      await expect(
+        commands.chooseCorridorTemplate(
+          state,
+          createCorridorTemplate("partial-ring"),
+        ),
+      ).rejects.toThrow("已有客房施工，不能切换环廊模板");
+
+      expect(state).toEqual(snapshot);
+      expect(await store.load(state.saveId)).toEqual(snapshot);
+    },
+  );
+
+  it("allows corridor template switching before construction", async () => {
+    const store = new InMemorySavePort();
+    const commands = createGameCommands(store);
+    let state = await commands.saveRoomSeries(createNewGame("save-switch-empty"), {
+      id: "master-switch",
+      name: "标准客房",
+      cells: prototypeCells(),
+      gene: CONTEMPORARY_ORIENTAL.gene,
+    });
+    state = await commands.chooseCorridorTemplate(
+      state,
+      createCorridorTemplate("complete-ring"),
+    );
+
+    const switched = await commands.chooseCorridorTemplate(
+      state,
+      createCorridorTemplate("partial-ring"),
+    );
+
+    expect(switched.phase2?.corridorTemplate?.id).toBe("partial-ring");
+    await expectSavedRevision(state, switched, store);
+  });
+
+  it.each([
+    { rotation: 0 as const, slotId: "north-east", expected: "8×12" },
+    { rotation: 90 as const, slotId: "north-west", expected: "12×8" },
+    { rotation: 270 as const, slotId: "north-west", expected: "12×8" },
+  ])(
+    "rejects a $rotation° room whose $expected footprint exceeds its slot without cash or save mutation",
+    async ({ rotation, slotId, expected }) => {
+      const store = new InMemorySavePort();
+      const commands = createGameCommands(store);
+      let state = await commands.saveRoomSeries(createNewGame("save-fit"), {
+        id: "master-fit",
+        name: "标准客房",
+        cells: prototypeCells(),
+        gene: CONTEMPORARY_ORIENTAL.gene,
+      });
+      state = await commands.saveRoomBlueprint(state, "标准客房", prototypeCells());
+      state = await commands.chooseCorridorTemplate(
+        state,
+        createCorridorTemplate("complete-ring"),
+      );
+      const snapshot = structuredClone(state);
+
+      await expect(
+        commands.placeRoomVariant(state, {
+          slotId,
+          variantId: "master-fit-king",
+          rotation,
+          mirrored: false,
+        }),
+      ).rejects.toThrow(`客房尺寸 ${expected} 超出槽位`);
+
+      expect(state).toEqual(snapshot);
+      expect(await store.load(state.saveId)).toEqual(snapshot);
+    },
+  );
   it("persists a room master and its deterministic variants without changing economics", async () => {
     const store = new InMemorySavePort();
     const commands = createGameCommands(store);

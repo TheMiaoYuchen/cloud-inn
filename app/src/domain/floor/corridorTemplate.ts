@@ -2,6 +2,7 @@ import type {
   CorridorSlot,
   CorridorTemplate,
   GridPoint,
+  RoomVariant,
 } from "../design/designTypes";
 
 export type CorridorTemplateKind = "complete-ring" | "partial-ring";
@@ -48,10 +49,10 @@ export interface CorridorAnalysisOptions {
   congestionWarning?: number;
 }
 
-const CORE_MIN = 14;
-const CORE_MAX = 21;
-const RING_MIN = 11;
-const RING_MAX = 24;
+const CORE_MIN = 28;
+const CORE_MAX = 35;
+const RING_MIN = 15;
+const RING_MAX = 48;
 const DIRECTIONS: readonly GridPoint[] = [
   { x: 0, y: -1 },
   { x: 1, y: 0 },
@@ -82,21 +83,21 @@ function makeRing(kind: CorridorTemplateKind): GridPoint[] {
     ring.push({ x: RING_MAX, y });
   }
   if (kind === "partial-ring") {
-    return ring.filter((point) => !(point.y === RING_MAX && (point.x === 17 || point.x === 18)));
+    return ring.filter((point) => !(point.y === RING_MAX && (point.x === 31 || point.x === 32)));
   }
   return ring;
 }
 
 function makeSlots(kind: CorridorTemplateKind): CorridorSlot[] {
   const slots: CorridorSlot[] = [
-    { id: "north-west", anchor: { x: 11, y: 3 }, width: 8, height: 8 },
-    { id: "north-east", anchor: { x: 19, y: 1 }, width: 9, height: 10 },
-    { id: "east-north", anchor: { x: 25, y: 11 }, width: 8, height: 8 },
-    { id: "east-south", anchor: { x: 25, y: 19 }, width: 10, height: 8 },
-    { id: "south-east", anchor: { x: 17, y: 25 }, width: 8, height: 10 },
-    { id: "south-west", anchor: { x: 6, y: 25 }, width: 11, height: 7 },
-    { id: "west-south", anchor: { x: 1, y: 17 }, width: 10, height: 7 },
-    { id: "west-north", anchor: { x: 1, y: 8 }, width: 10, height: 8 },
+    { id: "north-west", anchor: { x: 15, y: 2 }, width: 9, height: 13 },
+    { id: "north-east", anchor: { x: 25, y: 6 }, width: 13, height: 9 },
+    { id: "east-north", anchor: { x: 49, y: 15 }, width: 10, height: 12 },
+    { id: "east-south", anchor: { x: 49, y: 28 }, width: 12, height: 10 },
+    { id: "south-east", anchor: { x: 36, y: 49 }, width: 8, height: 12 },
+    { id: "south-west", anchor: { x: 23, y: 49 }, width: 12, height: 8 },
+    { id: "west-south", anchor: { x: 2, y: 36 }, width: 13, height: 8 },
+    { id: "west-north", anchor: { x: 7, y: 23 }, width: 8, height: 13 },
   ];
   return kind === "partial-ring"
     ? slots.filter(({ id }) => !id.startsWith("south"))
@@ -107,16 +108,30 @@ export function createCorridorTemplate(kind: CorridorTemplateKind): CorridorTemp
   return {
     id: kind,
     name: kind === "complete-ring" ? "完整方形环廊" : "南侧开口环廊",
-    width: 36,
-    height: 36,
+    width: 64,
+    height: 64,
     core: makeCore(),
     corridor: makeRing(kind),
-    entrances: [
-      { x: 17, y: 12 },
-      { x: 17, y: 13 },
-    ],
+    entrances: Array.from({ length: CORE_MIN - RING_MIN - 1 }, (_, index) => ({
+      x: 31,
+      y: RING_MIN + 1 + index,
+    })),
     slots: makeSlots(kind),
   };
+}
+
+export function getTransformedRoomSize(
+  cells: RoomVariant["cells"],
+  rotation: RoomVariant["rotation"],
+): { width: number; height: number } {
+  if (cells.length === 0) throw new Error("客房变体没有可放置格子");
+  const xs = cells.map(({ x }) => x);
+  const ys = cells.map(({ y }) => y);
+  const width = Math.max(...xs) - Math.min(...xs) + 1;
+  const height = Math.max(...ys) - Math.min(...ys) + 1;
+  return rotation === 90 || rotation === 270
+    ? { width: height, height: width }
+    : { width, height };
 }
 
 export function createRoomFootprint(

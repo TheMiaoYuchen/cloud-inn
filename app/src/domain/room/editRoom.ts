@@ -56,6 +56,15 @@ function addOpening(
   if (!boundaryCells(draft, opening)) {
     throw new Error("开口必须位于房间边界");
   }
+  const key = openingKey(opening);
+  const hasOtherOpening = (["walls", "doors", "windows"] as const)
+    .filter((candidate) => candidate !== property)
+    .some((candidate) =>
+      draft[candidate].some((entry) => openingKey(entry) === key),
+    );
+  if (hasOtherOpening) {
+    throw new Error("这条边已有其他开口");
+  }
   if (draft[property].some((entry) => openingKey(entry) === openingKey(opening))) {
     return cloneDraft(draft);
   }
@@ -116,7 +125,14 @@ export function selectionBounds(
 export function validateRoomDraft(draft: RoomDraft) {
   const validation = validateRoomCells(draft.cells, draft.columns, draft.rows);
   if (!validation.ok) return validation;
-  for (const opening of [...draft.walls, ...draft.doors, ...draft.windows]) {
+  const openings = [...draft.walls, ...draft.doors, ...draft.windows];
+  const openingKeys = new Set<string>();
+  for (const opening of openings) {
+    const key = openingKey(opening);
+    if (openingKeys.has(key)) {
+      return { ok: false as const, reason: "同一房间边只能设置一个开口" };
+    }
+    openingKeys.add(key);
     if (!boundaryCells(draft, opening)) {
       return { ok: false as const, reason: "开口必须位于房间边界" };
     }

@@ -15,6 +15,7 @@ import type {
   FloorVariantPlacement,
 } from "../design/designTypes";
 import type { RoomMaster } from "../design/roomSeries";
+import type { Opening } from "../room/editRoom";
 
 export type ZoneKind = "bedroom" | "bathroom";
 
@@ -37,6 +38,20 @@ export type VisualState =
   | { status: "ready"; assetPath: string }
   | { status: "error"; message: string };
 
+export type DesignVisualRequest =
+  | { kind: "master" }
+  | { kind: "focus"; focus: string };
+
+export type PersistedDesignVisuals = {
+  status: "complete";
+  assets: Array<{ request: DesignVisualRequest; assetPath: string }>;
+  errors: Array<{
+    request: DesignVisualRequest;
+    message: string;
+    retryable: true;
+  }>;
+};
+
 export interface RoomBlueprint {
   id: RoomBlueprintId;
   name: string;
@@ -45,6 +60,7 @@ export interface RoomBlueprint {
   cells: Cell[];
   metrics: RoomMetrics;
   visual: VisualState;
+  openings?: { walls: Opening[]; doors: Opening[]; windows: Opening[] };
 }
 
 export interface RoomInstance {
@@ -74,6 +90,7 @@ export interface Phase2DesignState {
   roomVariants: RoomVariant[];
   corridorTemplate: CorridorTemplate | null;
   floorPlacements?: FloorVariantPlacement[];
+  designVisuals?: PersistedDesignVisuals;
 }
 
 export interface GameState {

@@ -9,15 +9,21 @@ import {
   type SyncChange,
 } from "../domain/design/roomSeries";
 import { placeRoom as planRoom } from "../domain/floor/planFloor";
+import { getTransformedRoomSize } from "../domain/floor/corridorTemplate";
 import type { CorridorTemplate } from "../domain/design/designTypes";
 import type { Cell, GameState } from "../domain/game/state";
-import type { Opening } from "../domain/room/editRoom";
+import { createRoomDraft, validateRoomDraft, type Opening } from "../domain/room/editRoom";
 import { assertSafeMoney } from "../domain/primitives";
 import { evaluateRoom } from "../domain/room/evaluateRoom";
 import { settleDay } from "../domain/simulation/settleDay";
 import type { SavePort } from "./ports/SavePort";
 import type { VisualProvider } from "./ports/VisualProvider";
 import { requestRoomVisual } from "./requestRoomVisual";
+import {
+  DesignVisualQueue,
+  type DesignVisualProvider,
+} from "./designVisualQueue";
+import type { PersistedDesignVisuals } from "../domain/game/state";
 
 export function createGameCommands(savePort: SavePort) {
   async function persist(
@@ -96,14 +102,19 @@ export function createGameCommands(savePort: SavePort) {
         phase2.roomVariants,
         normalizedChanges,
       );
+      const { designVisuals: _staleVisuals, ...phase2WithoutVisuals } = phase2;
+      const nextPhase2 = legalChanges.length > 0 ? phase2WithoutVisuals : phase2;
       return persist(state, {
         ...state,
-        phase2: { ...phase2, roomMaster, roomVariants },
+        phase2: { ...nextPhase2, roomMaster, roomVariants },
       });
     },
 
     async chooseCorridorTemplate(state: GameState, corridorTemplate: CorridorTemplate): Promise<GameState> {
       if (!state.phase2) throw new Error("请先创建客房系列");
+      if (state.floor.rooms.length > 0 || (state.phase2.floorPlacements?.length ?? 0) > 0) {
+        throw new Error("已有客房施工，不能切换环廊模板");
+      }
       return persist(state, { ...state, phase2: { ...state.phase2, corridorTemplate: structuredClone(corridorTemplate), floorPlacements: [] } });
     },
 
@@ -111,9 +122,14 @@ export function createGameCommands(savePort: SavePort) {
       const phase2 = state.phase2;
       const template = phase2?.corridorTemplate;
       if (!phase2 || !template) throw new Error("请先选择环廊模板");
-      if (!template.slots.some(slot => slot.id === input.slotId)) throw new Error("房间槽位无效");
+      const slot = template.slots.find(slot => slot.id === input.slotId);
+      if (!slot) throw new Error("房间槽位无效");
       const variant = phase2.roomVariants.find(item => item.id === input.variantId);
       if (!variant?.metrics || !state.roomBlueprint) throw new Error("客房变体无效");
+      const footprint = getTransformedRoomSize(variant.cells, input.rotation);
+      if (footprint.width > slot.width || footprint.height > slot.height) {
+        throw new Error(`客房尺寸 ${footprint.width}×${footprint.height} 超出槽位 ${slot.width}×${slot.height}`);
+      }
       const existingRoom = state.floor.rooms.find(room=>room.slotId===input.slotId);
       const refundedCash = state.cashCents + (existingRoom?.committedBuildCostCents ?? 0);
       if (refundedCash < variant.metrics.buildCostCents) throw new Error("资金不足，设计已保留");
@@ -127,6 +143,11 @@ export function createGameCommands(savePort: SavePort) {
       state: GameState,
       name: string,
       cells: Cell[],
+      openings: { walls: Opening[]; doors: Opening[]; windows: Opening[] } = {
+        walls: [],
+        doors: [],
+        windows: [],
+      },
     ): Promise<GameState> {
       if (state.phase !== "design") {
         throw new Error("当前不能修改房型");
@@ -137,6 +158,16 @@ export function createGameCommands(savePort: SavePort) {
       }
 
       const blueprintCells = structuredClone(cells);
+      const blueprintOpenings = structuredClone(openings);
+      const validation = validateRoomDraft({
+        ...createRoomDraft(
+          blueprintCells,
+          prototypeConfig.roomColumns,
+          prototypeConfig.roomRows,
+        ),
+        ...blueprintOpenings,
+      });
+      if (!validation.ok) throw new Error(validation.reason);
       const metrics = evaluateRoom(
         blueprintCells,
         prototypeConfig.roomColumns,
@@ -151,6 +182,7 @@ export function createGameCommands(savePort: SavePort) {
           columns: prototypeConfig.roomColumns,
           rows: prototypeConfig.roomRows,
           cells: blueprintCells,
+          openings: blueprintOpenings,
           metrics,
           visual: { status: "idle" },
         },
@@ -201,6 +233,33 @@ export function createGameCommands(savePort: SavePort) {
 
       const roomBlueprint = await requestRoomVisual(state.roomBlueprint, provider);
       return persist(state, { ...state, roomBlueprint });
+    },
+
+    async requestDesignVisuals(
+      state: GameState,
+      provider: DesignVisualProvider,
+      focuses: string[] = ["bathroom", "lighting", "view"],
+    ): Promise<GameState> {
+      const phase2 = state.phase2;
+      if (!phase2?.roomMaster) {
+        throw new Error("请先保存客房系列");
+      }
+      const result = await new DesignVisualQueue(provider).enqueue(
+        phase2.roomMaster,
+        [
+          { kind: "master" },
+          ...focuses.map((focus) => ({ kind: "focus" as const, focus })),
+        ],
+      );
+      const designVisuals: PersistedDesignVisuals = {
+        status: result.status,
+        assets: structuredClone(result.assets),
+        errors: structuredClone(result.errors),
+      };
+      return persist(state, {
+        ...state,
+        phase2: { ...phase2, designVisuals },
+      });
     },
 
     async openHotel(state: GameState): Promise<GameState> {

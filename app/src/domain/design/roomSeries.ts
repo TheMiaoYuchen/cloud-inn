@@ -78,16 +78,63 @@ function variantName(kind: RoomVariantKind): string {
   return kind === "king" ? "特大床房" : kind === "twin" ? "双床房" : "转角景观房";
 }
 
-function transformVariantCells(master: RoomMaster, kind: RoomVariantKind): {
-  cells: Cell[];
+function masterDraft(master: RoomMaster) {
+  return {
+    ...createRoomDraft(master.cells, master.columns, master.rows),
+    ...structuredClone(master.openings),
+  };
+}
+
+function normalizedMasterDraft(master: RoomMaster) {
+  const draft = masterDraft(master);
+  const xs = draft.cells.map(({ x }) => x);
+  const ys = draft.cells.map(({ y }) => y);
+  const minX = Math.min(...xs);
+  const minY = Math.min(...ys);
+  const mapOpening = (opening: Opening): Opening => ({
+    ...opening,
+    x: opening.x - minX,
+    y: opening.y - minY,
+  });
+  return {
+    ...draft,
+    cells: draft.cells.map((cell) => ({
+      ...cell,
+      x: cell.x - minX,
+      y: cell.y - minY,
+    })),
+    walls: draft.walls.map(mapOpening),
+    doors: draft.doors.map(mapOpening),
+    windows: draft.windows.map(mapOpening),
+  };
+}
+
+function shrinkRoomWidth(draft: ReturnType<typeof masterDraft>) {
+  const maxX = Math.max(...draft.cells.map((cell) => cell.x));
+  const nextMaxX = maxX - 1;
+  const moveOpening = (opening: Opening): Opening =>
+    opening.side === "east" && opening.x === maxX
+      ? { ...opening, x: nextMaxX }
+      : { ...opening };
+  return {
+    ...draft,
+    cells: draft.cells.filter((cell) => cell.x <= nextMaxX),
+    walls: draft.walls.map(moveOpening),
+    doors: draft.doors.map(moveOpening),
+    windows: draft.windows.map(moveOpening),
+  };
+}
+
+function transformVariantDraft(master: RoomMaster, kind: RoomVariantKind): {
+  draft: ReturnType<typeof masterDraft>;
   rotation: RoomVariant["rotation"];
   mirrored: boolean;
   overrides: RoomVariantOverride[];
 } {
-  const draft = createRoomDraft(master.cells, master.columns, master.rows);
+  const draft = normalizedMasterDraft(master);
   if (kind === "king") {
     return {
-      cells: cloneCells(master.cells),
+      draft,
       rotation: 0,
       mirrored: false,
       overrides: ["bedType"],
@@ -96,23 +143,22 @@ function transformVariantCells(master: RoomMaster, kind: RoomVariantKind): {
   if (kind === "twin") {
     const mirrored = mirrorRoom(draft, "horizontal");
     return {
-      cells: cloneCells(mirrored.cells),
+      draft: mirrored,
       rotation: 0,
       mirrored: true,
       overrides: ["bedType"],
     };
   }
-  const width = Math.max(...master.cells.map((cell) => cell.x)) + 1;
-  const height = Math.max(...master.cells.map((cell) => cell.y)) + 1;
+  const xs = draft.cells.map(({ x }) => x);
+  const ys = draft.cells.map(({ y }) => y);
+  const width = Math.max(...xs) - Math.min(...xs) + 1;
+  const height = Math.max(...ys) - Math.min(...ys) + 1;
   const resized = width < master.columns
     ? resizeRoom(draft, { width: width + 1, height })
-    : {
-        ...draft,
-        cells: draft.cells.filter((cell) => cell.x < width - 1),
-      };
+    : shrinkRoomWidth(draft);
   const mirrored = mirrorRoom(resized, "horizontal");
   return {
-    cells: cloneCells(mirrored.cells),
+    draft: mirrored,
     rotation: 0,
     mirrored: true,
     overrides: ["area", "view"],
@@ -121,19 +167,23 @@ function transformVariantCells(master: RoomMaster, kind: RoomVariantKind): {
 
 export function createRoomVariants(master: RoomMaster): RoomSeriesVariant[] {
   return (["king", "twin", "corner"] as const).map((kind) => {
-    const transformed = transformVariantCells(master, kind);
+    const transformed = transformVariantDraft(master, kind);
     return {
       id: `${master.id}-${kind}`,
       name: variantName(kind),
       masterId: master.id,
       variantKind: kind,
-      cells: transformed.cells,
+      cells: cloneCells(transformed.draft.cells),
       rotation: transformed.rotation,
       mirrored: transformed.mirrored,
       overrides: transformed.overrides,
       gene: cloneGene(master.gene),
-      metrics: metricsFor(transformed.cells, master.columns, master.rows),
-      openings: structuredClone(master.openings),
+      metrics: metricsFor(transformed.draft.cells, master.columns, master.rows),
+      openings: {
+        walls: structuredClone(transformed.draft.walls),
+        doors: structuredClone(transformed.draft.doors),
+        windows: structuredClone(transformed.draft.windows),
+      },
     };
   });
 }
@@ -159,7 +209,10 @@ export function previewMasterSync(
         nextValue: changedMaster.gene,
       });
     }
-    if (valuesDiffer(changedMaster.cells, master.cells)) {
+    if (
+      valuesDiffer(changedMaster.cells, master.cells) ||
+      valuesDiffer(changedMaster.openings, master.openings)
+    ) {
       changes.push({
         id: `${variant.id}:cells`,
         variantId: variant.id,
@@ -196,18 +249,21 @@ export function applySelectedSync(
       next.overrides = next.overrides.filter((override) => override !== "gene");
     }
     if (selected.has(`${variant.id}:area`)) {
-      let transformed = createRoomDraft(
-        changedMaster.cells,
-        changedMaster.columns,
-        changedMaster.rows,
-      );
-      if (variant.rotation !== 0) {
+      let transformed = variant.variantKind
+        ? transformVariantDraft(changedMaster, variant.variantKind).draft
+        : { ...createRoomDraft(changedMaster.cells, changedMaster.columns, changedMaster.rows), ...structuredClone(changedMaster.openings) };
+      if (!variant.variantKind && variant.rotation !== 0) {
         transformed = rotateRoom(transformed, variant.rotation);
       }
-      if (variant.mirrored) {
+      if (!variant.variantKind && variant.mirrored) {
         transformed = mirrorRoom(transformed, "horizontal");
       }
       next.cells = cloneCells(transformed.cells);
+      next.openings = {
+        walls: structuredClone(transformed.walls),
+        doors: structuredClone(transformed.doors),
+        windows: structuredClone(transformed.windows),
+      };
       next.metrics = metricsFor(next.cells, changedMaster.columns, changedMaster.rows);
       next.overrides = next.overrides.filter((override) => override !== "area");
     }

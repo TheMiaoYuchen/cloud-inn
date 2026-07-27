@@ -10,6 +10,7 @@ import {
   selectNoneSyncChanges,
 } from "./roomSeries";
 import { createRectangle } from "../room/grid";
+import { createRoomDraft, validateRoomDraft } from "../room/editRoom";
 
 const cells = [
   ...createRectangle(0, 0, 4, 3, "bedroom"),
@@ -64,6 +65,78 @@ describe("room series inheritance", () => {
     expect(variants[2]!.metrics!.areaSquareMeters).not.toBe(master.metrics.areaSquareMeters);
   });
 
+  it("retains and transforms master openings for every generated variant", () => {
+    const master = createRoomMaster({
+      id: "master-openings",
+      name: "带开口母版",
+      cells,
+      columns: 8,
+      rows: 12,
+      gene: CONTEMPORARY_ORIENTAL.gene,
+      openings: {
+        walls: [{ x: 0, y: 0, side: "north" }],
+        doors: [{ x: 0, y: 1, side: "west" }],
+        windows: [{ x: 3, y: 0, side: "east" }],
+      },
+    });
+
+    const [king, twin, corner] = createRoomVariants(master);
+
+    expect(king?.openings).toEqual(master.openings);
+    expect(twin?.openings?.doors).toEqual([{ x: 3, y: 1, side: "east" }]);
+    expect(corner?.openings?.doors).toEqual([{ x: 4, y: 1, side: "east" }]);
+    for (const variant of [king, twin, corner]) {
+      expect(
+        validateRoomDraft({
+          cells: variant!.cells,
+          columns: master.columns,
+          rows: master.rows,
+          walls: variant!.openings!.walls,
+          doors: variant!.openings!.doors,
+          windows: variant!.openings!.windows,
+        }).ok,
+      ).toBe(true);
+    }
+  });
+
+  it("creates a bounded corner variant from non-origin cells and valid openings", () => {
+    const master = createRoomMaster({
+      id: "master-offset",
+      name: "偏移客房",
+      cells: [
+        ...createRectangle(2, 3, 3, 2, "bedroom"),
+        ...createRectangle(2, 5, 3, 1, "bathroom"),
+      ],
+      columns: 8,
+      rows: 12,
+      gene: CONTEMPORARY_ORIENTAL.gene,
+      openings: {
+        walls: [],
+        doors: [{ x: 2, y: 4, side: "west" }],
+        windows: [{ x: 4, y: 3, side: "east" }],
+      },
+    });
+
+    const corner = createRoomVariants(master).find(
+      ({ variantKind }) => variantKind === "corner",
+    )!;
+
+    const xs = corner.cells.map(({ x }) => x);
+    const ys = corner.cells.map(({ y }) => y);
+    expect({
+      minX: Math.min(...xs),
+      minY: Math.min(...ys),
+      width: Math.max(...xs) - Math.min(...xs) + 1,
+      height: Math.max(...ys) - Math.min(...ys) + 1,
+    }).toEqual({ minX: 0, minY: 0, width: 4, height: 3 });
+    expect(validateRoomDraft({
+      ...createRoomDraft(corner.cells, 8, 12),
+      walls: corner.openings!.walls,
+      doors: corner.openings!.doors,
+      windows: corner.openings!.windows,
+    }).ok).toBe(true);
+  });
+
   it("previews each affected property, supports select all/none, and preserves unselected overrides", () => {
     const master = createRoomMaster({
       id: "master-deluxe",
@@ -107,5 +180,47 @@ describe("room series inheritance", () => {
     expect(applied.find((variant) => variant.id === "master-deluxe-twin")?.overrides).toContain(
       "gene",
     );
+  });
+
+  it("keeps a corner variant resized when selected master openings are synchronized", () => {
+    const master = createRoomMaster({
+      id: "master-corner-sync",
+      name: "转角同步母版",
+      cells,
+      columns: 8,
+      rows: 12,
+      gene: CONTEMPORARY_ORIENTAL.gene,
+      openings: {
+        walls: [],
+        doors: [{ x: 0, y: 1, side: "west" }],
+        windows: [{ x: 3, y: 0, side: "east" }],
+      },
+    });
+    const variants = createRoomVariants(master);
+    const changedMaster = createRoomMaster({
+      ...master,
+      cells: [...master.cells, { x: 4, y: 0, zone: "bedroom" }],
+      openings: {
+        ...master.openings,
+        windows: [{ x: 4, y: 0, side: "east" }],
+      },
+    });
+    const selected = previewMasterSync(master, changedMaster, variants).map(
+      (change) => ({
+        ...change,
+        selected:
+          change.variantId === "master-corner-sync-corner" &&
+          change.property === "area",
+      }),
+    );
+
+    const corner = applySelectedSync(changedMaster, variants, selected).find(
+      (variant) => variant.id === "master-corner-sync-corner",
+    )!;
+
+    expect(Math.max(...corner.cells.map((cell) => cell.x))).toBe(5);
+    expect(corner.openings?.windows).toEqual([
+      { x: 0, y: 0, side: "west" },
+    ]);
   });
 });

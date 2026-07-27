@@ -28,6 +28,7 @@ body {
 .design-grid .cell { min-width:24px; border:1px solid #31584b; }
 .design-grid .cell.bedroom { background:#d2ae67; }
 .design-grid .cell.bathroom { background:#78a99b; }
+.design-grid .cell.selected { outline:3px solid #f4ecd8; outline-offset:-3px; box-shadow:inset 0 0 0 1px #10251f; }
 .canvas-note { color:#c9d8d1; text-align:center; }
 .property-panel label { display:grid; gap:.4rem; }
 .property-panel input { box-sizing:border-box; width:100%; padding:.65rem; border-radius:8px; border:1px solid #607d74; }

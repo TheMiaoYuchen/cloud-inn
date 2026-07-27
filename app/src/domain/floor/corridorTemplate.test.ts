@@ -16,20 +16,20 @@ describe("createCorridorTemplate", () => {
     const corridor = new Set(template.corridor.map(key));
 
     expect(template.id).toBe("complete-ring");
-    expect(template.width).toBe(36);
-    expect(template.height).toBe(36);
+    expect(template.width).toBe(64);
+    expect(template.height).toBe(64);
     expect(template.core).toHaveLength(64);
-    expect(template.core).toContainEqual({ x: 14, y: 14 });
-    expect(template.core).toContainEqual({ x: 21, y: 21 });
+    expect(template.core).toContainEqual({ x: 28, y: 28 });
+    expect(template.core).toContainEqual({ x: 35, y: 35 });
     expect(corridor).toEqual(
       expect.objectContaining({
-        size: 52,
+        size: 132,
       }),
     );
-    expect(corridor.has("11,11")).toBe(true);
-    expect(corridor.has("24,11")).toBe(true);
-    expect(corridor.has("24,24")).toBe(true);
-    expect(corridor.has("11,24")).toBe(true);
+    expect(corridor.has("15,15")).toBe(true);
+    expect(corridor.has("48,15")).toBe(true);
+    expect(corridor.has("48,48")).toBe(true);
+    expect(corridor.has("15,48")).toBe(true);
     expect(validateCorridorTemplate(template)).toEqual({
       ok: true,
       reasons: [],
@@ -43,8 +43,8 @@ describe("createCorridorTemplate", () => {
 
     expect(partial.id).toBe("partial-ring");
     expect(partial.corridor.length).toBeLessThan(complete.corridor.length);
-    expect(corridor.has("17,24")).toBe(false);
-    expect(corridor.has("18,24")).toBe(false);
+    expect(corridor.has("31,48")).toBe(false);
+    expect(corridor.has("32,48")).toBe(false);
     expect(partial.slots.every((slot) => !slot.id.startsWith("south"))).toBe(
       true,
     );
@@ -55,10 +55,8 @@ describe("createCorridorTemplate", () => {
     for (const kind of ["complete-ring", "partial-ring"] as const) {
       const template = createCorridorTemplate(kind);
 
-      expect(template.entrances).toEqual([
-        { x: 17, y: 12 },
-        { x: 17, y: 13 },
-      ]);
+      expect(template.entrances[0]).toEqual({ x: 31, y: 16 });
+      expect(template.entrances[template.entrances.length - 1]).toEqual({ x: 31, y: 27 });
       expect(validateCorridorTemplate(template).reasons).not.toContain(
         "入口未连接核心筒与走廊",
       );
@@ -73,14 +71,14 @@ describe("createCorridorTemplate", () => {
       width,
       height,
     }))).toEqual([
-      { id: "north-west", width: 8, height: 8 },
-      { id: "north-east", width: 9, height: 10 },
-      { id: "east-north", width: 8, height: 8 },
-      { id: "east-south", width: 10, height: 8 },
-      { id: "south-east", width: 8, height: 10 },
-      { id: "south-west", width: 11, height: 7 },
-      { id: "west-south", width: 10, height: 7 },
-      { id: "west-north", width: 10, height: 8 },
+      { id: "north-west", width: 9, height: 13 },
+      { id: "north-east", width: 13, height: 9 },
+      { id: "east-north", width: 10, height: 12 },
+      { id: "east-south", width: 12, height: 10 },
+      { id: "south-east", width: 8, height: 12 },
+      { id: "south-west", width: 12, height: 8 },
+      { id: "west-south", width: 13, height: 8 },
+      { id: "west-north", width: 8, height: 13 },
     ]);
     expect(validateCorridorTemplate(template).ok).toBe(true);
 
@@ -92,6 +90,22 @@ describe("createCorridorTemplate", () => {
       }
     }
   });
+
+  it.each(["complete-ring", "partial-ring"] as const)(
+    "offers multiple true-size slots for 8x12 and rotated 12x8 rooms in %s",
+    (kind) => {
+      const template = createCorridorTemplate(kind);
+
+      expect(
+        template.slots.filter(({ width, height }) => width >= 8 && height >= 12).length,
+      ).toBeGreaterThanOrEqual(2);
+      expect(
+        template.slots.filter(({ width, height }) => width >= 12 && height >= 8).length,
+      ).toBeGreaterThanOrEqual(2);
+      expect(new Set(template.slots.map(({ width, height }) => `${width}x${height}`)).size).toBeGreaterThan(2);
+      expect(validateCorridorTemplate(template)).toEqual({ ok: true, reasons: [] });
+    },
+  );
 });
 
 describe("createRoomFootprint", () => {
@@ -118,7 +132,7 @@ describe("createRoomFootprint", () => {
   it("rejects footprints that are invalid or larger than their slot", () => {
     const slot = createCorridorTemplate("complete-ring").slots[0];
 
-    expect(() => createRoomFootprint(slot, { width: 9, height: 8 })).toThrow(
+    expect(() => createRoomFootprint(slot, { width: slot.width + 1, height: 8 })).toThrow(
       "房间尺寸超出槽位",
     );
     expect(() => createRoomFootprint(slot, { width: 0, height: 8 })).toThrow(
@@ -142,22 +156,22 @@ describe("analyzeCorridorTemplate", () => {
 
     expect(first).toEqual(second);
     expect(first.serviceDistances).toEqual({
-      "north-west": 1,
-      "north-east": 3,
-      "east-north": 8,
-      "east-south": 16,
-      "south-east": 21,
-      "south-west": 20,
-      "west-south": 13,
-      "west-north": 7,
+      "north-west": 9,
+      "north-east": 1,
+      "east-north": 18,
+      "east-south": 31,
+      "south-east": 56,
+      "south-west": 58,
+      "west-south": 38,
+      "west-north": 25,
     });
     expect(first.hints).toContainEqual({
       kind: "service-distance",
       severity: "warning",
       advisory: true,
       slotId: "east-south",
-      value: 16,
-      message: "east-south 距服务入口 16 格",
+      value: 31,
+      message: "east-south 距服务入口 31 格",
     });
     expect(first.hints.every(({ advisory }) => advisory)).toBe(true);
     expect(JSON.stringify(first)).not.toMatch(/cash|cost|rate|revenue/i);

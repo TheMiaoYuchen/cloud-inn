@@ -1,5 +1,6 @@
 import type { RoomBlueprint } from "../../domain/game/state";
+import type { DesignVisualRequest } from "../designVisualQueue";
 
 export interface VisualProvider {
-  generate(room: RoomBlueprint): Promise<{ assetPath: string }>;
+  generate(room: RoomBlueprint, request?: DesignVisualRequest): Promise<{ assetPath: string }>;
 }
