@@ -20,6 +20,7 @@ import {
 } from "../domain/operations/pricing";
 import type { SavePort } from "./ports/SavePort";
 import type { DepartmentConfiguration } from "../domain/operations/departmentCatalog";
+import type { LoanRequest } from "../domain/operations/finance";
 
 function prototypeCells() {
   return [
@@ -38,6 +39,151 @@ async function expectSavedRevision(
 }
 
 describe("game commands", () => {
+  it("takes an explicit validated loan atomically and credits cash", async () => {
+    const store = new InMemorySavePort();
+    const commands = createGameCommands(store);
+    const state = await commands.initializeOperations(
+      createNewGame("save-finance-take-loan"),
+      "management",
+    );
+    const request: LoanRequest = {
+      id: "loan:bank:001",
+      amountCents: 120_000,
+      dailyInterestBps: 20,
+      termDays: 12,
+    };
+
+    const funded = await commands.takeLoan(state, request);
+
+    expect(funded.cashCents).toBe(state.cashCents + 120_000);
+    expect(funded.operations?.loans).toEqual([{
+      id: request.id,
+      principalCents: 120_000,
+      outstandingCents: 120_000,
+      dailyInterestBps: 20,
+      minimumPaymentCents: 10_000,
+    }]);
+    await expectSavedRevision(state, funded, store);
+  });
+
+  it.each([-1, Number.MAX_SAFE_INTEGER])(
+    "rejects taking a loan from unsafe current cash %s",
+    async (cashCents) => {
+      const store = new InMemorySavePort();
+      const commands = createGameCommands(store);
+      const state = {
+        ...await commands.initializeOperations(createNewGame(`save-finance-cash-${cashCents}`)),
+        cashCents,
+      };
+      const persisted = await store.load(state.saveId);
+
+      await expect(commands.takeLoan(state, {
+        id: "loan:unsafe-cash",
+        amountCents: 1,
+        dailyInterestBps: 0,
+        termDays: 1,
+      })).rejects.toThrow("金额");
+      expect(await store.load(state.saveId)).toEqual(persisted);
+    },
+  );
+
+  it("repays principal atomically and removes the loan when fully settled", async () => {
+    const store = new InMemorySavePort();
+    const commands = createGameCommands(store);
+    let state = await commands.initializeOperations(
+      createNewGame("save-finance-repay-loan"),
+      "management",
+    );
+    state = await commands.takeLoan(state, {
+      id: "loan:bank:repay",
+      amountCents: 100_000,
+      dailyInterestBps: 10,
+      termDays: 10,
+    });
+
+    const partial = await commands.repayLoan(state, "loan:bank:repay", 40_000);
+    expect(partial.cashCents).toBe(state.cashCents - 40_000);
+    expect(partial.operations?.loans[0]).toMatchObject({
+      principalCents: 60_000,
+      outstandingCents: 60_000,
+    });
+    const settled = await commands.repayLoan(partial, "loan:bank:repay", 60_000);
+    expect(settled.operations?.loans).toEqual([]);
+  });
+
+  it.each([
+    ["missing", "贷款不存在"],
+    ["overpayment", "贷款余额"],
+    ["insufficient-cash", "现金不足"],
+    ["invalid-amount", "还款金额"],
+  ] as const)("rejects %s repayment without saving", async (kind, message) => {
+    const store = new InMemorySavePort();
+    const commands = createGameCommands(store);
+    let state = await commands.initializeOperations(
+      createNewGame(`save-finance-repay-${kind}`),
+    );
+    state = await commands.takeLoan(state, {
+      id: "loan:repay",
+      amountCents: 100_000,
+      dailyInterestBps: 10,
+      termDays: 10,
+    });
+    if (kind === "insufficient-cash") state = { ...state, cashCents: 1 };
+    const persisted = await store.load(state.saveId);
+    await expect(commands.repayLoan(
+      state,
+      kind === "missing" ? "loan:missing" : "loan:repay",
+      kind === "overpayment" ? 100_001 : kind === "invalid-amount" ? 0 : 100_000,
+    )).rejects.toThrow(message);
+    expect(await store.load(state.saveId)).toEqual(persisted);
+  });
+
+  it("switches only between supported difficulties without resetting operations", async () => {
+    const store = new InMemorySavePort();
+    const commands = createGameCommands(store);
+    const state = await commands.initializeOperations(createNewGame("save-finance-difficulty"));
+    const management = await commands.setDifficulty(state, "management");
+
+    expect(management.operations).toEqual({ ...state.operations!, difficulty: "management" });
+    await expect(commands.setDifficulty(management, "expert" as never)).rejects.toThrow("经营难度无效");
+  });
+
+  it.each(["takeLoan", "repayLoan", "setDifficulty"] as const)(
+    "requires operations initialization for %s",
+    async (command) => {
+      const store = new InMemorySavePort();
+      const commands = createGameCommands(store);
+      const state = createNewGame(`save-finance-uninitialized-${command}`);
+      const promise = command === "takeLoan"
+        ? commands.takeLoan(state, { id: "loan:id", amountCents: 1, dailyInterestBps: 0, termDays: 1 })
+        : command === "repayLoan"
+          ? commands.repayLoan(state, "loan:id", 1)
+          : commands.setDifficulty(state, "management");
+
+      await expect(promise).rejects.toThrow("经营系统尚未初始化");
+      expect(await store.load(state.saveId)).toBeNull();
+    },
+  );
+
+  it("does not mutate loan command state when saving fails", async () => {
+    const store = new InMemorySavePort();
+    const baseCommands = createGameCommands(store);
+    const state = await baseCommands.initializeOperations(createNewGame("save-finance-failure"));
+    const snapshot = structuredClone(state);
+    const commands = createGameCommands({
+      load: (saveId) => store.load(saveId),
+      commit: async () => { throw new Error("磁盘写入失败"); },
+    });
+
+    await expect(commands.takeLoan(state, {
+      id: "loan:failure",
+      amountCents: 100,
+      dailyInterestBps: 10,
+      termDays: 10,
+    })).rejects.toThrow("磁盘写入失败");
+    expect(state).toEqual(snapshot);
+  });
+
   it("initializes operations once with policies for placed offers and preserves existing operations", async () => {
     const store = new InMemorySavePort();
     const commands = createGameCommands(store);

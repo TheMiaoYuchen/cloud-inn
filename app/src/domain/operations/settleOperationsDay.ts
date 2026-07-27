@@ -4,6 +4,8 @@ import { matchGuest } from "./matchGuest";
 import { GUEST_SEGMENTS } from "./segmentCatalog";
 import type { RoomOffer } from "./roomOffer";
 import { calculateServiceCapacity } from "./serviceCapacity";
+import { projectOperationsFinance, validateLoans } from "./finance";
+import { projectReputationUnlocks } from "./unlocks";
 
 export interface OperationsSettlementInput {
   day: number;
@@ -20,7 +22,6 @@ export interface OperationsSettlementResult {
 }
 
 const MAX_SAFE_BIGINT = BigInt(Number.MAX_SAFE_INTEGER);
-const SETTLEMENT_SAFETY_LOAN_ID = "safety-loan:daily-settlement";
 const LOSS_CODE_ORDER = ["hard-requirement", "price", "service", "no-inventory"] as const;
 
 export function compareCodeUnits(left: string, right: string): number {
@@ -65,17 +66,8 @@ function validateInput(input: Readonly<OperationsSettlementInput>): void {
   if (input.day <= previousReportDay) {
     throw new Error("营业日必须晚于最后一份经营日报");
   }
-  const loanIds = new Set<string>();
-  for (const loan of input.operations.loans) {
-    if (loan.id.trim().length === 0) throw new Error("贷款编号不能为空");
-    if (loanIds.has(loan.id)) throw new Error("贷款编号必须唯一");
-    loanIds.add(loan.id);
-    assertSafeInteger(loan.principalCents, "贷款本金");
-    assertSafeInteger(loan.outstandingCents, "贷款余额");
-    assertSafeInteger(loan.dailyInterestBps, "贷款日利率");
-    assertSafeInteger(loan.minimumPaymentCents, "贷款最低还款");
-    if (loan.dailyInterestBps > 10_000) throw new Error("贷款日利率必须是 0 到 10000 的安全整数");
-  }
+  validateLoans(input.operations.loans);
+  projectReputationUnlocks(input.operations, input.operations.reputationBps);
   const offerIds = new Set<string>();
   for (const offer of input.offers) {
     if (offer.id.trim().length === 0) throw new Error("客房产品编号不能为空");
@@ -103,32 +95,6 @@ function validateInput(input: Readonly<OperationsSettlementInput>): void {
       }
     }
   }
-}
-
-function financeSafetyLoan(
-  loans: OperationsState["loans"],
-  shortfallCents: number,
-): OperationsState["loans"] {
-  if (shortfallCents === 0) return loans;
-  const index = loans.findIndex(({ id }) => id === SETTLEMENT_SAFETY_LOAN_ID);
-  const previous = index < 0 ? undefined : loans[index];
-  const principalCents = safeNumber(
-    BigInt(previous?.principalCents ?? 0) + BigInt(shortfallCents),
-    "结算安全贷款本金",
-  );
-  const outstandingCents = safeNumber(
-    BigInt(previous?.outstandingCents ?? 0) + BigInt(shortfallCents),
-    "结算安全贷款余额",
-  );
-  const loan = {
-    id: SETTLEMENT_SAFETY_LOAN_ID,
-    principalCents,
-    outstandingCents,
-    dailyInterestBps: 10,
-    minimumPaymentCents: Math.max(1, Math.trunc(outstandingCents / 100)),
-  };
-  if (index < 0) return [...loans, loan];
-  return loans.map((item, itemIndex) => itemIndex === index ? loan : item);
 }
 
 function meetsHardRequirements(
@@ -275,28 +241,18 @@ export function settleOperationsDay(
     "客房收入",
   );
   const departmentCostCents = safeNumber(BigInt(service.dailyCostCents), "部门成本");
-  const loanInterestCents = safeNumber(
-    input.operations.loans.reduce(
-      (sum, loan) => sum + (BigInt(loan.outstandingCents) * BigInt(loan.dailyInterestBps)) / 10_000n,
-      0n,
-    ),
-    "贷款利息",
-  );
-  const totalCostCents = safeNumber(
-    BigInt(departmentCostCents) + BigInt(loanInterestCents),
-    "经营总成本",
-  );
-  const netIncomeCents = safeNumber(
-    BigInt(revenueCents) - BigInt(totalCostCents),
-    "净收益",
-    true,
-  );
-  const rawEndingCash = BigInt(input.cashCents) + BigInt(netIncomeCents);
-  if (rawEndingCash > MAX_SAFE_BIGINT) throw new Error("期末现金超出安全整数范围");
-  const cashShortfallCents = rawEndingCash < 0n
-    ? safeNumber(-rawEndingCash, "现金缺口")
-    : 0;
-  const endingCashCents = rawEndingCash < 0n ? 0 : Number(rawEndingCash);
+  const finance = projectOperationsFinance({
+    difficulty: input.operations.difficulty,
+    cashCents: input.cashCents,
+    revenueCents,
+    operatingCostCents: departmentCostCents,
+    loans: input.operations.loans,
+  });
+  const loanInterestCents = finance.interestCents;
+  const totalCostCents = finance.totalCostCents;
+  const netIncomeCents = finance.netIncomeCents;
+  const cashShortfallCents = finance.cashShortfallCents;
+  const endingCashCents = finance.endingCashCents;
   const reviewedSegments = segments.filter(({ soldRooms: sold }) => sold > 0);
   const reviews = reviewedSegments.map((result) => {
     const segment = GUEST_SEGMENTS.find(({ id }) => id === result.segmentId)!;
@@ -364,16 +320,9 @@ export function settleOperationsDay(
   const operations = structuredClone(input.operations) as OperationsState;
   operations.dailyReports = [...operations.dailyReports, report];
   operations.reputationBps = reputationBps;
-  operations.maximumReputationBps = Math.max(
-    operations.maximumReputationBps,
-    input.operations.reputationBps,
-    reputationBps,
-  );
+  Object.assign(operations, projectReputationUnlocks(input.operations, reputationBps));
   operations.discoveredNeeds = [...operations.discoveredNeeds, ...newDiscoveries];
-  if (operations.difficulty === "casual") {
-    operations.loans = financeSafetyLoan(operations.loans, cashShortfallCents);
-  }
-  operations.loans.sort((left, right) => compareCodeUnits(left.id, right.id));
+  operations.loans = finance.loans;
   if (soldRooms > 0) {
     let allocatedBps = 0;
     let lastSoldIndex = 0;

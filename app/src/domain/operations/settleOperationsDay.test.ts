@@ -203,6 +203,38 @@ describe("settleOperationsDay", () => {
     expect(operations.discoveredNeeds).toEqual(report.discoveredNeeds);
   });
 
+  it("projects threshold unlocks after settlement without rewriting historical reports", () => {
+    const input = createApprovedSettlementInput();
+    input.operations.reputationBps = 5_999;
+    input.operations.maximumReputationBps = 5_999;
+    const historicalReport = settleOperationsDay(createApprovedSettlementInput()).report;
+    input.operations.dailyReports = [{ ...historicalReport, day: 1 }];
+    input.day = 2;
+
+    const { operations } = settleOperationsDay(input);
+
+    expect(operations.reputationBps).toBeGreaterThanOrEqual(6_000);
+    expect(operations.unlockedContent).toContain("operations:pricing-automation");
+    expect(operations.maximumReputationBps).toBeGreaterThanOrEqual(operations.reputationBps);
+    expect(operations.dailyReports[0]).toEqual(input.operations.dailyReports[0]);
+  });
+
+  it("preserves prior unlocks when settlement reputation falls", () => {
+    const input = createApprovedSettlementInput();
+    input.operations.reputationBps = 7_000;
+    input.operations.maximumReputationBps = 8_000;
+    input.operations.unlockedContent = ["existing:permanent"];
+    input.offers = [];
+
+    const { operations } = settleOperationsDay(input);
+
+    expect(operations.unlockedContent).toEqual([
+      "existing:permanent",
+      "operations:pricing-automation",
+      "operations:premium-segments",
+    ]);
+  });
+
   it.each([Number.NaN, -1, 10_001, 1.5])(
     "rejects invalid maximum reputation %s",
     (maximumReputationBps) => {
@@ -322,18 +354,43 @@ describe("settleOperationsDay", () => {
     });
   });
 
-  it("keeps management cash nonnegative while exposing unfunded pressure", () => {
+  it("rejects a management settlement that cannot afford all costs", () => {
     const input = createApprovedSettlementInput();
     input.cashCents = 0;
     input.offers = [];
     input.operations.difficulty = "management";
 
-    const { report, operations, cashCents } = settleOperationsDay(input);
+    expect(() => settleOperationsDay(input)).toThrow("现金不足以完成经营结算");
+  });
 
-    expect(cashCents).toBe(0);
-    expect(report.cashShortfallCents).toBeGreaterThan(0);
-    expect(report.netIncomeCents).toBeLessThan(0);
-    expect(operations.loans).toEqual([]);
+  it("merges repeated casual settlement safety loans deterministically", () => {
+    const input = createApprovedSettlementInput();
+    input.cashCents = 0;
+    input.offers = [];
+    input.operations.loans = [{
+      id: "safety-loan:daily-settlement",
+      principalCents: 10_000,
+      outstandingCents: 10_000,
+      dailyInterestBps: 10,
+      minimumPaymentCents: 100,
+    }];
+
+    const { operations, report } = settleOperationsDay(input);
+    const loan = operations.loans.find(({ id }) => id === "safety-loan:daily-settlement");
+    const cashShortfallCents = report.cashShortfallCents ?? 0;
+
+    expect(loan).toMatchObject({
+      principalCents: 10_000 + cashShortfallCents,
+      outstandingCents: 10_000 + cashShortfallCents,
+    });
+    expect(operations.loans.filter(({ id }) => id === loan?.id)).toHaveLength(1);
+  });
+
+  it("rejects invalid persisted unlock state before settlement", () => {
+    const input = createApprovedSettlementInput();
+    input.operations.unlockedContent = [""];
+
+    expect(() => settleOperationsDay(input)).toThrow("解锁内容");
   });
 
   it.each([
@@ -353,7 +410,7 @@ describe("settleOperationsDay", () => {
       principalCents: Number.MAX_SAFE_INTEGER,
       outstandingCents: Number.MAX_SAFE_INTEGER,
       dailyInterestBps: 10_000,
-      minimumPaymentCents: 0,
+      minimumPaymentCents: 1,
     }];
 
     expect(() => settleOperationsDay(input)).toThrow("安全整数范围");

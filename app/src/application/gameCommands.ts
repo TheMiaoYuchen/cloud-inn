@@ -40,36 +40,14 @@ import {
   type DepartmentConfiguration,
 } from "../domain/operations/departmentCatalog";
 import { settleOperationsDay } from "../domain/operations/settleOperationsDay";
+import {
+  applyLoanRepayment,
+  coverCasualShortfall,
+  createLoan,
+  type LoanRequest,
+} from "../domain/operations/finance";
 
 const DEPARTMENT_TRAINING_SAFETY_LOAN_ID = "safety-loan:department-training";
-
-function financeCasualTrainingShortfall(
-  operations: Readonly<OperationsState>,
-  shortfallCents: number,
-): OperationsState["loans"] {
-  if (shortfallCents === 0) return operations.loans;
-  const existingIndex = operations.loans.findIndex(
-    ({ id }) => id === DEPARTMENT_TRAINING_SAFETY_LOAN_ID,
-  );
-  const existing = existingIndex < 0 ? undefined : operations.loans[existingIndex];
-  const principalCents = assertSafeMoney(
-    (existing?.principalCents ?? 0) + shortfallCents,
-  );
-  const outstandingCents = assertSafeMoney(
-    (existing?.outstandingCents ?? 0) + shortfallCents,
-  );
-  const safetyLoan = {
-    id: DEPARTMENT_TRAINING_SAFETY_LOAN_ID,
-    principalCents,
-    outstandingCents,
-    dailyInterestBps: 10,
-    minimumPaymentCents: Math.max(1, Math.trunc(outstandingCents / 100)),
-  };
-  if (existingIndex < 0) return [...operations.loans, safetyLoan];
-  return operations.loans.map((loan, index) =>
-    index === existingIndex ? safetyLoan : loan
-  );
-}
 
 function clampBps(value: number): number {
   return Math.max(0, Math.min(10_000, Math.trunc(value)));
@@ -177,6 +155,56 @@ export function createGameCommands(savePort: SavePort) {
   }
 
   return {
+    async takeLoan(
+      state: GameState,
+      request: Readonly<LoanRequest>,
+    ): Promise<GameState> {
+      const operations = state.operations;
+      if (!operations) throw new Error("经营系统尚未初始化");
+      const loan = createLoan(request, operations.loans);
+      const currentCashCents = assertSafeMoney(state.cashCents);
+      const nextCash = BigInt(currentCashCents) + BigInt(loan.principalCents);
+      if (nextCash > BigInt(Number.MAX_SAFE_INTEGER)) throw new Error("金额超出安全整数范围");
+      return persist(state, {
+        ...state,
+        cashCents: Number(nextCash),
+        operations: {
+          ...operations,
+          loans: [...operations.loans.map((item) => ({ ...item })), loan]
+            .sort((left, right) => left.id < right.id ? -1 : left.id > right.id ? 1 : 0),
+        },
+      });
+    },
+
+    async repayLoan(
+      state: GameState,
+      loanId: string,
+      amountCents: number,
+    ): Promise<GameState> {
+      const operations = state.operations;
+      if (!operations) throw new Error("经营系统尚未初始化");
+      const loans = applyLoanRepayment(operations.loans, loanId, amountCents);
+      if (amountCents > state.cashCents) throw new Error("现金不足以偿还贷款");
+      return persist(state, {
+        ...state,
+        cashCents: assertSafeMoney(state.cashCents - amountCents),
+        operations: { ...operations, loans },
+      });
+    },
+
+    async setDifficulty(
+      state: GameState,
+      difficulty: Difficulty,
+    ): Promise<GameState> {
+      const operations = state.operations;
+      if (!operations) throw new Error("经营系统尚未初始化");
+      if (difficulty !== "casual" && difficulty !== "management") throw new Error("经营难度无效");
+      return persist(state, {
+        ...state,
+        operations: { ...operations, difficulty },
+      });
+    },
+
     async initializeOperations(
       state: GameState,
       difficulty: Difficulty = "casual",
@@ -214,23 +242,27 @@ export function createGameCommands(savePort: SavePort) {
         previous.trainingBps,
         input.trainingBps,
       );
-      const paidTrainingCostCents = Math.min(state.cashCents, trainingCostCents);
       if (operations.difficulty === "management" && trainingCostCents > state.cashCents) {
         throw new Error("现金不足以支付一次性培训费用");
       }
-      const trainingShortfallCents = operations.difficulty === "casual"
-        ? trainingCostCents - paidTrainingCostCents
-        : 0;
+      const payment = operations.difficulty === "casual"
+        ? coverCasualShortfall(
+            state.cashCents,
+            trainingCostCents,
+            operations.loans,
+            DEPARTMENT_TRAINING_SAFETY_LOAN_ID,
+          )
+        : {
+            endingCashCents: state.cashCents - trainingCostCents,
+            loans: operations.loans.map((loan) => ({ ...loan })),
+          };
       const nextDepartment = structuredClone(input);
       return persist(state, {
         ...state,
-        cashCents: assertSafeMoney(state.cashCents - paidTrainingCostCents),
+        cashCents: payment.endingCashCents,
         operations: {
           ...operations,
-          loans: financeCasualTrainingShortfall(
-            operations,
-            trainingShortfallCents,
-          ),
+          loans: payment.loans,
           departments: {
             ...operations.departments,
             [input.id]: nextDepartment,
