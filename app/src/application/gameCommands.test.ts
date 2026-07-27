@@ -5,7 +5,7 @@ import type { GameState } from "../domain/game/state";
 import { prototypeConfig } from "../domain/config/prototypeConfig";
 import { createRectangle } from "../domain/room/grid";
 import { InMemorySavePort } from "../infrastructure/memory/InMemorySavePort";
-import { createGameCommands } from "./gameCommands";
+import { createGameCommands, previewRoomRenovation } from "./gameCommands";
 import type { VisualProvider } from "./ports/VisualProvider";
 import { CONTEMPORARY_ORIENTAL } from "../domain/design/stylePresets";
 import {
@@ -24,7 +24,9 @@ import type { LoanRequest } from "../domain/operations/finance";
 import {
   DAILY_SETTLEMENT_SAFETY_LOAN_ID,
   DEPARTMENT_TRAINING_SAFETY_LOAN_ID,
+  ROOM_RENOVATION_SAFETY_LOAN_ID,
 } from "../domain/operations/finance";
+import type { RoomOfferUpgradeRequest } from "../domain/operations/renovation";
 
 function prototypeCells() {
   return [
@@ -43,6 +45,115 @@ async function expectSavedRevision(
 }
 
 describe("game commands", () => {
+  async function openedOperations(saveId: string, difficulty: "casual" | "management") {
+    const store = new InMemorySavePort();
+    const commands = createGameCommands(store);
+    let state = await commands.saveRoomBlueprint(
+      createNewGame(saveId),
+      "云岫商务房",
+      prototypeCells(),
+    );
+    state = await commands.placeRoom(state, "slot-nw");
+    state = await commands.openHotel(state);
+    state = await commands.initializeOperations(state, difficulty);
+    return { store, commands, state };
+  }
+
+  it("previews renovation as a pure explainable application projection", async () => {
+    const { state } = await openedOperations("save-renovation-preview", "management");
+    const offerId = "offer:room-slot-nw:room-type-1";
+    const input: RoomOfferUpgradeRequest = { roomOfferId: offerId, kind: "workspace", level: 1 };
+    const snapshot = structuredClone({ state, input });
+
+    const preview = previewRoomRenovation(state, input);
+
+    expect(preview).toMatchObject({ costCents: 120_000, closureDays: 2 });
+    expect(preview.afterOffer.workspaceBps).toBeGreaterThan(preview.beforeOffer.workspaceBps);
+    expect(preview.segments.find(({ segmentId }) => segmentId === "business")?.scoreDeltaBps)
+      .toBeGreaterThan(0);
+    expect({ state, input }).toEqual(snapshot);
+  });
+
+  it("atomically commits a management renovation, full cost, closure, and stable compound key", async () => {
+    const { store, commands, state } = await openedOperations("save-renovation-management", "management");
+    const offerId = "offer:room-slot-nw:room-type-1";
+    const history = structuredClone(state.operations?.dailyReports);
+
+    const renovated = await commands.renovateRoomOffer(state, {
+      roomOfferId: offerId,
+      kind: "workspace",
+      level: 1,
+    });
+
+    expect(renovated.cashCents).toBe(state.cashCents - 120_000);
+    expect(renovated.operations?.offerUpgrades[`${offerId}:workspace`]).toMatchObject({
+      roomOfferId: offerId,
+      upgradeId: "workspace",
+      kind: "workspace",
+      level: 1,
+      remainingClosureDays: 2,
+      committedDay: 0,
+      costCents: 120_000,
+    });
+    expect(renovated.operations?.dailyReports).toEqual(history);
+    await expectSavedRevision(state, renovated, store);
+  });
+
+  it("rejects unaffordable management renovation and day-30 renovation without saving", async () => {
+    const fixture = await openedOperations("save-renovation-reject", "management");
+    const offerId = "offer:room-slot-nw:room-type-1";
+    const poor = { ...fixture.state, cashCents: 119_999 };
+    const persisted = await fixture.store.load(fixture.state.saveId);
+    const request: RoomOfferUpgradeRequest = { roomOfferId: offerId, kind: "workspace", level: 1 };
+
+    await expect(fixture.commands.renovateRoomOffer(poor, request)).rejects.toThrow("现金不足");
+    await expect(fixture.commands.renovateRoomOffer(
+      { ...fixture.state, currentDay: 30 }, request,
+    )).rejects.toThrow("30");
+    await expect(fixture.commands.renovateRoomOffer(fixture.state, {
+      ...request, roomOfferId: "offer:missing",
+    })).rejects.toThrow("客房产品不存在");
+    expect(await fixture.store.load(fixture.state.saveId)).toEqual(persisted);
+  });
+
+  it("covers the exact casual renovation shortfall with its reserved safety loan and no free cash", async () => {
+    const fixture = await openedOperations("save-renovation-casual", "casual");
+    const state = { ...fixture.state, cashCents: 20_000 };
+
+    const renovated = await fixture.commands.renovateRoomOffer(state, {
+      roomOfferId: "offer:room-slot-nw:room-type-1",
+      kind: "workspace",
+      level: 1,
+    });
+
+    expect(renovated.cashCents).toBe(0);
+    expect(renovated.operations?.loans).toContainEqual({
+      id: ROOM_RENOVATION_SAFETY_LOAN_ID,
+      principalCents: 100_000,
+      outstandingCents: 100_000,
+      dailyInterestBps: 10,
+      minimumPaymentCents: 1_000,
+    });
+  });
+
+  it("does not partially mutate renovation, finance, history, or saved state when commit fails", async () => {
+    const fixture = await openedOperations("save-renovation-save-failure", "casual");
+    const snapshot = structuredClone(fixture.state);
+    const persisted = await fixture.store.load(fixture.state.saveId);
+    const commands = createGameCommands({
+      load: (saveId) => fixture.store.load(saveId),
+      commit: async () => { throw new Error("磁盘写入失败"); },
+    });
+
+    await expect(commands.renovateRoomOffer(fixture.state, {
+      roomOfferId: "offer:room-slot-nw:room-type-1",
+      kind: "privacy",
+      level: 1,
+    })).rejects.toThrow("磁盘写入失败");
+    expect(fixture.state).toEqual(snapshot);
+    expect(await fixture.store.load(fixture.state.saveId)).toEqual(persisted);
+  });
+
   it("takes an explicit validated loan atomically and credits cash", async () => {
     const store = new InMemorySavePort();
     const commands = createGameCommands(store);
@@ -91,7 +202,11 @@ describe("game commands", () => {
     },
   );
 
-  it.each([DAILY_SETTLEMENT_SAFETY_LOAN_ID, DEPARTMENT_TRAINING_SAFETY_LOAN_ID])(
+  it.each([
+    DAILY_SETTLEMENT_SAFETY_LOAN_ID,
+    DEPARTMENT_TRAINING_SAFETY_LOAN_ID,
+    ROOM_RENOVATION_SAFETY_LOAN_ID,
+  ])(
     "rejects voluntary use of reserved loan ID %s without saving",
     async (id) => {
       const store = new InMemorySavePort();

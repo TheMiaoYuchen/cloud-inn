@@ -36,10 +36,17 @@ export interface RoomPricePolicy {
   nightlyRateCents: number;
 }
 
+export type UpgradeKind = "workspace" | "view" | "familyCapacity" | "privacy";
+
 export interface RoomOfferUpgrade {
   roomOfferId: string;
   upgradeId: string;
   level: number;
+  /** Added fields remain optional so existing operations-v1 saves stay loadable. */
+  kind?: UpgradeKind;
+  remainingClosureDays?: number;
+  committedDay?: number;
+  costCents?: number;
 }
 
 export interface LoanState {

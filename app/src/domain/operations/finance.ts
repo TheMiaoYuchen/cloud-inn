@@ -3,9 +3,11 @@ import type { Difficulty, LoanState } from "./operationsTypes";
 const MAX_SAFE = BigInt(Number.MAX_SAFE_INTEGER);
 export const DAILY_SETTLEMENT_SAFETY_LOAN_ID = "safety-loan:daily-settlement";
 export const DEPARTMENT_TRAINING_SAFETY_LOAN_ID = "safety-loan:department-training";
+export const ROOM_RENOVATION_SAFETY_LOAN_ID = "safety-loan:room-renovation";
 const RESERVED_SAFETY_LOAN_IDS = new Set([
   DAILY_SETTLEMENT_SAFETY_LOAN_ID,
   DEPARTMENT_TRAINING_SAFETY_LOAN_ID,
+  ROOM_RENOVATION_SAFETY_LOAN_ID,
 ]);
 const SAFETY_LOAN_DAILY_INTEREST_BPS = 10;
 

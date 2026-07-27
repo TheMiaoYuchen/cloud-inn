@@ -6,6 +6,7 @@ import type { RoomOffer } from "./roomOffer";
 import { calculateServiceCapacity } from "./serviceCapacity";
 import { projectOperationsFinance, validateLoans } from "./finance";
 import { projectReputationUnlocks } from "./unlocks";
+import { applyRoomOfferUpgrades, validateRoomOfferUpgrades } from "./renovation";
 
 export interface OperationsSettlementInput {
   day: number;
@@ -118,6 +119,7 @@ export function settleOperationsDay(
   input: Readonly<OperationsSettlementInput>,
 ): OperationsSettlementResult {
   validateInput(input);
+  validateRoomOfferUpgrades(input.offers, input.operations);
   const demandPattern = [0, 1, 0, 2, 1, 3, 2] as const;
   const segments = GUEST_SEGMENTS.map((segment) => ({
     segmentId: segment.id,
@@ -127,11 +129,15 @@ export function settleOperationsDay(
     revenueCents: 0,
     satisfactionBps: 0,
   }));
-  const pricedOffers = input.offers.map((offer) => ({
-    ...offer,
-    nightlyRateCents: input.operations.pricePolicies[offer.id]?.nightlyRateCents
-      ?? offer.nightlyRateCents,
-  }));
+  const pricedOffers = input.offers
+    .filter((offer) => !Object.values(input.operations.offerUpgrades).some((upgrade) =>
+      upgrade.roomOfferId === offer.id && (upgrade.remainingClosureDays ?? 0) > 0,
+    ))
+    .map((offer) => ({
+      ...applyRoomOfferUpgrades(offer, input.operations),
+      nightlyRateCents: input.operations.pricePolicies[offer.id]?.nightlyRateCents
+        ?? offer.nightlyRateCents,
+    }));
   for (const offer of pricedOffers) {
     if (!Number.isSafeInteger(offer.nightlyRateCents) || offer.nightlyRateCents < 0) {
       throw new Error("有效房价必须是非负安全整数");
@@ -323,6 +329,15 @@ export function settleOperationsDay(
   Object.assign(operations, projectReputationUnlocks(input.operations, reputationBps));
   operations.discoveredNeeds = [...operations.discoveredNeeds, ...newDiscoveries];
   operations.loans = finance.loans;
+  operations.offerUpgrades = Object.fromEntries(
+    Object.entries(operations.offerUpgrades).map(([key, upgrade]) => [
+      key,
+      {
+        ...upgrade,
+        remainingClosureDays: Math.max(0, (upgrade.remainingClosureDays ?? 0) - 1),
+      },
+    ]),
+  );
   if (soldRooms > 0) {
     let allocatedBps = 0;
     let lastSoldIndex = 0;

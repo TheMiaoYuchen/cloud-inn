@@ -3,8 +3,63 @@ import { describe, expect, it } from "vitest";
 import { createApprovedOperations, createApprovedSettlementInput } from "./operationsFixtures";
 import { GUEST_SEGMENT_IDS } from "./operationsTypes";
 import { compareCodeUnits, settleOperationsDay } from "./settleOperationsDay";
+import { projectRoomOfferUpgrade, roomOfferUpgradeKey } from "./renovation";
 
 describe("settleOperationsDay", () => {
+  it("keeps a renovating offer closed for the settled day and deterministically decrements closure", () => {
+    const input = createApprovedSettlementInput();
+    input.offers = [input.offers[0]];
+    const offer = input.offers[0];
+    const upgrade = projectRoomOfferUpgrade(offer, {
+      roomOfferId: offer.id,
+      kind: "workspace",
+      level: 1,
+    }).upgrade;
+    upgrade.remainingClosureDays = 1;
+    input.operations.offerUpgrades[roomOfferUpgradeKey(offer.id, "workspace")] = upgrade;
+    const history = structuredClone(input.operations.dailyReports);
+
+    const first = settleOperationsDay(input);
+
+    expect(first.report.availableRooms).toBe(0);
+    expect(first.report.soldRooms).toBe(0);
+    expect(first.operations.offerUpgrades[roomOfferUpgradeKey(offer.id, "workspace")]
+      .remainingClosureDays).toBe(0);
+    expect(first.operations.dailyReports.slice(0, history.length)).toEqual(history);
+
+    const second = settleOperationsDay({
+      ...input,
+      day: 2,
+      cashCents: first.cashCents,
+      operations: first.operations,
+    });
+    expect(second.report.availableRooms).toBe(1);
+  });
+
+  it("applies completed upgrades before matching without rewriting prior reports", () => {
+    const input = createApprovedSettlementInput();
+    const twin = { ...input.offers[2], capacity: 2 };
+    input.offers = [twin];
+    const upgrade = projectRoomOfferUpgrade(twin, {
+      roomOfferId: twin.id,
+      kind: "familyCapacity",
+      level: 1,
+    }).upgrade;
+    upgrade.remainingClosureDays = 0;
+    input.operations.offerUpgrades[roomOfferUpgradeKey(twin.id, "familyCapacity")] = upgrade;
+    const prior = settleOperationsDay(createApprovedSettlementInput()).report;
+    input.operations.dailyReports = [{ ...prior, day: 1 }];
+    input.day = 2;
+
+    const result = settleOperationsDay(input);
+
+    expect(result.report.lostBookings).not.toContainEqual(expect.objectContaining({
+      segmentId: "family",
+      code: "hard-requirement",
+    }));
+    expect(result.operations.dailyReports[0]).toEqual(input.operations.dailyReports[0]);
+  });
+
   it("orders ASCII and non-ASCII identifiers by explicit code units", () => {
     expect(["房间", "z", "a", "酒店"].sort(compareCodeUnits)).toEqual([
       "a",

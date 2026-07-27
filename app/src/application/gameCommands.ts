@@ -47,8 +47,29 @@ import {
   coverCasualShortfall,
   createLoan,
   DEPARTMENT_TRAINING_SAFETY_LOAN_ID,
+  ROOM_RENOVATION_SAFETY_LOAN_ID,
   type LoanRequest,
 } from "../domain/operations/finance";
+import {
+  previewRoomOfferUpgrade,
+  roomOfferUpgradeKey,
+  validateRoomOfferUpgrades,
+  type RoomOfferUpgradeRequest,
+  type RoomRenovationPreview,
+} from "../domain/operations/renovation";
+
+export function previewRoomRenovation(
+  state: Readonly<GameState>,
+  input: Readonly<RoomOfferUpgradeRequest>,
+): RoomRenovationPreview {
+  const operations = state.operations;
+  if (!operations) throw new Error("经营系统尚未初始化");
+  const offers = projectRoomOffers(state);
+  validateRoomOfferUpgrades(offers, operations);
+  const offer = offers.find(({ id }) => id === input.roomOfferId);
+  if (!offer) throw new Error("客房产品不存在");
+  return previewRoomOfferUpgrade(offer, operations, input);
+}
 
 function clampBps(value: number): number {
   return Math.max(0, Math.min(10_000, Math.trunc(value)));
@@ -343,6 +364,47 @@ export function createGameCommands(savePort: SavePort) {
           departments: {
             ...operations.departments,
             [input.id]: nextDepartment,
+          },
+        },
+      });
+    },
+
+    async renovateRoomOffer(
+      state: GameState,
+      input: Readonly<RoomOfferUpgradeRequest>,
+    ): Promise<GameState> {
+      const operations = state.operations;
+      if (!operations) throw new Error("经营系统尚未初始化");
+      if (state.currentDay >= MAX_OPERATIONS_DAY) throw new Error("经营模拟已到第 30 日终点");
+      const currentCashCents = assertSafeMoney(state.cashCents);
+      const preview = previewRoomRenovation(state, input);
+      if (operations.difficulty === "management" && preview.costCents > currentCashCents) {
+        throw new Error("现金不足以支付客房改造费用");
+      }
+      const payment = operations.difficulty === "casual"
+        ? coverCasualShortfall(
+            currentCashCents,
+            preview.costCents,
+            operations.loans,
+            ROOM_RENOVATION_SAFETY_LOAN_ID,
+          )
+        : {
+            endingCashCents: currentCashCents - preview.costCents,
+            loans: operations.loans.map((loan) => ({ ...loan })),
+          };
+      const upgrade = {
+        ...preview.upgrade,
+        committedDay: state.currentDay,
+      };
+      return persist(state, {
+        ...state,
+        cashCents: payment.endingCashCents,
+        operations: {
+          ...operations,
+          loans: payment.loans,
+          offerUpgrades: {
+            ...operations.offerUpgrades,
+            [roomOfferUpgradeKey(input.roomOfferId, input.kind)]: upgrade,
           },
         },
       });

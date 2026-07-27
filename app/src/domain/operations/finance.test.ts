@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import {
   DAILY_SETTLEMENT_SAFETY_LOAN_ID,
   DEPARTMENT_TRAINING_SAFETY_LOAN_ID,
+  ROOM_RENOVATION_SAFETY_LOAN_ID,
   applyLoanRepayment,
   coverCasualShortfall,
   createLoan,
@@ -54,6 +55,7 @@ describe("operations finance", () => {
   it.each([
     DAILY_SETTLEMENT_SAFETY_LOAN_ID,
     DEPARTMENT_TRAINING_SAFETY_LOAN_ID,
+    ROOM_RENOVATION_SAFETY_LOAN_ID,
   ])("reserves internal safety loan ID %s from voluntary requests", (id) => {
     expect(() => createLoan({ ...request, id }, [])).toThrow("安全贷款编号为系统保留");
   });
