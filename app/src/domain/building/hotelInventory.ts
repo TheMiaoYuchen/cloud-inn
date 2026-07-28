@@ -19,7 +19,6 @@ import {
 } from "./buildingTypes";
 
 interface FloorPlacementIndexes {
-  canonical: Map<string, ScaleRoomPlacement>;
   snapshot: Map<string, ScaleRoomPlacement> | null;
   snapshotCellAreaSquareMeters: number | null;
 }
@@ -353,12 +352,11 @@ function appliedPlacementMaps(
     const canonical = templates.get(floor.templateId);
     if (!canonical) throw new Error(`楼层 ${floor.id} 引用了未知模板`);
     if (canonical.use !== floor.use) throw new Error(`楼层 ${floor.id} 的用途与模板不匹配`);
-    const canonicalPlacements = indexPlacements(canonical);
+    indexPlacements(canonical);
     const snapshotId = `template-snapshot:${floor.id}`;
     const applied = phase4.floorTemplates[snapshotId];
     if (!applied) {
       byFloor.set(floor.id, {
-        canonical: canonicalPlacements,
         snapshot: null,
         snapshotCellAreaSquareMeters: null,
       });
@@ -368,7 +366,6 @@ function appliedPlacementMaps(
       throw new Error(`楼层 ${floor.id} 的快照用途不匹配`);
     }
     byFloor.set(floor.id, {
-      canonical: canonicalPlacements,
       snapshot: indexPlacements(applied),
       snapshotCellAreaSquareMeters: applied.cellAreaSquareMeters,
     });
@@ -462,9 +459,6 @@ function projectPhase4Inventory(state: Readonly<GameState>): HotelInventory {
       localPlacementIds.add(room.localPlacementId);
       const placement = snapshotPlacements?.get(room.localPlacementId);
       if (snapshotPlacements && !placement) throw new Error(`客房 ${room.id} 引用了未知模板放置`);
-      if (!snapshotPlacements && !placementIndexes.canonical.has(room.localPlacementId)) {
-        throw new Error(`客房 ${room.id} 引用了未知模板放置`);
-      }
       if (placement && (
         placement.roomBlueprintId !== room.roomBlueprintId ||
         placement.variantId !== room.variantId

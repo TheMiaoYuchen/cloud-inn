@@ -105,9 +105,9 @@ describe("authoritative hotel inventory", () => {
     const missing = createPhase4AcceptanceState("inventory-placement-missing");
     const missingFloor = missing.phase4!.floors.find(({ use }) => use === "guest")!;
     missingFloor.rooms[0].localPlacementId =
-      "placement:missing" as typeof missingFloor.rooms[0]["localPlacementId"];
+      "" as typeof missingFloor.rooms[0]["localPlacementId"];
 
-    expect(() => projectHotelInventory(missing)).toThrow("模板放置");
+    expect(() => projectHotelInventory(missing)).toThrow("稳定 ID");
 
     const duplicate = createPhase4AcceptanceState("inventory-placement-duplicate");
     const duplicateFloor = duplicate.phase4!.floors.find(({ use }) => use === "guest")!;

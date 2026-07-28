@@ -1,6 +1,9 @@
 import { describe, expect, it } from "vitest";
 
-import { projectHotelRoomOffers } from "../domain/building/hotelInventory";
+import {
+  projectHotelInventory,
+  projectHotelRoomOffers,
+} from "../domain/building/hotelInventory";
 import { previewExpansion } from "../domain/building/towerHotel";
 import { createOperationsState } from "../domain/operations/createOperationsState";
 import { createNewGame, type GameState } from "../domain/game/state";
@@ -48,6 +51,62 @@ async function masterOnlyOperationsCommands(saveId: string) {
 }
 
 describe("atomic building commands", () => {
+  it("syncs an official no-snapshot floor without mutating unselected physical baselines", async () => {
+    const store = new RecordingSavePort();
+    const commands = createGameCommands(store);
+    const state = createPhase4AcceptanceState("building-direct-template-sync");
+    const guestFloors = state.phase4!.floors.filter(({ use }) => use === "guest");
+    const selectedFloor = guestFloors[0];
+    const unselectedFloor = guestFloors[1];
+    const unselectedRooms = structuredClone(unselectedFloor.rooms);
+    const unselectedOffers = projectHotelInventory(state).rooms.filter(
+      ({ floorId }) => floorId === unselectedFloor.id,
+    );
+    const template = state.phase4!.floorTemplates[selectedFloor.templateId];
+    const edited: GameState = {
+      ...state,
+      phase4: {
+        ...state.phase4!,
+        floorTemplates: {
+          ...state.phase4!.floorTemplates,
+          [template.id]: {
+            ...template,
+            roomPlacements: template.roomPlacements.slice(1).map(
+              (placement, index) => index === 0
+                ? {
+                    ...placement,
+                    id: "placement:renamed" as typeof placement.id,
+                  }
+                : placement,
+            ),
+          },
+        },
+      },
+    };
+
+    const synchronized = await commands.syncFloorTemplate(
+      edited,
+      [selectedFloor.id],
+    );
+    const selectedAfter = synchronized.phase4!.floors.find(
+      ({ id }) => id === selectedFloor.id,
+    )!;
+    const unselectedAfter = synchronized.phase4!.floors.find(
+      ({ id }) => id === unselectedFloor.id,
+    )!;
+    const unselectedOffersAfter = projectHotelInventory(synchronized).rooms.filter(
+      ({ floorId }) => floorId === unselectedFloor.id,
+    );
+
+    expect(selectedAfter.rooms).toHaveLength(9);
+    expect(selectedAfter.rooms.map(({ localPlacementId }) => localPlacementId))
+      .toContain("placement:renamed");
+    expect(unselectedAfter.rooms).toEqual(unselectedRooms);
+    expect(unselectedOffersAfter).toEqual(unselectedOffers);
+    expect(store.commits).toBe(1);
+    expect(await store.load(state.saveId)).toEqual(synchronized);
+  });
+
   it("advances one operations day for a master-only Phase 4 hotel", async () => {
     const { commands, state } = await masterOnlyOperationsCommands(
       "building-master-operations-single",
