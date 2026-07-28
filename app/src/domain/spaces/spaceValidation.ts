@@ -8,8 +8,9 @@ import {
 import {
   collectBoundedSpaceOpenings,
   deterministicSpaceItemKey,
-  validateSpaceConnectivity,
-  validateSpaceDraft,
+  sanitizeSpaceDraft,
+  validateSanitizedSpaceConnectivity,
+  validateSanitizedSpaceDraft,
 } from "./spaceEditor";
 import {
   SPACE_EDITOR_MAX_CELLS,
@@ -306,7 +307,7 @@ function hasContinuousPoolDeck(
     .filter((item) => item.catalogItemId === "item:pool" && validItemGeometry(draft, item));
   if (pools.length === 0) return false;
   const deckKeys = new Set(cellsForZone(cells, "zone:deck").map(({ x, y }) => coordinateKey(x, y)));
-  const deckConnected = validateSpaceConnectivity({
+  const deckConnected = validateSanitizedSpaceConnectivity({
     ...draft,
     cells: cellsForZone(cells, "zone:deck"),
     items: [],
@@ -350,7 +351,7 @@ function validateStrategy(
   }
   if (definition.strategy === "dining" || definition.strategy === "bar") {
     const serviceZone = definition.strategy === "bar" ? "zone:bar-service" : "zone:kitchen";
-    const connectivity = validateSpaceConnectivity(draft);
+    const connectivity = validateSanitizedSpaceConnectivity(draft);
     const serviceItem = validItems.find(({ rule }) => rule.role === "service")?.item;
     if (cells.some(({ zoneId }) => zoneId === serviceZone) && serviceItem &&
         (!connectivity.serviceRouteConnected ||
@@ -389,10 +390,12 @@ function validateStrategy(
   }
 }
 
-export function validatePublicSpace(draft: SpaceDraft): PublicSpaceValidation {
+export function validatePublicSpace(input: SpaceDraft): PublicSpaceValidation {
+  const sanitized = sanitizeSpaceDraft(input);
+  const draft = sanitized.draft;
   const blocking: PlanningIssue[] = [];
   const advisory: PlanningIssue[] = [];
-  const editorValidation = validateSpaceDraft(draft);
+  const editorValidation = validateSanitizedSpaceDraft(sanitized);
   if (!editorValidation.ok) {
     [...editorValidation.reasons].sort(compareText).forEach((message, index) => {
       blocking.push(issue(`editor:${index}`, message));

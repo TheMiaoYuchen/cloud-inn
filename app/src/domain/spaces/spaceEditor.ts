@@ -86,6 +86,171 @@ function isSafeInteger(value: number): boolean {
   return Number.isSafeInteger(value);
 }
 
+function asRecord(value: unknown): Record<string, unknown> | undefined {
+  return typeof value === "object" && value !== null && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : undefined;
+}
+
+export interface SanitizedSpaceDraft {
+  draft: SpaceDraft;
+  reasons: string[];
+}
+
+export function sanitizeSpaceDraft(input: unknown): SanitizedSpaceDraft {
+  const reasons: string[] = [];
+  const addReason = (reason: string) => {
+    if (!reasons.includes(reason)) reasons.push(reason);
+  };
+  const source = asRecord(input);
+  if (!source) {
+    return {
+      draft: {
+        type: "" as PublicSpaceType,
+        columns: 1,
+        rows: 1,
+        cells: [],
+        items: [],
+        walls: [],
+        doors: [],
+        windows: [],
+      },
+      reasons: ["公共空间数据必须是对象"],
+    };
+  }
+
+  const validType = typeof source.type === "string";
+  if (!validType) addReason("公共空间类型无效");
+  const validDimensions = Number.isSafeInteger(source.columns) &&
+    Number.isSafeInteger(source.rows) &&
+    (source.columns as number) > 0 && (source.rows as number) > 0;
+  if (!validDimensions) addReason("空间网格尺寸必须是正安全整数");
+  const columns = validDimensions ? source.columns as number : 1;
+  const rows = validDimensions ? source.rows as number : 1;
+
+  const cells: SpaceCell[] = [];
+  if (!Array.isArray(source.cells)) {
+    addReason("空间单元集合必须是数组");
+  } else {
+    if (source.cells.length > SPACE_EDITOR_MAX_CELLS) addReason("空间单元数量超过上限");
+    const count = Math.min(source.cells.length, SPACE_EDITOR_MAX_CELLS);
+    for (let index = 0; index < count; index += 1) {
+      const entry = asRecord(source.cells[index]);
+      if (!entry) {
+        addReason("空间单元数据无效");
+        continue;
+      }
+      const validCoordinate = Number.isSafeInteger(entry.x) && Number.isSafeInteger(entry.y);
+      if (!validCoordinate || !validDimensions || (entry.x as number) < 0 ||
+          (entry.y as number) < 0 || (entry.x as number) >= columns ||
+          (entry.y as number) >= rows) {
+        addReason("空间坐标超出网格边界");
+      }
+      if (typeof entry.zoneId !== "string") addReason("分区编号必须是字符串");
+      else if (!entry.zoneId.trim()) addReason("分区编号不能为空");
+      if (validDimensions && validCoordinate && typeof entry.zoneId === "string") {
+        cells.push({ x: entry.x as number, y: entry.y as number, zoneId: entry.zoneId });
+      }
+    }
+  }
+
+  const items: PlacedItem[] = [];
+  if (!Array.isArray(source.items)) {
+    addReason("空间物件集合必须是数组");
+  } else {
+    if (source.items.length > SPACE_EDITOR_MAX_ITEMS) addReason("空间物件数量超过上限");
+    const count = Math.min(source.items.length, SPACE_EDITOR_MAX_ITEMS);
+    for (let index = 0; index < count; index += 1) {
+      const entry = asRecord(source.items[index]);
+      if (!entry) {
+        addReason("空间物件数据无效");
+        continue;
+      }
+      const itemId = typeof entry.id === "string" ? entry.id : undefined;
+      const catalogItemId = typeof entry.catalogItemId === "string" ? entry.catalogItemId : undefined;
+      const validId = itemId !== undefined;
+      const validCatalogItemId = catalogItemId !== undefined;
+      if (!validId) addReason("物件编号必须是字符串");
+      else if (!itemId.trim()) addReason("物件编号不能为空");
+      if (!validCatalogItemId) addReason("物件目录引用必须是字符串");
+      else if (!catalogItemId.trim()) addReason("物件目录引用不能为空");
+      const validRotation = rotations.has(entry.rotation as number);
+      if (!validRotation) addReason("物件 rotation 必须是 0、90、180 或 270");
+      const validGeometry = [entry.x, entry.y, entry.width, entry.height]
+        .every(Number.isSafeInteger) && (entry.width as number) > 0 &&
+        (entry.height as number) > 0;
+      if (!validGeometry) addReason("物件尺寸和坐标必须是有效整数");
+      const withinBounds = validDimensions && validGeometry &&
+        (entry.x as number) >= 0 && (entry.y as number) >= 0 &&
+        (entry.x as number) < columns && (entry.y as number) < rows &&
+        (entry.width as number) <= columns - (entry.x as number) &&
+        (entry.height as number) <= rows - (entry.y as number);
+      if (validDimensions && validGeometry && !withinBounds) addReason("物件超出空间边界");
+      if (validDimensions && validId && validCatalogItemId && validRotation && validGeometry) {
+        items.push({
+          id: itemId,
+          catalogItemId,
+          x: entry.x as number,
+          y: entry.y as number,
+          width: entry.width as number,
+          height: entry.height as number,
+          rotation: entry.rotation as PlacedItem["rotation"],
+        });
+      }
+    }
+  }
+
+  const sanitizedOpenings: SpaceOpenings = { walls: [], doors: [], windows: [] };
+  const openingSources = ["walls", "doors", "windows"] as const;
+  let openingCount = 0n;
+  let remainingOpenings = SPACE_EDITOR_MAX_OPENINGS;
+  for (const property of openingSources) {
+    const values = source[property];
+    if (!Array.isArray(values)) {
+      addReason("空间开口集合必须是数组");
+      continue;
+    }
+    openingCount += BigInt(values.length);
+    const count = Math.min(values.length, remainingOpenings);
+    for (let index = 0; index < count; index += 1) {
+      const entry = asRecord(values[index]);
+      if (!entry) {
+        addReason("空间开口数据无效");
+        continue;
+      }
+      const validSide = typeof entry.side === "string" &&
+        (["north", "east", "south", "west"] as string[]).includes(entry.side);
+      const validCoordinate = Number.isSafeInteger(entry.x) && Number.isSafeInteger(entry.y);
+      if (!validSide) {
+        addReason("开口方向无效");
+        addReason("开口必须位于空间边界");
+      }
+      if (!validCoordinate) addReason("开口必须位于空间边界");
+      if (validDimensions && validSide && validCoordinate) {
+        sanitizedOpenings[property].push({
+          x: entry.x as number,
+          y: entry.y as number,
+          side: entry.side as SpaceSide,
+        });
+      }
+    }
+    remainingOpenings -= count;
+  }
+  if (openingCount > BigInt(SPACE_EDITOR_MAX_OPENINGS)) addReason("空间开口数量超过上限");
+
+  return {
+    draft: {
+      type: validType ? source.type as PublicSpaceType : "" as PublicSpaceType,
+      columns,
+      rows,
+      cells,
+      items,
+      ...sanitizedOpenings,
+    },
+    reasons,
+  };
+}
+
 function assertCoordinate(draft: SpaceDraft, x: number, y: number): void {
   if (!isSafeInteger(x) || !isSafeInteger(y) || x < 0 || y < 0 || x >= draft.columns || y >= draft.rows) {
     throw new Error("空间坐标超出网格边界");
@@ -270,8 +435,9 @@ export function createSpaceRectangleCells(
   return cells;
 }
 
-export function zoneAt(draft: SpaceDraft, x: number, y: number): string | undefined {
-  return draft.cells.find((cell) => cell.x === x && cell.y === y)?.zoneId;
+export function zoneAt(input: SpaceDraft, x: number, y: number): string | undefined {
+  return sanitizeSpaceDraft(input).draft.cells
+    .find((cell) => cell.x === x && cell.y === y)?.zoneId;
 }
 
 export function placeSpaceItem(draft: SpaceDraft, item: PlacedItem): SpaceDraft {
@@ -403,10 +569,11 @@ function connected(cells: SpaceCell[]): boolean {
   return visited.size === coordinates.size;
 }
 
-export function validateSpaceConnectivity(draft: SpaceDraft): SpaceConnectivity {
+export function validateSanitizedSpaceConnectivity(draft: SpaceDraft): SpaceConnectivity {
   const cells = draft.cells.slice(0, SPACE_EDITOR_MAX_CELLS)
     .filter(({ x, y, zoneId }) => typeof zoneId === "string" &&
-      isSafeInteger(x) && isSafeInteger(y));
+      isSafeInteger(x) && isSafeInteger(y) && x >= 0 && y >= 0 &&
+      x < draft.columns && y < draft.rows);
   const items = draft.items.slice(0, SPACE_EDITOR_MAX_ITEMS);
   const zoneIds = [...new Set(cells.map(({ zoneId }) => zoneId))].sort();
   const zoneConnectivity = Object.fromEntries(
@@ -430,34 +597,70 @@ export function validateSpaceConnectivity(draft: SpaceDraft): SpaceConnectivity 
   };
 }
 
-export function validateSpaceDraft(
-  draft: SpaceDraft,
+export function validateSpaceConnectivity(input: SpaceDraft): SpaceConnectivity {
+  return validateSanitizedSpaceConnectivity(sanitizeSpaceDraft(input).draft);
+}
+
+function validationReasonRank(reason: string): number {
+  const order = [
+    "公共空间数据必须是对象",
+    "公共空间类型无效",
+    "空间网格尺寸必须是正安全整数",
+    "空间单元集合必须是数组",
+    "空间单元数量超过上限",
+    "空间单元数据无效",
+    "空间坐标超出网格边界",
+    "同一坐标只能设置一个分区",
+    "分区编号必须是字符串",
+    "分区编号不能为空",
+    "空间物件集合必须是数组",
+    "空间物件数量超过上限",
+    "空间物件数据无效",
+    "物件编号必须是字符串",
+    "物件编号不能为空",
+    "物件编号不能重复",
+    "物件目录引用必须是字符串",
+    "物件目录引用不能为空",
+    "物件 rotation 必须是 0、90、180 或 270",
+    "物件尺寸和坐标必须是有效整数",
+    "物件超出空间边界",
+    "物件不能互相重叠",
+    "空间开口集合必须是数组",
+    "空间开口数量超过上限",
+    "空间开口数据无效",
+    "开口方向无效",
+    "同一空间边只能设置一个开口",
+    "开口必须位于空间边界",
+    "空间轮廓必须连续",
+    "服务路线必须连续",
+  ];
+  const index = order.indexOf(reason);
+  if (index >= 0) return index;
+  if (reason.startsWith("分区 ")) return 29;
+  return order.length;
+}
+
+function sortValidationReasons(reasons: string[]): string[] {
+  return [...reasons].sort((left, right) => validationReasonRank(left) - validationReasonRank(right) ||
+    (left < right ? -1 : left > right ? 1 : 0));
+}
+
+export function validateSanitizedSpaceDraft(
+  sanitized: SanitizedSpaceDraft,
 ): { ok: true } | { ok: false; reasons: string[] } {
-  const reasons: string[] = [];
+  const { draft } = sanitized;
+  const reasons = [...sanitized.reasons];
   const addReason = (reason: string) => {
     if (!reasons.includes(reason)) reasons.push(reason);
   };
-  if (typeof draft.type !== "string") addReason("公共空间类型无效");
-  if (!isSafeInteger(draft.columns) || !isSafeInteger(draft.rows) || draft.columns <= 0 || draft.rows <= 0) {
-    addReason("空间网格尺寸必须是正安全整数");
-  }
-  if (draft.cells.length > SPACE_EDITOR_MAX_CELLS) addReason("空间单元数量超过上限");
-  const boundedCells = draft.cells.slice(0, SPACE_EDITOR_MAX_CELLS);
+  const boundedCells = draft.cells;
   const cellKeys = new Set<string>();
   for (const cell of boundedCells) {
-    const validCoordinate = isSafeInteger(cell.x) && isSafeInteger(cell.y) &&
-      cell.x >= 0 && cell.y >= 0 && cell.x < draft.columns && cell.y < draft.rows;
-    if (!validCoordinate) addReason("空间坐标超出网格边界");
-    else {
-      const coordinate = key(cell.x, cell.y);
-      if (cellKeys.has(coordinate)) addReason("同一坐标只能设置一个分区");
-      cellKeys.add(coordinate);
-    }
-    if (typeof cell.zoneId !== "string") addReason("分区编号必须是字符串");
-    else if (!cell.zoneId.trim()) addReason("分区编号不能为空");
+    const coordinate = key(cell.x, cell.y);
+    if (cellKeys.has(coordinate)) addReason("同一坐标只能设置一个分区");
+    cellKeys.add(coordinate);
   }
-  if (draft.items.length > SPACE_EDITOR_MAX_ITEMS) addReason("空间物件数量超过上限");
-  const boundedItems = draft.items.slice(0, SPACE_EDITOR_MAX_ITEMS)
+  const boundedItems = [...draft.items]
     .sort((left, right) => {
       const leftKey = deterministicSpaceItemKey(left);
       const rightKey = deterministicSpaceItemKey(right);
@@ -465,68 +668,46 @@ export function validateSpaceDraft(
     });
   const itemIds = new Set<string>();
   for (const item of boundedItems) {
-    if (typeof item.id !== "string") addReason("物件编号必须是字符串");
-    else {
-      if (!item.id.trim()) addReason("物件编号不能为空");
-      if (itemIds.has(item.id)) addReason("物件编号不能重复");
-      itemIds.add(item.id);
-    }
-    if (typeof item.catalogItemId !== "string") addReason("物件目录引用必须是字符串");
-    else if (!item.catalogItemId.trim()) addReason("物件目录引用不能为空");
+    if (itemIds.has(item.id)) addReason("物件编号不能重复");
+    itemIds.add(item.id);
   }
-  for (const item of boundedItems) {
-    if (!rotations.has(item.rotation)) addReason("物件 rotation 必须是 0、90、180 或 270");
-    if (![item.x, item.y, item.width, item.height].every(isSafeInteger) || item.width <= 0 || item.height <= 0) {
-      addReason("物件尺寸和坐标必须是有效整数");
-    } else if (item.x < 0 || item.y < 0 || item.x + item.width > draft.columns || item.y + item.height > draft.rows) {
-      addReason("物件超出空间边界");
-    }
-  }
-  const collisionCandidates = boundedItems.filter((item) =>
-    [item.x, item.y, item.width, item.height].every(isSafeInteger) &&
-    item.width > 0 && item.height > 0,
-  );
-  for (let left = 0; left < collisionCandidates.length; left += 1) {
-    for (let right = left + 1; right < collisionCandidates.length; right += 1) {
-      if (overlaps(collisionCandidates[left], collisionCandidates[right])) {
+  for (let left = 0; left < boundedItems.length; left += 1) {
+    for (let right = left + 1; right < boundedItems.length; right += 1) {
+      if (overlaps(boundedItems[left], boundedItems[right])) {
         addReason("物件不能互相重叠");
       }
     }
   }
-  const openingCount = BigInt(draft.walls.length) + BigInt(draft.doors.length) +
-    BigInt(draft.windows.length);
-  if (openingCount > BigInt(SPACE_EDITOR_MAX_OPENINGS)) addReason("空间开口数量超过上限");
   const boundedOpenings = collectBoundedSpaceOpenings(draft)
     .map(({ opening }) => opening);
   const openingKeys = new Set<string>();
   for (const opening of boundedOpenings) {
-    const validSide = typeof opening.side === "string" &&
-      (["north", "east", "south", "west"] as string[]).includes(opening.side);
-    const validCoordinate = isSafeInteger(opening.x) && isSafeInteger(opening.y);
-    if (!validSide) {
-      addReason("开口方向无效");
-    }
-    if (validSide && validCoordinate) {
-      const openingCoordinate = `${opening.x},${opening.y},${opening.side}`;
-      if (openingKeys.has(openingCoordinate)) addReason("同一空间边只能设置一个开口");
-      openingKeys.add(openingCoordinate);
-    }
+    const openingCoordinate = `${opening.x},${opening.y},${opening.side}`;
+    if (openingKeys.has(openingCoordinate)) addReason("同一空间边只能设置一个开口");
+    openingKeys.add(openingCoordinate);
   }
   for (const opening of boundedOpenings) {
-    if (typeof opening.side !== "string" || !isSafeInteger(opening.x) ||
-        !isSafeInteger(opening.y) ||
-        !boundaryCell({ ...draft, cells: boundedCells }, opening)) {
+    if (!boundaryCell(draft, opening)) {
       addReason("开口必须位于空间边界");
     }
   }
-  const connectivity = validateSpaceConnectivity(draft);
+  const connectivity = validateSanitizedSpaceConnectivity(draft);
   if (!connectivity.connected) reasons.push("空间轮廓必须连续");
   for (const [zoneId, isConnected] of Object.entries(connectivity.zoneConnectivity)) {
     if (!isConnected) addReason(`分区 ${zoneId} 必须连续`);
   }
   if (boundedCells.some(({ zoneId }) => zoneId === "zone:service-route" || zoneId === "service-route") &&
       !connectivity.serviceRouteConnected) addReason("服务路线必须连续");
-  return reasons.length === 0 ? { ok: true } : { ok: false, reasons };
+  return reasons.length === 0 ? { ok: true } : {
+    ok: false,
+    reasons: sortValidationReasons(reasons),
+  };
+}
+
+export function validateSpaceDraft(
+  input: SpaceDraft,
+): { ok: true } | { ok: false; reasons: string[] } {
+  return validateSanitizedSpaceDraft(sanitizeSpaceDraft(input));
 }
 
 export function createSpaceHistory(

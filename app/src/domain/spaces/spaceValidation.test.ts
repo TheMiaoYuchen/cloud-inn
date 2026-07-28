@@ -761,6 +761,68 @@ describe("public-space validation strategies", () => {
     expect(result.blocking.map((entry) => entry.message)).toContain(message);
     expect(Object.values(result.metrics).every(Number.isSafeInteger)).toBe(true);
   });
+
+  const invalidRows: Array<[string, unknown]> = [
+    ["Symbol", Symbol("rows")],
+    ["BigInt", 1n],
+    ["function", () => 1],
+    ["object", {}],
+    ["null", null],
+    ["undefined", undefined],
+    ["NaN", Number.NaN],
+    ["Infinity", Number.POSITIVE_INFINITY],
+    ["zero", 0],
+    ["negative", -1],
+    ["fraction", 1.5],
+  ];
+  const nonArrayCollections: Array<[string, unknown]> = [
+    ["null", null],
+    ["undefined", undefined],
+    ["object", {}],
+    ["Symbol", Symbol("collection")],
+  ];
+  const invalidEntries: Array<[string, unknown]> = [
+    ["null", null],
+    ["undefined", undefined],
+    ["Symbol", Symbol("entry")],
+    ["number", 7],
+    ["function", () => 1],
+    ["array", []],
+  ];
+  const malformedDraftCases: Array<[string, (draft: any) => unknown]> = [
+    ["columns Symbol", (draft) => ({ ...draft, columns: Symbol("columns") })],
+    ...invalidRows.map(([label, value]) => [
+      `rows ${label}`,
+      (draft: any) => ({ ...draft, rows: value }),
+    ] as [string, (draft: any) => unknown]),
+    ...(["cells", "items", "walls", "doors", "windows"] as const).flatMap((field) =>
+      nonArrayCollections.map(([label, value]) => [
+        `${field} non-array ${label}`,
+        (draft: any) => ({ ...draft, [field]: value }),
+      ] as [string, (draft: any) => unknown])),
+    ...(["cells", "items", "walls", "doors", "windows"] as const).flatMap((field) =>
+      invalidEntries.map(([label, value]) => [
+        `${field} invalid entry ${label}`,
+        (draft: any) => ({ ...draft, [field]: [value] }),
+      ] as [string, (draft: any) => unknown])),
+    ["type Symbol", (draft) => ({ ...draft, type: Symbol("type") })],
+    ["type BigInt", (draft) => ({ ...draft, type: 1n })],
+    ["type null", (draft) => ({ ...draft, type: null })],
+    ["top-level null", () => null],
+    ["top-level undefined", () => undefined],
+  ];
+
+  it.each(malformedDraftCases)(
+    "returns a total safe validation result for malformed boundary: %s",
+    (_label, build) => {
+      const candidate = build(playableDraft("gym")) as SpaceDraft;
+      let result: ReturnType<typeof validatePublicSpace> | undefined;
+
+      expect(() => { result = validatePublicSpace(candidate); }).not.toThrow();
+      expect(result?.blocking.length).toBeGreaterThan(0);
+      expect(Object.values(result?.metrics ?? {}).every(Number.isSafeInteger)).toBe(true);
+    },
+  );
 });
 
 function eraseDeckCell(draft: SpaceDraft, x: number, y: number): SpaceDraft {
