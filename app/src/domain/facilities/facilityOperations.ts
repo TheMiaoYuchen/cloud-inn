@@ -271,6 +271,7 @@ export function createFacilityPolicy(
 }
 
 const MAX_SAFE_BIGINT = BigInt(Number.MAX_SAFE_INTEGER);
+const MAX_FACILITY_HISTORY_DAYS = 30;
 
 function safeNumber(value: bigint, label: string): number {
   if (value < 0n || value > MAX_SAFE_BIGINT) throw new Error(`${label}超出安全整数范围`);
@@ -285,6 +286,81 @@ function assertSettlementInteger(
   if (!Number.isSafeInteger(value) || value < 0 || value > maximum) {
     throw new Error(`${label}必须是 0 到 ${maximum} 的安全整数`);
   }
+}
+
+function settlementStableId(value: unknown, label: string): StableId {
+  if (typeof value !== "string" || value.length === 0) {
+    throw new Error(`${label}必须是非空稳定 ID`);
+  }
+  try {
+    return assertStableId(value);
+  } catch {
+    throw new Error(`${label}必须是有效稳定 ID`);
+  }
+}
+
+function validateFacilityHistory(
+  facility: Readonly<FacilityState>,
+  settlementDay: number,
+): void {
+  if (!Array.isArray(facility.dailyResults)) throw new Error("设施历史必须是数组");
+  if (facility.dailyResults.length > MAX_FACILITY_HISTORY_DAYS) {
+    throw new Error("设施历史最多保留 30 天");
+  }
+  let previousDay = 0;
+  for (const rawResult of facility.dailyResults as readonly unknown[]) {
+    if (typeof rawResult !== "object" || rawResult === null || Array.isArray(rawResult)) {
+      throw new Error("设施历史记录结构无效");
+    }
+    const result = rawResult as FacilityDailyResult & { facilityId?: unknown };
+    assertSettlementInteger(result.day, "设施历史日期");
+    if (result.day === 0) throw new Error("设施历史日期必须是正安全整数");
+    if (result.day <= previousDay) throw new Error("设施历史日期必须严格递增且不能重复");
+    if (result.day >= settlementDay) throw new Error("设施历史日期必须早于当前营业日");
+    previousDay = result.day;
+    assertSettlementInteger(result.visits, "设施历史到访量");
+    assertSettlementInteger(result.revenueCents, "设施历史收入");
+    assertSettlementInteger(result.operatingCostCents, "设施历史经营成本");
+    assertSettlementInteger(result.utilizationBps, "设施历史利用率", 10_000);
+    if (!Number.isSafeInteger(result.satisfactionDeltaBps)
+      || result.satisfactionDeltaBps < -200 || result.satisfactionDeltaBps > 200) {
+      throw new Error("设施历史满意度变化必须是 -200 到 200 的安全整数");
+    }
+    if (!Number.isSafeInteger(result.appealDeltaBps)
+      || result.appealDeltaBps < -200 || result.appealDeltaBps > 200) {
+      throw new Error("设施历史吸引力变化必须是 -200 到 200 的安全整数");
+    }
+    if (!Array.isArray(result.reasonCodes)) throw new Error("设施历史原因编号必须是数组");
+    for (const reasonCode of result.reasonCodes) settlementStableId(reasonCode, "设施历史原因编号");
+    if (result.facilityId !== undefined && result.facilityId !== facility.id) {
+      throw new Error("设施历史记录的设施编号不一致");
+    }
+  }
+}
+
+function validateFacilityGraph(
+  input: Readonly<FacilitySettlementInput>,
+): ReadonlyMap<StableId, Readonly<FacilityState>> {
+  if (typeof input.facilities !== "object" || input.facilities === null || Array.isArray(input.facilities)) {
+    throw new Error("设施记录必须是对象");
+  }
+  const facilities = new Map<StableId, Readonly<FacilityState>>();
+  for (const [key, facility] of Object.entries(input.facilities)) {
+    if (typeof facility !== "object" || facility === null || Array.isArray(facility)) {
+      throw new Error("设施记录结构无效");
+    }
+    const facilityId = settlementStableId(facility.id, "设施编号");
+    if (key !== facilityId) throw new Error("设施记录键与编号不一致");
+    if (facilities.has(facilityId)) throw new Error("设施编号重复");
+    const instanceId = settlementStableId(facility.publicSpaceInstanceId, "设施公共空间实例编号");
+    const instance = input.publicSpaces[instanceId];
+    if (!instance || instance.type !== facility.type) throw new Error(`设施 ${facilityId} 引用了未知公共空间`);
+    const blueprint = input.blueprints[instance.blueprintId];
+    if (!blueprint || blueprint.type !== facility.type) throw new Error(`设施 ${facilityId} 引用了未知公共空间蓝图`);
+    validateFacilityHistory(facility, input.day);
+    facilities.set(facilityId, facility);
+  }
+  return facilities;
 }
 
 function stableHash(value: string): number {
@@ -468,9 +544,10 @@ export function settleFacilityOperations(
   for (const segmentId of GUEST_SEGMENT_IDS) {
     assertSettlementInteger(input.segmentMix[segmentId] ?? 0, "住客分群比例", 10_000);
   }
+  const facilitiesById = validateFacilityGraph(input);
 
   const results: FacilitySettlementResultItem[] = [];
-  for (const facility of Object.values(input.facilities)
+  for (const facility of [...facilitiesById.values()]
     .filter(({ enabled }) => enabled)
     .sort((left, right) => compareCodeUnits(left.id, right.id))) {
     if (facility.status !== "operating") continue;
@@ -539,7 +616,7 @@ export function settleFacilityOperations(
       id: id(`flow:facility:${String(input.day).padStart(2, "0")}:${String(index + 1).padStart(3, "0")}`),
       kind: "guest",
       fromId: id("flow:hotel-residents"),
-      toId: input.facilities[result.facilityId].publicSpaceInstanceId,
+      toId: facilitiesById.get(result.facilityId)!.publicSpaceInstanceId,
       count: result.visits,
     }))
     .slice(0, maximumFlowEvents);

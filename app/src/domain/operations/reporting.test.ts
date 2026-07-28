@@ -120,7 +120,7 @@ describe("operations reporting", () => {
     expect(() => aggregateWeeklyReport(reports)).toThrow("收入分类");
   });
 
-  it("rejects a reporting window that mixes old and report-v2 daily contracts", () => {
+  it("normalizes a category-free-to-v2 transition window", () => {
     const reports = Array.from({ length: 7 }, (_, index) => daily(index + 1));
     reports[6] = {
       ...reports[6],
@@ -130,7 +130,46 @@ describe("operations reporting", () => {
       facilityOperatingCostCents: 0,
     };
 
-    expect(() => aggregateWeeklyReport(reports)).toThrow("同一版本");
+    expect(aggregateWeeklyReport(reports)).toMatchObject({
+      roomRevenueCents: 28_000,
+      publicSpaceRevenueCents: 0,
+      departmentCostCents: 2_800,
+      facilityOperatingCostCents: 0,
+    });
+  });
+
+  it("normalizes a classic-to-v2 transition window into a complete v2 aggregate", () => {
+    const reports = Array.from({ length: 7 }, (_, index) => ({
+      ...daily(index + 1),
+      roomRevenueCents: (index + 1) * 1_000,
+      departmentCostCents: (index + 1) * 100,
+      ...(index === 6 ? {
+        publicSpaceRevenueCents: 0,
+        facilityOperatingCostCents: 0,
+      } : {}),
+    }));
+
+    expect(aggregateWeeklyReport(reports)).toMatchObject({
+      revenueCents: 28_000,
+      roomRevenueCents: 28_000,
+      publicSpaceRevenueCents: 0,
+      operatingCostCents: 2_800,
+      departmentCostCents: 2_800,
+      facilityOperatingCostCents: 0,
+    });
+  });
+
+  it("keeps mixed category-free and classic legacy reports on the legacy aggregate shape", () => {
+    const reports = Array.from({ length: 7 }, (_, index) => ({
+      ...daily(index + 1),
+      ...(index < 3 ? {} : {
+        roomRevenueCents: (index + 1) * 1_000,
+        departmentCostCents: (index + 1) * 100,
+      }),
+    }));
+
+    expect(aggregateWeeklyReport(reports)).not.toHaveProperty("roomRevenueCents");
+    expect(aggregateWeeklyReport(reports)).not.toHaveProperty("departmentCostCents");
   });
 
   it("aggregates every report-v2 category independently in a monthly close", () => {

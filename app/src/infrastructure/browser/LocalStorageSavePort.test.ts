@@ -8,6 +8,7 @@ import { createApprovedOperations } from "../../domain/operations/operationsFixt
 import { createFacilityPolicy } from "../../domain/facilities/facilityOperations";
 import { createApprovedSettlementInput } from "../../domain/operations/operationsFixtures";
 import { settleOperationsDay } from "../../domain/operations/settleOperationsDay";
+import { createRectangle } from "../../domain/room/grid";
 
 const storageKey = (saveId: string) => `cloud-inn:save:${saveId}`;
 
@@ -141,6 +142,20 @@ describe("LocalStorageSavePort", () => {
     return state;
   }
 
+  async function legacyHotel(commands: ReturnType<typeof createGameCommands>, saveId: string) {
+    let state = await commands.saveRoomBlueprint(
+      createNewGame(saveId),
+      "云岫商务房",
+      [
+        ...createRectangle(0, 0, 8, 8, "bedroom"),
+        ...createRectangle(0, 8, 8, 4, "bathroom"),
+      ],
+    );
+    state = await commands.placeRoom(state, "slot-nw");
+    state = await commands.openHotel(state);
+    return commands.initializeOperations(state, "management");
+  }
+
   it.each([
     ["advance", 1],
     ["batch", 7],
@@ -178,6 +193,52 @@ describe("LocalStorageSavePort", () => {
 
     expect(settled.operations?.weeklyReports).toHaveLength(4);
     expect(settled.operations?.monthlyCloses).toHaveLength(1);
+    expect(await port.load(settled.saveId)).toEqual(settled);
+  });
+
+  it("commits and reloads a Phase 3-to-Phase 4 transition week", async () => {
+    const locks = fakeLockManager();
+    const port = new LocalStorageSavePort(locks);
+    const commands = createGameCommands(port);
+    let state = await legacyHotel(commands, "mixed-browser-transition-week");
+    state = await commands.advanceOperationsDays(state, 6, 60_000);
+    state = await commands.initializeContentScale(state);
+
+    const settled = await commands.advanceDay(state, 70_000);
+    const weekly = settled.operations!.weeklyReports[0];
+    const reports = settled.operations!.dailyReports;
+
+    expect(weekly.roomRevenueCents).toBe(
+      reports.reduce((sum, report) => sum + report.roomRevenueCents!, 0),
+    );
+    expect(weekly.publicSpaceRevenueCents).toBe(0);
+    expect(weekly.departmentCostCents).toBe(
+      reports.reduce((sum, report) => sum + report.departmentCostCents!, 0),
+    );
+    expect(weekly.facilityOperatingCostCents).toBe(0);
+    expect(await port.load(settled.saveId)).toEqual(settled);
+  });
+
+  it("commits and reloads a Phase 3-to-Phase 4 transition monthly close", async () => {
+    const locks = fakeLockManager();
+    const port = new LocalStorageSavePort(locks);
+    const commands = createGameCommands(port);
+    let state = await legacyHotel(commands, "mixed-browser-transition-month");
+    state = await commands.advanceOperationsDays(state, 29, 290_000);
+    state = await commands.initializeContentScale(state);
+
+    const settled = await commands.advanceDay(state, 300_000);
+    const close = settled.operations!.monthlyCloses[0];
+    const reports = settled.operations!.dailyReports;
+
+    expect(close.roomRevenueCents).toBe(
+      reports.reduce((sum, report) => sum + report.roomRevenueCents!, 0),
+    );
+    expect(close.publicSpaceRevenueCents).toBe(0);
+    expect(close.departmentCostCents).toBe(
+      reports.reduce((sum, report) => sum + report.departmentCostCents!, 0),
+    );
+    expect(close.facilityOperatingCostCents).toBe(0);
     expect(await port.load(settled.saveId)).toEqual(settled);
   });
 

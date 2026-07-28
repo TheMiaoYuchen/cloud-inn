@@ -76,6 +76,51 @@ describe("settleHotelDay", () => {
     )?.dailyResults).toHaveLength(30);
   });
 
+  it("appends one cloned facility result without mutating prior history", () => {
+    const input = settlementInput();
+    input.day = 2;
+    const facility = Object.values(input.phase4.facilities).find(({ enabled }) => enabled)!;
+    const prior = {
+      day: 1,
+      visits: 1,
+      revenueCents: 1,
+      operatingCostCents: 1,
+      utilizationBps: 1,
+      satisfactionDeltaBps: 0,
+      appealDeltaBps: 0,
+      reasonCodes: [],
+    };
+    facility.dailyResults = [prior];
+    const snapshot = structuredClone(input);
+
+    const settled = settleHotelDay(input);
+    const next = settled.phase4.facilities[facility.id].dailyResults;
+
+    expect(next.map(({ day }) => day)).toEqual([1, 2]);
+    expect(next[0]).toEqual(prior);
+    expect(next[0]).not.toBe(prior);
+    expect(input).toEqual(snapshot);
+  });
+
+  it("rejects same-day facility history without appending or mutating settlement state", () => {
+    const input = settlementInput();
+    const facility = Object.values(input.phase4.facilities).find(({ enabled }) => enabled)!;
+    facility.dailyResults = [{
+      day: input.day,
+      visits: 1,
+      revenueCents: 1,
+      operatingCostCents: 1,
+      utilizationBps: 1,
+      satisfactionDeltaBps: 0,
+      appealDeltaBps: 0,
+      reasonCodes: [],
+    }];
+    const snapshot = structuredClone(input);
+
+    expect(() => settleHotelDay(input)).toThrow("设施历史日期必须早于当前营业日");
+    expect(input).toEqual(snapshot);
+  });
+
   it("combines room and facility reputation evidence and finalizes loan interest once", () => {
     const input = settlementInput();
     input.operations.loans = [{

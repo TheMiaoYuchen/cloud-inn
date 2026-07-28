@@ -73,6 +73,90 @@ describe("light facility operations", () => {
     expect(input).toEqual(snapshot);
   });
 
+  it.each([
+    ["same-day", 1, [{ day: 1 }]],
+    ["future", 1, [{ day: 2 }]],
+    ["duplicate", 3, [{ day: 1 }, { day: 1 }]],
+    ["nonmonotonic", 3, [{ day: 2 }, { day: 1 }]],
+    ["over-limit", 32, Array.from({ length: 31 }, (_, index) => ({ day: index + 1 }))],
+  ] as const)("rejects %s facility history before settlement", (_label, day, records) => {
+    const input = settlementInput();
+    input.day = day;
+    const facility = Object.values(input.facilities).find(({ enabled }) => enabled)!;
+    const baseline = {
+      visits: 1,
+      revenueCents: 1,
+      operatingCostCents: 1,
+      utilizationBps: 1,
+      satisfactionDeltaBps: 0,
+      appealDeltaBps: 0,
+      reasonCodes: [],
+    };
+    facility.dailyResults = records.map((record) => ({ ...baseline, ...record }));
+    const snapshot = structuredClone(input);
+
+    expect(() => settleFacilityOperations(input)).toThrow("设施历史");
+    expect(input).toEqual(snapshot);
+  });
+
+  it("rejects a non-array facility history", () => {
+    const input = settlementInput();
+    const facility = Object.values(input.facilities).find(({ enabled }) => enabled)!;
+    facility.dailyResults = {} as never;
+
+    expect(() => settleFacilityOperations(input)).toThrow("设施历史必须是数组");
+  });
+
+  it.each([
+    ["unsafe revenue", (record: any) => { record.revenueCents = Number.MAX_SAFE_INTEGER + 1; }],
+    ["invalid utilization", (record: any) => { record.utilizationBps = 10_001; }],
+    ["wrong facility id", (record: any) => { record.facilityId = "facility:other"; }],
+  ])("rejects %s in facility history", (_label, mutate) => {
+    const input = settlementInput();
+    input.day = 2;
+    const facility = Object.values(input.facilities).find(({ enabled }) => enabled)!;
+    const record: any = {
+      day: 1,
+      visits: 1,
+      revenueCents: 1,
+      operatingCostCents: 1,
+      utilizationBps: 1,
+      satisfactionDeltaBps: 0,
+      appealDeltaBps: 0,
+      reasonCodes: [],
+    };
+    mutate(record);
+    facility.dailyResults = [record];
+
+    expect(() => settleFacilityOperations(input)).toThrow("设施历史");
+  });
+
+  it("rejects a facility record key/id mismatch before graph lookup", () => {
+    const input = settlementInput();
+    const facility = Object.values(input.facilities).find(({ enabled }) => enabled)!;
+    input.facilities = { "facility:wrong-key": facility };
+
+    expect(() => settleFacilityOperations(input)).toThrow("设施记录键与编号不一致");
+  });
+
+  it.each([
+    ["missing instance", (input: ReturnType<typeof settlementInput>, facilityId: string) => {
+      const facility = input.facilities[facilityId];
+      delete input.publicSpaces[facility.publicSpaceInstanceId];
+    }, "未知公共空间"],
+    ["missing blueprint", (input: ReturnType<typeof settlementInput>, facilityId: string) => {
+      const facility = input.facilities[facilityId];
+      const instance = input.publicSpaces[facility.publicSpaceInstanceId];
+      delete input.blueprints[instance.blueprintId];
+    }, "未知公共空间蓝图"],
+  ])("rejects a facility graph with %s", (_label, mutate, message) => {
+    const input = settlementInput();
+    const facility = Object.values(input.facilities).find(({ enabled }) => enabled)!;
+    mutate(input, facility.id);
+
+    expect(() => settleFacilityOperations(input)).toThrow(message);
+  });
+
   it("orders facility IDs by explicit code units instead of locale collation", () => {
     const input = settlementInput();
     const original = Object.values(input.facilities).find(({ enabled }) => enabled)!;

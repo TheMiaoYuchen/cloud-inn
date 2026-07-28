@@ -49,7 +49,6 @@ function validateReports(
 ): void {
   if (reports.length !== expectedLength) throw new Error(`${label}必须包含连续${expectedLength === 7 ? "七" : "三十"}天日报`);
   const seen = new Set<number>();
-  const versions = new Set<ReportCategoryVersion>();
   reports.forEach((report, index) => {
     safeInteger(report.day, "日报日期");
     if (report.day <= 0) throw new Error("日报日期必须是正安全整数");
@@ -59,7 +58,6 @@ function validateReports(
       throw new Error("日报日期必须连续且严格递增");
     }
     const version = reportCategoryVersion(report);
-    versions.add(version);
     if (version === "legacy-classic") {
       const roomRevenueCents = safeInteger(report.roomRevenueCents!, "客房收入");
       const departmentCostCents = safeInteger(report.departmentCostCents!, "部门成本");
@@ -90,9 +88,6 @@ function validateReports(
       }
     }
   });
-  if (versions.size !== 1) {
-    throw new Error("同一报表窗口必须使用同一版本的日报合同");
-  }
 }
 
 function highestCode(counts: ReadonlyMap<string, bigint>, fallback: string): string {
@@ -134,7 +129,7 @@ function topCodes(reports: ReadonlyArray<Readonly<OperationsDailyReport>>) {
 function commonTotals(reports: ReadonlyArray<Readonly<OperationsDailyReport>>) {
   const availableRooms = safeSum(reports.map((report) => report.availableRooms ?? 0), "可售客房总数");
   const soldRooms = safeSum(reports.map((report) => report.soldRooms ?? 0), "售出客房总数");
-  const phase4 = reports.every((report) => reportCategoryVersion(report) === "v2");
+  const phase4 = reports.some((report) => reportCategoryVersion(report) === "v2");
   return {
     revenueCents: safeSum(reports.map(({ revenueCents }) => revenueCents), "收入"),
     operatingCostCents: safeSum(reports.map(({ operatingCostCents }) => operatingCostCents), "经营成本"),
@@ -145,10 +140,22 @@ function commonTotals(reports: ReadonlyArray<Readonly<OperationsDailyReport>>) {
     averageOccupancyBps: Math.trunc(safeSum(reports.map((report) => report.occupancyBps ?? 0), "入住率") / reports.length),
     reputationBps: Math.trunc(safeSum(reports.map(({ reputationBps }) => reputationBps), "声誉") / reports.length),
     ...(phase4 ? {
-      roomRevenueCents: safeSum(reports.map((report) => report.roomRevenueCents!), "客房收入"),
-      publicSpaceRevenueCents: safeSum(reports.map((report) => report.publicSpaceRevenueCents!), "公共空间收入"),
-      departmentCostCents: safeSum(reports.map((report) => report.departmentCostCents!), "部门成本"),
-      facilityOperatingCostCents: safeSum(reports.map((report) => report.facilityOperatingCostCents!), "设施经营成本"),
+      roomRevenueCents: safeSum(reports.map((report) =>
+        reportCategoryVersion(report) === "legacy-none"
+          ? report.revenueCents
+          : report.roomRevenueCents!), "客房收入"),
+      publicSpaceRevenueCents: safeSum(reports.map((report) =>
+        reportCategoryVersion(report) === "v2"
+          ? report.publicSpaceRevenueCents!
+          : 0), "公共空间收入"),
+      departmentCostCents: safeSum(reports.map((report) =>
+        reportCategoryVersion(report) === "legacy-none"
+          ? report.operatingCostCents
+          : report.departmentCostCents!), "部门成本"),
+      facilityOperatingCostCents: safeSum(reports.map((report) =>
+        reportCategoryVersion(report) === "v2"
+          ? report.facilityOperatingCostCents!
+          : 0), "设施经营成本"),
     } : {}),
     ...topCodes(reports),
   };

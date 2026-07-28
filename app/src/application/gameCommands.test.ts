@@ -83,6 +83,33 @@ describe("game commands", () => {
     await expectSavedRevision(state, settled, store);
   });
 
+  it("settles a Phase 3-to-Phase 4 transition on a weekly boundary", async () => {
+    const fixture = await openedOperations("phase3-to-phase4-week", "management");
+    let state = fixture.state;
+    for (let day = 1; day <= 6; day += 1) {
+      state = await fixture.commands.advanceDay(state, day * 10_000);
+    }
+    state = await fixture.commands.initializeContentScale(state);
+
+    const settled = await fixture.commands.advanceDay(state, 70_000);
+
+    expect(settled.operations?.dailyReports.slice(0, 6).every(
+      (report) => report.publicSpaceRevenueCents === undefined,
+    )).toBe(true);
+    expect(settled.operations?.dailyReports[6].publicSpaceRevenueCents).toBe(0);
+    const reports = settled.operations!.dailyReports;
+    const weekly = settled.operations!.weeklyReports[0];
+    expect(weekly.roomRevenueCents).toBe(
+      reports.reduce((sum, report) => sum + report.roomRevenueCents!, 0),
+    );
+    expect(weekly.publicSpaceRevenueCents).toBe(0);
+    expect(weekly.departmentCostCents).toBe(
+      reports.reduce((sum, report) => sum + report.departmentCostCents!, 0),
+    );
+    expect(weekly.facilityOperatingCostCents).toBe(0);
+    await expectSavedRevision(state, settled, fixture.store);
+  });
+
   it("keeps Phase 4 batch and repeated daily settlement equivalent", async () => {
     const batchFixture = openedPhase4("phase4-batch");
     const dailyFixture = openedPhase4("phase4-daily");

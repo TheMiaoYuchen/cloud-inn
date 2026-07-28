@@ -287,10 +287,10 @@ function validateAggregate(raw: unknown, reports: readonly DailyTotals[], kind: 
   const numberKey = kind === "weekly" ? "week" : "month";
   if (aggregate[numberKey] !== number || aggregate.startDay !== start || aggregate.endDay !== end) operationsError("周期报告窗口无效");
   const totals = expectedTotals(reports);
-  const versions = new Set(reports.map(({ categoryVersion }) => categoryVersion));
-  if (versions.size !== 1) operationsError("周期报告不能混合日报版本");
-  const categoryVersion = reports[0].categoryVersion;
-  const expectedAggregateVersion = categoryVersion === "v2" ? "v2" : "legacy-none";
+  const categoryVersion = reports.some((report) => report.categoryVersion === "v2")
+    ? "v2"
+    : "legacy-none";
+  const expectedAggregateVersion = categoryVersion;
   if (reportCategoryVersion(aggregate, "新版周期报告") !== expectedAggregateVersion) {
     operationsError("周期报告与日报版本不一致");
   }
