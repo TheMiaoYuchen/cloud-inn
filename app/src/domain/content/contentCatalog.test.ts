@@ -298,4 +298,20 @@ describe("content catalog", () => {
     mutate(catalog[0]);
     expect(() => validateContentCatalog(catalog)).toThrow();
   });
+
+  it.each([
+    ["category", (entry: any) => { entry.category = "unknown"; }],
+    ["operating mode", (entry: any) => { entry.operatingMode = "unknown"; }],
+    ["operation group", (entry: any) => { entry.operationGroup = "unknown"; }],
+    ["boost group with light mode", (entry: any) => { entry.operatingMode = "light-operation"; }],
+    ["non-boost group with boost mode", (entry: any) => {
+      entry.operationGroup = "dining";
+      entry.operatingMode = "boost";
+    }],
+  ])("rejects invalid facility runtime enum consistency: %s", (_label, mutate) => {
+    const catalog = structuredClone(FACILITY_CATALOG) as any[];
+    mutate(catalog[0]);
+
+    expect(() => validateContentCatalog(catalog)).toThrow("设施运营分类或模式无效");
+  });
 });

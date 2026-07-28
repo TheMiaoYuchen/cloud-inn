@@ -2,11 +2,13 @@ import { prototypeConfig } from "../config/prototypeConfig";
 import type { Cell, ZoneKind } from "../game/state";
 import {
   createSpaceRectangleCells,
+  normalizeSpaceCells,
   removeSpaceCellAt,
 } from "../spaces/spaceEditor";
 
 // The legacy scoring contract includes a 100 × 101 room fixture.
 export const ROOM_MAX_CELLS = 10_100;
+export const ROOM_MAX_OPENINGS = ROOM_MAX_CELLS * 4;
 
 export type RoomValidation =
   | { ok: true; areaSquareMeters: number }
@@ -20,16 +22,9 @@ function coordinateKey(x: number, y: number): string {
   return `${x},${y}`;
 }
 
-function compareCells(a: Cell, b: Cell): number {
-  return a.y - b.y || a.x - b.x;
-}
-
 function normalizeCells(cells: Cell[]): Cell[] {
-  const byCoordinate = new Map<string, Cell>();
-  for (const cell of cells) {
-    byCoordinate.set(coordinateKey(cell.x, cell.y), { ...cell });
-  }
-  return [...byCoordinate.values()].sort(compareCells);
+  return normalizeSpaceCells(cells.map(({ x, y, zone }) => ({ x, y, zoneId: zone })))
+    .map(({ x, y, zoneId }) => ({ x, y, zone: zoneId as ZoneKind }));
 }
 
 export function createRectangle(

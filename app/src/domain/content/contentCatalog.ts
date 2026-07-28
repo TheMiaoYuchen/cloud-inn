@@ -74,6 +74,12 @@ const SPACE_METRIC_FIELDS = [
   "serviceDistanceAdvisoryMaximum",
 ] as const satisfies readonly (keyof SpaceMetricRules)[];
 
+const FACILITY_CATEGORIES = [
+  "arrival", "food-and-beverage", "wellness", "events", "leisure", "retail",
+] as const;
+const FACILITY_OPERATING_MODES = ["boost", "light-operation"] as const;
+const FACILITY_OPERATION_GROUPS = ["boost", "dining", "bar", "spa", "banquet"] as const;
+
 export interface SpaceTypeDefinition {
   id: StableId;
   type: PublicSpaceType;
@@ -344,6 +350,13 @@ export function validateContentCatalog(
     }
     if (entry.displayOrder !== index) throw new Error("设施展示顺序必须确定且连续");
     if (!entry.name.trim()) throw new Error("设施名称不能为空");
+    const expectedOperatingMode = entry.operationGroup === "boost" ? "boost" : "light-operation";
+    if (!(FACILITY_CATEGORIES as readonly string[]).includes(entry.category) ||
+        !(FACILITY_OPERATING_MODES as readonly string[]).includes(entry.operatingMode) ||
+        !(FACILITY_OPERATION_GROUPS as readonly string[]).includes(entry.operationGroup) ||
+        entry.operatingMode !== expectedOperatingMode) {
+      throw new Error("设施运营分类或模式无效");
+    }
     assertSafeMoney(entry.constructionCostCents.minimum);
     assertSafeMoney(entry.constructionCostCents.maximum);
     validateRange(entry.constructionCostCents, "施工金额");

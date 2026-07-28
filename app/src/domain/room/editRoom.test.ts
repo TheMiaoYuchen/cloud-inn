@@ -15,6 +15,7 @@ import {
   spaceDraftToRoomDraft,
   undoRoomEdit,
   validateRoomDraft,
+  type Opening,
 } from "./editRoom";
 import {
   mirrorRoom,
@@ -22,6 +23,7 @@ import {
   rotateRoom,
 } from "./transformRoom";
 import { SPACE_EDITOR_HISTORY_LIMIT } from "../spaces/spaceTypes";
+import { createRectangle, ROOM_MAX_OPENINGS } from "./grid";
 
 const cells: Cell[] = [
   { x: 0, y: 0, zone: "bedroom" },
@@ -82,6 +84,39 @@ describe("room editing primitives", () => {
     });
   });
 
+  it("normalizes non-target imported duplicates while painting a room cell", () => {
+    const imported = createRoomDraft([
+      { x: 0, y: 0, zone: "bedroom" },
+      { x: 1, y: 0, zone: "bedroom" },
+      { x: 1, y: 0, zone: "bathroom" },
+      { x: 2, y: 0, zone: "bathroom" },
+    ], 3, 1);
+
+    const painted = paintRoomCell(imported, { x: 0, y: 0, zone: "bathroom" });
+
+    expect(painted.cells).toEqual([
+      { x: 0, y: 0, zone: "bathroom" },
+      { x: 1, y: 0, zone: "bathroom" },
+      { x: 2, y: 0, zone: "bathroom" },
+    ]);
+  });
+
+  it("normalizes non-target imported duplicates while erasing a room cell", () => {
+    const imported = createRoomDraft([
+      { x: 0, y: 0, zone: "bedroom" },
+      { x: 1, y: 0, zone: "bedroom" },
+      { x: 1, y: 0, zone: "bathroom" },
+      { x: 2, y: 0, zone: "bathroom" },
+    ], 3, 1);
+
+    const erased = eraseRoomCell(imported, 0, 0);
+
+    expect(erased.cells).toEqual([
+      { x: 1, y: 0, zone: "bathroom" },
+      { x: 2, y: 0, zone: "bathroom" },
+    ]);
+  });
+
   it("keeps walls and openings immutable and validates boundary openings", () => {
     const draft = createRoomDraft(cells, 8, 12);
     const edited = addWindow(
@@ -140,6 +175,49 @@ describe("room editing primitives", () => {
     expect(validateRoomDraft(draft)).toEqual({
       ok: false,
       reason: "同一房间边只能设置一个开口",
+    });
+  });
+
+  it("accepts 1,025 unique room doors on a 2,048-cell strip", () => {
+    const strip = createRectangle(0, 0, 2_048, 1, "bedroom");
+    strip[0] = { ...strip[0], zone: "bathroom" };
+    const doors = Array.from({ length: 1_025 }, (_, x) => ({
+      x,
+      y: 0,
+      side: "north" as const,
+    }));
+    const draft = { ...createRoomDraft(strip, 2_048, 1), doors };
+
+    expect(validateRoomDraft(draft)).toEqual({
+      ok: true,
+      areaSquareMeters: 512,
+    });
+    expect(addDoor({ ...draft, doors: doors.slice(0, -1) }, doors[doors.length - 1]).doors)
+      .toHaveLength(1_025);
+  });
+
+  it("uses the same explicit room opening cap for additions", () => {
+    const draft = createRoomDraft(cells, 8, 12);
+    const belowCap = {
+      ...draft,
+      doors: new Array<Opening>(ROOM_MAX_OPENINGS - 1),
+    };
+    const atCap = addDoor(belowCap, { x: 0, y: 0, side: "north" });
+
+    expect(atCap.doors).toHaveLength(ROOM_MAX_OPENINGS);
+    expect(() => addDoor(atCap, { x: 0, y: 0, side: "west" }))
+      .toThrow("房间开口数量超过上限");
+  });
+
+  it("rejects room openings above the cap before reading discarded entries", () => {
+    const doors = new Array<Opening>(ROOM_MAX_OPENINGS + 1);
+    Object.defineProperty(doors, ROOM_MAX_OPENINGS, {
+      get: () => { throw new Error("discarded room opening was read"); },
+    });
+
+    expect(validateRoomDraft({ ...createRoomDraft(cells, 8, 12), doors })).toEqual({
+      ok: false,
+      reason: "房间开口数量超过上限",
     });
   });
 

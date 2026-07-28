@@ -1,6 +1,7 @@
 import type { Cell, ZoneKind } from "../game/state";
 import {
   addSpaceOpening,
+  collectBoundedSpaceOpenings,
   createSpaceHistory,
   eraseSpaceCellUnchecked,
   redoSpaceEdit,
@@ -13,7 +14,10 @@ import {
   type SpaceDraft,
   type SpaceHistory,
 } from "../spaces/spaceTypes";
-import { validateRoomCells } from "./grid";
+import {
+  ROOM_MAX_OPENINGS,
+  validateRoomCells,
+} from "./grid";
 
 export type RoomSide = "north" | "east" | "south" | "west";
 export type Opening = { x: number; y: number; side: RoomSide };
@@ -73,10 +77,14 @@ function addOpening(
       roomDraftToSpaceDraft(draft),
       opening,
       property,
+      ROOM_MAX_OPENINGS,
     ));
   } catch (error) {
     if (error instanceof Error && error.message === "开口必须位于空间边界") {
       throw new Error("开口必须位于房间边界");
+    }
+    if (error instanceof Error && error.message === "空间开口数量超过上限") {
+      throw new Error("房间开口数量超过上限");
     }
     throw error;
   }
@@ -136,8 +144,20 @@ export function selectionBounds(
 export function validateRoomDraft(draft: RoomDraft) {
   const validation = validateRoomCells(draft.cells, draft.columns, draft.rows);
   if (!validation.ok) return validation;
-  const openings = [...draft.walls, ...draft.doors, ...draft.windows];
+  const openingCount = BigInt(draft.walls.length) + BigInt(draft.doors.length) +
+    BigInt(draft.windows.length);
+  if (openingCount > BigInt(ROOM_MAX_OPENINGS)) {
+    return { ok: false as const, reason: "房间开口数量超过上限" };
+  }
+  const openings = collectBoundedSpaceOpenings(draft, ROOM_MAX_OPENINGS)
+    .map(({ opening }) => opening);
   const openingKeys = new Set<string>();
+  const validationDraft = roomDraftToSpaceDraft({
+    ...draft,
+    walls: [],
+    doors: [],
+    windows: [],
+  });
   for (const opening of openings) {
     const key = `${opening.x},${opening.y},${opening.side}`;
     if (openingKeys.has(key)) {
@@ -146,9 +166,10 @@ export function validateRoomDraft(draft: RoomDraft) {
     openingKeys.add(key);
     try {
       addSpaceOpening(
-        { ...roomDraftToSpaceDraft(draft), walls: [], doors: [], windows: [] },
+        validationDraft,
         opening,
         "doors",
+        ROOM_MAX_OPENINGS,
       );
     } catch {
       return { ok: false as const, reason: "开口必须位于房间边界" };

@@ -33,6 +33,7 @@ import {
   SPACE_EDITOR_MAX_ITEMS,
   SPACE_EDITOR_MAX_OPENINGS,
   type SpaceDraft,
+  type SpaceHistory,
 } from "./spaceTypes";
 
 function markedSpaceDraft(marker: number): SpaceDraft {
@@ -188,6 +189,30 @@ describe("shared space editor boundaries", () => {
     expect(() => paintSpaceCell(full, {
       x: SPACE_EDITOR_MAX_CELLS, y: 0, zoneId: "zone:fitness",
     })).toThrow("空间单元数量超过上限");
+  });
+
+  it("repaints a full 4,096-cell rectangle in one bounded immutable batch", () => {
+    const original = {
+      ...createSpaceDraft("gym", SPACE_EDITOR_MAX_CELLS, 1),
+      cells: createSpaceRectangleCells(
+        { x: 0, y: 0, width: SPACE_EDITOR_MAX_CELLS, height: 1 },
+        "zone:fitness",
+      ),
+    };
+    const startedAt = performance.now();
+
+    const repainted = paintSpaceRectangle(
+      original,
+      { x: 0, y: 0, width: SPACE_EDITOR_MAX_CELLS, height: 1 },
+      "zone:quiet",
+    );
+
+    expect(performance.now() - startedAt).toBeLessThan(250);
+    expect(repainted.cells).toHaveLength(SPACE_EDITOR_MAX_CELLS);
+    expect(repainted.cells.every(({ zoneId }) => zoneId === "zone:quiet")).toBe(true);
+    expect(original.cells.every(({ zoneId }) => zoneId === "zone:fitness")).toBe(true);
+    repainted.cells[0].zoneId = "mutated";
+    expect(original.cells[0].zoneId).toBe("zone:fitness");
   });
 
   it("rejects duplicate opening edges and removes openings with erased cells", () => {
@@ -382,6 +407,46 @@ describe("shared space editor boundaries", () => {
     )).toThrow("空间开口数量超过上限");
   });
 
+  it("reports oversized imported openings without reading the first discarded entry", () => {
+    const draft = paintSpaceCell(createSpaceDraft("gym", 2, 2), {
+      x: 0, y: 0, zoneId: "zone:fitness",
+    });
+    const walls = Array.from(
+      { length: SPACE_EDITOR_MAX_OPENINGS + 1 },
+      () => ({ x: 0, y: 0, side: "north" as const }),
+    );
+    Object.defineProperty(walls, SPACE_EDITOR_MAX_OPENINGS, {
+      get: () => { throw new Error("discarded opening was read"); },
+    });
+
+    expect(validateSpaceDraft({ ...draft, walls })).toEqual(expect.objectContaining({
+      ok: false,
+      reasons: expect.arrayContaining(["空间开口数量超过上限"]),
+    }));
+  });
+
+  it.each([
+    ["cell zone", (draft: any) => { draft.cells[0].zoneId = null; }, "分区编号必须是字符串"],
+    ["item id", (draft: any) => { draft.items[0].id = {}; }, "物件编号必须是字符串"],
+    ["item catalog id", (draft: any) => { draft.items[0].catalogItemId = 7; }, "物件目录引用必须是字符串"],
+    ["space type", (draft: any) => { draft.type = null; }, "公共空间类型无效"],
+    ["opening side", (draft: any) => { draft.doors = [{ x: 0, y: 0, side: {} }]; }, "开口方向无效"],
+  ])("returns a deterministic diagnostic for malformed runtime %s", (_label, mutate, reason) => {
+    const draft: any = paintSpaceCell(createSpaceDraft("gym", 2, 2), {
+      x: 0, y: 0, zoneId: "zone:fitness",
+    });
+    draft.items = [{
+      id: "station:1", catalogItemId: "item:fitness-station",
+      x: 0, y: 0, width: 1, height: 1, rotation: 0,
+    }];
+    mutate(draft);
+
+    expect(validateSpaceDraft(draft)).toEqual(expect.objectContaining({
+      ok: false,
+      reasons: expect.arrayContaining([reason]),
+    }));
+  });
+
   it("bounds history, clears redo on commit, and safely handles empty undo/redo", () => {
     const initial = createSpaceDraft("gym", SPACE_EDITOR_HISTORY_LIMIT + 2, 1);
     let history = createSpaceHistory(initial);
@@ -481,6 +546,22 @@ describe("shared space editor boundaries", () => {
     expect(undone.past).toHaveLength(SPACE_EDITOR_HISTORY_LIMIT);
     expect(undone.past[0].columns).toBe(2);
     expect(undone.present.columns).toBe(102);
+  });
+
+  it("returns a bounded deep clone when imported undo past is sparse", () => {
+    const history: SpaceHistory = {
+      past: new Array<SpaceDraft>(1),
+      present: markedSpaceDraft(20),
+      future: [markedSpaceDraft(30)],
+    };
+
+    const undone = undoSpaceEdit(history);
+
+    expect(undone).not.toBe(history);
+    undone.present.cells.push({ x: 0, y: 0, zoneId: "mutated" });
+    undone.future[0].doors.push({ x: 0, y: 0, side: "north" });
+    expect(history.present.cells).toEqual([]);
+    expect(history.future[0].doors).toEqual([]);
   });
 
   it("bounds both imported redo directions before cloning retained snapshots", () => {

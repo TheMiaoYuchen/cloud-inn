@@ -8,7 +8,10 @@ import {
   placeSpaceItem,
 } from "./spaceEditor";
 import { validatePublicSpace } from "./spaceValidation";
-import type { SpaceDraft } from "./spaceTypes";
+import {
+  SPACE_EDITOR_MAX_OPENINGS,
+  type SpaceDraft,
+} from "./spaceTypes";
 
 function rectangle(
   type: SpaceDraft["type"],
@@ -497,6 +500,75 @@ describe("public-space validation strategies", () => {
     );
   });
 
+  it("produces identical validation for permutations of colliding imported items", () => {
+    const draft: SpaceDraft = {
+      type: "executive-lounge",
+      columns: 2,
+      rows: 1,
+      cells: [
+        { x: 0, y: 0, zoneId: "zone:quiet" },
+        { x: 1, y: 0, zoneId: "zone:quiet" },
+      ],
+      items: [
+        {
+          id: "service:1", catalogItemId: "item:service-counter",
+          x: 0, y: 0, width: 1, height: 1, rotation: 0,
+        },
+        {
+          id: "seat:1", catalogItemId: "item:lounge-seat",
+          x: 0, y: 0, width: 1, height: 1, rotation: 0,
+        },
+      ],
+      walls: [],
+      doors: [],
+      windows: [],
+    };
+
+    expect(validatePublicSpace({ ...draft, items: [...draft.items].reverse() }))
+      .toEqual(validatePublicSpace(draft));
+  });
+
+  it("produces identical validation for permutations of conflicting imported cells", () => {
+    const draft: SpaceDraft = {
+      type: "gym",
+      columns: 1,
+      rows: 1,
+      cells: [
+        { x: 0, y: 0, zoneId: "zone:fitness" },
+        { x: 0, y: 0, zoneId: "zone:retail" },
+      ],
+      items: [{
+        id: "station:1", catalogItemId: "item:fitness-station",
+        x: 0, y: 0, width: 1, height: 1, rotation: 0,
+      }],
+      walls: [],
+      doors: [],
+      windows: [],
+    };
+
+    expect(validatePublicSpace({ ...draft, cells: [...draft.cells].reverse() }))
+      .toEqual(validatePublicSpace(draft));
+  });
+
+  it("deduplicates imported doors before counting ballroom egress", () => {
+    const draft = playableEvent("ballroom");
+    const duplicateDoor = { ...draft.doors[0] };
+    const duplicated = {
+      ...draft,
+      doors: [
+        duplicateDoor,
+        { ...duplicateDoor },
+        { x: 1, y: 1, side: "north" as const },
+      ],
+    };
+
+    const forward = validatePublicSpace(duplicated);
+    const reversed = validatePublicSpace({ ...duplicated, doors: [...duplicated.doors].reverse() });
+
+    expect(reversed).toEqual(forward);
+    expect(forward.blocking.map(({ message }) => message)).toContain("宴会厅疏散出口不足");
+  });
+
   it("dispatches all 12 catalog definitions and returns safe deterministic metrics", () => {
     for (const definition of FACILITY_CATALOG) {
       const draft = playableDraft(definition.type);
@@ -569,9 +641,9 @@ describe("public-space validation strategies", () => {
     expect(result.advisory.map(({ code }) => code)).toContain("service-distance");
   });
 
-  it("excludes unknown and colliding items from every metric", () => {
+  it("excludes unknown items and both sides of a collision from every metric", () => {
     const draft = playableDraft("gym");
-    const baseline = validatePublicSpace(draft).metrics;
+    const withoutCollidingPair = { ...draft, items: draft.items.slice(1) };
     const malformed = {
       ...draft,
       items: [
@@ -586,7 +658,9 @@ describe("public-space validation strategies", () => {
         },
       ],
     };
-    expect(validatePublicSpace(malformed).metrics).toEqual(baseline);
+    expect(validatePublicSpace(malformed).metrics).toEqual(
+      validatePublicSpace(withoutCollidingPair).metrics,
+    );
   });
 
   it("bounds oversized imported collections and keeps all aggregates safe", () => {
@@ -616,6 +690,38 @@ describe("public-space validation strategies", () => {
       "空间单元数量超过上限",
       "空间物件数量超过上限",
     ]));
+  });
+
+  it("does not read imported openings beyond the shared bound", () => {
+    const draft = playableDraft("gym");
+    const walls = Array.from(
+      { length: SPACE_EDITOR_MAX_OPENINGS + 1 },
+      () => ({ x: 0, y: 0, side: "north" as const }),
+    );
+    Object.defineProperty(walls, SPACE_EDITOR_MAX_OPENINGS, {
+      get: () => { throw new Error("discarded public-space opening was read"); },
+    });
+
+    const result = validatePublicSpace({ ...draft, walls });
+
+    expect(result.blocking.map(({ message }) => message)).toContain("空间开口数量超过上限");
+    expect(Object.values(result.metrics).every(Number.isSafeInteger)).toBe(true);
+  });
+
+  it.each([
+    ["cell zone", (draft: any) => { draft.cells[0].zoneId = 7; }, "分区编号必须是字符串"],
+    ["item id", (draft: any) => { draft.items[0].id = null; }, "物件编号必须是字符串"],
+    ["item catalog id", (draft: any) => { draft.items[0].catalogItemId = {}; }, "物件目录引用必须是字符串"],
+    ["space type", (draft: any) => { draft.type = 7; }, "公共空间类型无效"],
+    ["opening side", (draft: any) => { draft.doors = [{ x: 0, y: 0, side: null }]; }, "开口方向无效"],
+  ])("returns blocking issues and safe metrics for malformed runtime %s", (_label, mutate, message) => {
+    const draft: any = playableDraft("gym");
+    mutate(draft);
+
+    const result = validatePublicSpace(draft);
+
+    expect(result.blocking.map((entry) => entry.message)).toContain(message);
+    expect(Object.values(result.metrics).every(Number.isSafeInteger)).toBe(true);
   });
 });
 

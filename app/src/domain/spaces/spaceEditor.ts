@@ -5,6 +5,7 @@ import type {
   SpaceDraft,
   SpaceHistory,
   SpaceOpening,
+  SpaceOpenings,
   SpaceSide,
 } from "./spaceTypes";
 import {
@@ -32,6 +33,28 @@ const rotations = new Set([0, 90, 180, 270]);
 const alignments = new Set([
   "left", "right", "top", "bottom", "horizontal-center", "vertical-center",
 ]);
+
+export interface BoundedSpaceOpening {
+  property: keyof SpaceOpenings;
+  opening: SpaceOpening;
+}
+
+export function collectBoundedSpaceOpenings(
+  openings: SpaceOpenings,
+  maximum = SPACE_EDITOR_MAX_OPENINGS,
+): BoundedSpaceOpening[] {
+  const collected: BoundedSpaceOpening[] = [];
+  for (const property of ["walls", "doors", "windows"] as const) {
+    const remaining = maximum - collected.length;
+    if (remaining <= 0) break;
+    const values = openings[property];
+    const count = Math.min(values.length, remaining);
+    for (let index = 0; index < count; index += 1) {
+      collected.push({ property, opening: values[index] });
+    }
+  }
+  return collected;
+}
 
 function isSafeInteger(value: number): boolean {
   return Number.isSafeInteger(value);
@@ -72,8 +95,11 @@ export function addSpaceOpening(
   draft: SpaceDraft,
   opening: SpaceOpening,
   property: "walls" | "doors" | "windows",
+  maximumOpenings = SPACE_EDITOR_MAX_OPENINGS,
 ): SpaceDraft {
-  if (draft.walls.length + draft.doors.length + draft.windows.length >= SPACE_EDITOR_MAX_OPENINGS) {
+  const openingCount = BigInt(draft.walls.length) + BigInt(draft.doors.length) +
+    BigInt(draft.windows.length);
+  if (openingCount >= BigInt(maximumOpenings)) {
     throw new Error("空间开口数量超过上限");
   }
   if (!boundaryCell(draft, opening)) throw new Error("开口必须位于空间边界");
@@ -115,17 +141,17 @@ export function paintSpaceCell(draft: SpaceDraft, cell: SpaceCell): SpaceDraft {
 }
 
 export function replaceSpaceCell(cells: SpaceCell[], cell: SpaceCell): SpaceCell[] {
-  return [
-    ...cells.filter(({ x, y }) => x !== cell.x || y !== cell.y).map((value) => ({ ...value })),
-    { ...cell },
-  ].sort((left, right) => left.y - right.y || left.x - right.x);
+  return normalizeSpaceCells([...cells, cell]);
+}
+
+export function normalizeSpaceCells(cells: SpaceCell[]): SpaceCell[] {
+  const byCoordinate = new Map<string, SpaceCell>();
+  for (const cell of cells) byCoordinate.set(key(cell.x, cell.y), { ...cell });
+  return [...byCoordinate.values()].sort((left, right) => left.y - right.y || left.x - right.x);
 }
 
 export function removeSpaceCellAt(cells: SpaceCell[], x: number, y: number): SpaceCell[] {
-  return cells
-    .filter((cell) => cell.x !== x || cell.y !== y)
-    .map((cell) => ({ ...cell }))
-    .sort((left, right) => left.y - right.y || left.x - right.x);
+  return normalizeSpaceCells(cells.filter((cell) => cell.x !== x || cell.y !== y));
 }
 
 export function eraseSpaceCellUnchecked(draft: SpaceDraft, x: number, y: number): SpaceDraft {
@@ -175,8 +201,14 @@ export function paintSpaceRectangle(
   if (rectangle.width === 0 || rectangle.height === 0) return cloneSpaceDraft(draft);
   assertCoordinate(draft, rectangle.x, rectangle.y);
   assertCoordinate(draft, rectangle.x + rectangle.width - 1, rectangle.y + rectangle.height - 1);
-  let next = cloneSpaceDraft(draft);
-  for (const cell of cells) next = paintSpaceCell(next, cell);
+  if (draft.cells.length > SPACE_EDITOR_MAX_CELLS) {
+    throw new Error("空间单元数量超过上限");
+  }
+  const next = cloneSpaceDraft({ ...draft, cells: [] });
+  next.cells = normalizeSpaceCells([...draft.cells, ...cells]);
+  if (next.cells.length > SPACE_EDITOR_MAX_CELLS) {
+    throw new Error("空间单元数量超过上限");
+  }
   return next;
 }
 
@@ -374,6 +406,7 @@ export function validateSpaceDraft(
   const addReason = (reason: string) => {
     if (!reasons.includes(reason)) reasons.push(reason);
   };
+  if (typeof draft.type !== "string") addReason("公共空间类型无效");
   if (!isSafeInteger(draft.columns) || !isSafeInteger(draft.rows) || draft.columns <= 0 || draft.rows <= 0) {
     addReason("空间网格尺寸必须是正安全整数");
   }
@@ -386,16 +419,21 @@ export function validateSpaceDraft(
     const coordinate = key(cell.x, cell.y);
     if (cellKeys.has(coordinate)) addReason("同一坐标只能设置一个分区");
     cellKeys.add(coordinate);
-    if (!cell.zoneId.trim()) addReason("分区编号不能为空");
+    if (typeof cell.zoneId !== "string") addReason("分区编号必须是字符串");
+    else if (!cell.zoneId.trim()) addReason("分区编号不能为空");
   }
   if (draft.items.length > SPACE_EDITOR_MAX_ITEMS) addReason("空间物件数量超过上限");
   const boundedItems = draft.items.slice(0, SPACE_EDITOR_MAX_ITEMS);
   const itemIds = new Set<string>();
   for (const item of boundedItems) {
-    if (!item.id.trim()) addReason("物件编号不能为空");
-    if (!item.catalogItemId.trim()) addReason("物件目录引用不能为空");
-    if (itemIds.has(item.id)) addReason("物件编号不能重复");
-    itemIds.add(item.id);
+    if (typeof item.id !== "string") addReason("物件编号必须是字符串");
+    else {
+      if (!item.id.trim()) addReason("物件编号不能为空");
+      if (itemIds.has(item.id)) addReason("物件编号不能重复");
+      itemIds.add(item.id);
+    }
+    if (typeof item.catalogItemId !== "string") addReason("物件目录引用必须是字符串");
+    else if (!item.catalogItemId.trim()) addReason("物件目录引用不能为空");
   }
   for (const item of boundedItems) {
     if (!rotations.has(item.rotation)) addReason("物件 rotation 必须是 0、90、180 或 270");
@@ -410,13 +448,15 @@ export function validateSpaceDraft(
       if (overlaps(boundedItems[left], boundedItems[right])) addReason("物件不能互相重叠");
     }
   }
-  const openingCount = draft.walls.length + draft.doors.length + draft.windows.length;
-  if (openingCount > SPACE_EDITOR_MAX_OPENINGS) addReason("空间开口数量超过上限");
-  const boundedOpenings = [...draft.walls, ...draft.doors, ...draft.windows]
-    .slice(0, SPACE_EDITOR_MAX_OPENINGS);
+  const openingCount = BigInt(draft.walls.length) + BigInt(draft.doors.length) +
+    BigInt(draft.windows.length);
+  if (openingCount > BigInt(SPACE_EDITOR_MAX_OPENINGS)) addReason("空间开口数量超过上限");
+  const boundedOpenings = collectBoundedSpaceOpenings(draft)
+    .map(({ opening }) => opening);
   const openingKeys = new Set<string>();
   for (const opening of boundedOpenings) {
-    if (!(["north", "east", "south", "west"] as string[]).includes(opening.side)) {
+    if (typeof opening.side !== "string" ||
+        !(["north", "east", "south", "west"] as string[]).includes(opening.side)) {
       addReason("开口方向无效");
     }
     const openingCoordinate = `${opening.x},${opening.y},${opening.side}`;
@@ -424,7 +464,8 @@ export function validateSpaceDraft(
     openingKeys.add(openingCoordinate);
   }
   for (const opening of boundedOpenings) {
-    if (!boundaryCell({ ...draft, cells: boundedCells }, opening)) {
+    if (typeof opening.side !== "string" ||
+        !boundaryCell({ ...draft, cells: boundedCells }, opening)) {
       addReason("开口必须位于空间边界");
     }
   }
@@ -499,7 +540,7 @@ export function undoSpaceEdit(
   if (history.past.length === 0) return cloneSpaceHistory(history, limit);
   const boundedPast = lastSnapshots(history.past, limit + 1);
   const previous = boundedPast[boundedPast.length - 1];
-  if (!previous) return history;
+  if (!previous) return cloneSpaceHistory(history, limit);
   return {
     past: boundedPast.slice(0, -1).map(cloneSpaceDraft),
     present: cloneSpaceDraft(previous),

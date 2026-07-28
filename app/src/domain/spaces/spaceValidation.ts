@@ -6,37 +6,38 @@ import {
   type SpaceTypeDefinition,
 } from "../content/contentCatalog";
 import {
+  collectBoundedSpaceOpenings,
   validateSpaceConnectivity,
   validateSpaceDraft,
 } from "./spaceEditor";
 import {
   SPACE_EDITOR_MAX_CELLS,
   SPACE_EDITOR_MAX_ITEMS,
-  SPACE_EDITOR_MAX_OPENINGS,
   type PlacedItem,
   type PlanningIssue,
   type PublicSpaceValidation,
   type SpaceCell,
   type SpaceDraft,
+  type SpaceOpening,
 } from "./spaceTypes";
 
 const issue = (code: string, message: string): PlanningIssue => ({ code, message });
 const coordinateKey = (x: number, y: number) => `${x},${y}`;
 
-function definitionFor(draft: SpaceDraft): Readonly<SpaceTypeDefinition> {
-  const definition = FACILITY_CATALOG.find(({ type }) => type === draft.type);
-  if (!definition) throw new Error("公共空间类型未在目录中定义");
-  return definition;
+function definitionFor(draft: SpaceDraft): Readonly<SpaceTypeDefinition> | undefined {
+  return FACILITY_CATALOG.find(({ type }) => type === draft.type);
 }
 
 function validCellGeometry(draft: SpaceDraft, cell: SpaceCell): boolean {
   return Number.isSafeInteger(draft.columns) && Number.isSafeInteger(draft.rows) &&
     Number.isSafeInteger(cell.x) && Number.isSafeInteger(cell.y) &&
+    typeof cell.zoneId === "string" &&
     cell.x >= 0 && cell.y >= 0 && cell.x < draft.columns && cell.y < draft.rows;
 }
 
 function validItemGeometry(draft: SpaceDraft, item: PlacedItem): boolean {
   return Number.isSafeInteger(draft.columns) && Number.isSafeInteger(draft.rows) &&
+    typeof item.id === "string" && typeof item.catalogItemId === "string" &&
     Number.isSafeInteger(item.x) && Number.isSafeInteger(item.y) &&
     Number.isSafeInteger(item.width) && Number.isSafeInteger(item.height) &&
     item.x >= 0 && item.y >= 0 && item.width > 0 && item.height > 0 &&
@@ -44,12 +45,18 @@ function validItemGeometry(draft: SpaceDraft, item: PlacedItem): boolean {
     item.width <= draft.columns - item.x && item.height <= draft.rows - item.y;
 }
 
-function normalizedValidCells(draft: SpaceDraft): SpaceCell[] {
-  const byCoordinate = new Map<string, SpaceCell>();
+function unambiguousValidCells(draft: SpaceDraft): SpaceCell[] {
+  const byCoordinate = new Map<string, { cell: SpaceCell; count: number }>();
   for (const cell of draft.cells.slice(0, SPACE_EDITOR_MAX_CELLS)) {
-    if (validCellGeometry(draft, cell)) byCoordinate.set(coordinateKey(cell.x, cell.y), cell);
+    if (!validCellGeometry(draft, cell)) continue;
+    const cellKey = coordinateKey(cell.x, cell.y);
+    const existing = byCoordinate.get(cellKey);
+    byCoordinate.set(cellKey, { cell, count: (existing?.count ?? 0) + 1 });
   }
-  return [...byCoordinate.values()].sort((left, right) => left.y - right.y || left.x - right.x);
+  return [...byCoordinate.values()]
+    .filter(({ count }) => count === 1)
+    .map(({ cell }) => cell)
+    .sort((left, right) => left.y - right.y || left.x - right.x);
 }
 
 function itemRuleFor(
@@ -79,25 +86,86 @@ function itemInAllowedZone(
   return BigInt(covered.size) === area;
 }
 
-function validCatalogItems(
+function deterministicItemKey(item: PlacedItem): string {
+  return [
+    item.id,
+    item.catalogItemId,
+    item.x,
+    item.y,
+    item.width,
+    item.height,
+    item.rotation,
+  ].join("\u0000");
+}
+
+function unambiguousItems(
+  draft: SpaceDraft,
+): PlacedItem[] {
+  const boundedItems = draft.items.slice(0, SPACE_EDITOR_MAX_ITEMS);
+  const idCounts = new Map<string, number>();
+  for (const item of boundedItems) idCounts.set(item.id, (idCounts.get(item.id) ?? 0) + 1);
+  const collidingIndexes = new Set<number>();
+  for (let left = 0; left < boundedItems.length; left += 1) {
+    if (!validItemGeometry(draft, boundedItems[left])) continue;
+    for (let right = left + 1; right < boundedItems.length; right += 1) {
+      if (validItemGeometry(draft, boundedItems[right]) &&
+          boundedItems[left].x < boundedItems[right].x + boundedItems[right].width &&
+          boundedItems[left].x + boundedItems[left].width > boundedItems[right].x &&
+          boundedItems[left].y < boundedItems[right].y + boundedItems[right].height &&
+          boundedItems[left].y + boundedItems[left].height > boundedItems[right].y) {
+        collidingIndexes.add(left);
+        collidingIndexes.add(right);
+      }
+    }
+  }
+  const values: PlacedItem[] = [];
+  for (let index = 0; index < boundedItems.length; index += 1) {
+    const item = boundedItems[index];
+    if (idCounts.get(item.id) !== 1 || collidingIndexes.has(index) ||
+        !validItemGeometry(draft, item)) continue;
+    values.push(item);
+  }
+  return values.sort((left, right) => deterministicItemKey(left)
+    .localeCompare(deterministicItemKey(right)));
+}
+
+interface ValidationView {
+  cells: SpaceCell[];
+  items: PlacedItem[];
+  catalogItems: Array<{ item: PlacedItem; rule: Readonly<SpaceItemRule> }>;
+  boundedItems: PlacedItem[];
+  doors: SpaceOpening[];
+}
+
+function buildValidationView(
   draft: SpaceDraft,
   definition: Readonly<SpaceTypeDefinition>,
-  cells: SpaceCell[],
-): Array<{ item: PlacedItem; rule: Readonly<SpaceItemRule> }> {
-  const values: Array<{ item: PlacedItem; rule: Readonly<SpaceItemRule> }> = [];
-  const itemIds = new Set<string>();
-  for (const item of draft.items.slice(0, SPACE_EDITOR_MAX_ITEMS)) {
-    const rule = itemRuleFor(definition, item);
-    if (!rule || itemIds.has(item.id) || !itemInAllowedZone(draft, cells, item, rule)) continue;
-    const collides = values.some(({ item: accepted }) =>
-      accepted.x < item.x + item.width && accepted.x + accepted.width > item.x &&
-      accepted.y < item.y + item.height && accepted.y + accepted.height > item.y,
-    );
-    if (collides) continue;
-    itemIds.add(item.id);
-    values.push({ item, rule });
+): ValidationView {
+  const cells = unambiguousValidCells(draft);
+  const boundedItems = draft.items.slice(0, SPACE_EDITOR_MAX_ITEMS);
+  const items = unambiguousItems(draft);
+  const openings = collectBoundedSpaceOpenings(draft)
+    .map(({ property, opening }) => ({ type: property, opening }));
+  const uniqueOpenings = new Map<string, (typeof openings)[number]>();
+  for (const entry of openings) {
+    const { opening, type } = entry;
+    uniqueOpenings.set(`${type},${opening.x},${opening.y},${opening.side}`, entry);
   }
-  return values;
+  const doors = [...uniqueOpenings.values()]
+    .filter(({ type, opening }) => type === "doors" && typeof opening.side === "string")
+    .map(({ opening }) => opening)
+    .sort((left, right) => left.y - right.y || left.x - right.x ||
+      String(left.side).localeCompare(String(right.side)));
+  return {
+    cells,
+    items,
+    catalogItems: items.flatMap((item) => {
+      const rule = itemRuleFor(definition, item);
+      return rule && itemInAllowedZone(draft, cells, item, rule) ? [{ item, rule }] : [];
+    }),
+    boundedItems,
+    doors,
+  };
 }
 
 function safeNumber(value: bigint, label: string): number {
@@ -112,12 +180,12 @@ function absolute(value: bigint): bigint {
 }
 
 function calculateMetrics(
-  draft: SpaceDraft,
   definition: Readonly<SpaceTypeDefinition>,
+  view: ValidationView,
 ): PublicSpaceValidation["metrics"] {
   const allowedZones = new Set<string>(definition.allowedZoneIds);
-  const cells = normalizedValidCells(draft).filter(({ zoneId }) => allowedZones.has(zoneId));
-  const items = validCatalogItems(draft, definition, cells);
+  const cells = view.cells.filter(({ zoneId }) => allowedZones.has(zoneId));
+  const items = view.catalogItems;
   const construction = BigInt(definition.constructionCostCents.minimum) +
     BigInt(cells.length) * BigInt(definition.metrics.constructionCellCostCents) +
     BigInt(items.length) * BigInt(definition.metrics.constructionItemCostCents);
@@ -184,12 +252,12 @@ function zonesAdjacent(cells: SpaceCell[], leftZoneId: string, rightZoneId: stri
   );
 }
 
-function openingOnZone(draft: SpaceDraft, cells: SpaceCell[], zoneId: string): boolean {
+function openingOnZone(cells: SpaceCell[], doors: SpaceOpening[], zoneId: string): boolean {
   const coordinates = new Set(cellsForZone(cells, zoneId).map(({ x, y }) => coordinateKey(x, y)));
-  return validBoundaryDoors(draft, cells).some(({ x, y }) => coordinates.has(coordinateKey(x, y)));
+  return validBoundaryDoors(cells, doors).some(({ x, y }) => coordinates.has(coordinateKey(x, y)));
 }
 
-function validBoundaryDoors(draft: SpaceDraft, cells: SpaceCell[]): SpaceDraft["doors"] {
+function validBoundaryDoors(cells: SpaceCell[], doors: SpaceOpening[]): SpaceOpening[] {
   const occupied = new Set(cells.map(({ x, y }) => coordinateKey(x, y)));
   const offsets = {
     north: [0, -1],
@@ -197,7 +265,7 @@ function validBoundaryDoors(draft: SpaceDraft, cells: SpaceCell[]): SpaceDraft["
     south: [0, 1],
     west: [-1, 0],
   } as const;
-  return draft.doors.slice(0, SPACE_EDITOR_MAX_OPENINGS).filter((door) => {
+  return doors.filter((door) => {
     const offset = offsets[door.side];
     if (!offset || !Number.isSafeInteger(door.x) || !Number.isSafeInteger(door.y) ||
         !occupied.has(coordinateKey(door.x, door.y))) return false;
@@ -213,10 +281,14 @@ function itemAdjacentToZone(item: PlacedItem, cells: SpaceCell[], zoneId: string
   );
 }
 
-function hasContinuousPoolDeck(draft: SpaceDraft, cells: SpaceCell[]): boolean {
-  const pools = draft.items.slice(0, SPACE_EDITOR_MAX_ITEMS).filter(
-    (item) => item.catalogItemId === "item:pool" && validItemGeometry(draft, item),
-  );
+function hasContinuousPoolDeck(
+  draft: SpaceDraft,
+  cells: SpaceCell[],
+  validItems: ValidationView["catalogItems"],
+): boolean {
+  const pools = validItems
+    .map(({ item }) => item)
+    .filter((item) => item.catalogItemId === "item:pool" && validItemGeometry(draft, item));
   if (pools.length === 0) return false;
   const deckKeys = new Set(cellsForZone(cells, "zone:deck").map(({ x, y }) => coordinateKey(x, y)));
   const deckConnected = validateSpaceConnectivity({
@@ -244,10 +316,11 @@ function validateStrategy(
   definition: Readonly<SpaceTypeDefinition>,
   cells: SpaceCell[],
   validItems: Array<{ item: PlacedItem; rule: Readonly<SpaceItemRule> }>,
+  doors: SpaceOpening[],
   blocking: PlanningIssue[],
 ): void {
   if (definition.strategy === "lobby") {
-    if (!openingOnZone(draft, cells, "zone:entrance")) {
+    if (!openingOnZone(cells, doors, "zone:entrance")) {
       blocking.push(issue("lobby-entry", "大堂必须设置入口"));
     }
     if (!zonesAdjacent(cells, "zone:entrance", "zone:reception")) {
@@ -273,14 +346,14 @@ function validateStrategy(
     }
   }
   if (definition.strategy === "pool") {
-    if (!hasContinuousPoolDeck(draft, cells)) {
+    if (!hasContinuousPoolDeck(draft, cells, validItems)) {
       blocking.push(issue("pool-deck", "泳池必须设置连续池岸"));
     }
     if (cells.some(({ zoneId }) => zoneId === "zone:deck") &&
         !zonesAdjacent(cells, "zone:wet-route", "zone:deck")) {
       blocking.push(issue("pool-wet-route", "泳池湿区通道必须连接池岸"));
     }
-    if (!openingOnZone(draft, cells, "zone:wet-route")) {
+    if (!openingOnZone(cells, doors, "zone:wet-route")) {
       blocking.push(issue("pool-access", "泳池必须设置安全通达入口"));
     }
   }
@@ -292,7 +365,7 @@ function validateStrategy(
       blocking.push(issue("spa-privacy", "护理区私密性不足"));
     }
   }
-  const egressCount = validBoundaryDoors(draft, cells).length;
+  const egressCount = validBoundaryDoors(cells, doors).length;
   if (definition.strategy === "ballroom" && egressCount < 2) {
     blocking.push(issue("ballroom-egress", "宴会厅疏散出口不足"));
   }
@@ -302,7 +375,6 @@ function validateStrategy(
 }
 
 export function validatePublicSpace(draft: SpaceDraft): PublicSpaceValidation {
-  const definition = definitionFor(draft);
   const blocking: PlanningIssue[] = [];
   const advisory: PlanningIssue[] = [];
   const editorValidation = validateSpaceDraft(draft);
@@ -311,8 +383,23 @@ export function validatePublicSpace(draft: SpaceDraft): PublicSpaceValidation {
       blocking.push(issue(`editor:${index}`, message));
     });
   }
-  const cells = normalizedValidCells(draft);
-  const validItems = validCatalogItems(draft, definition, cells);
+  const definition = definitionFor(draft);
+  if (!definition) {
+    blocking.push(issue("unknown-space-type", "公共空间类型未在目录中定义"));
+    return {
+      blocking,
+      advisory,
+      metrics: {
+        constructionCostCents: 0,
+        capacity: 0,
+        guestAppealBps: 0,
+        privacyBps: 0,
+        serviceDistance: 0,
+      },
+    };
+  }
+  const view = buildValidationView(draft, definition);
+  const { cells, catalogItems: validItems } = view;
   for (const zoneId of definition.requiredZoneIds) {
     if (!cells.some((cell) => cell.zoneId === zoneId)) {
       if (definition.strategy === "dining" && zoneId === "zone:kitchen") {
@@ -334,9 +421,8 @@ export function validatePublicSpace(draft: SpaceDraft): PublicSpaceValidation {
     }
   }
   const knownItemIds = new Set<string>(ITEM_CATALOG.map(({ id }) => id));
-  const boundedItems = draft.items.slice(0, SPACE_EDITOR_MAX_ITEMS);
-  for (const item of [...boundedItems].sort((left, right) =>
-    left.id < right.id ? -1 : left.id > right.id ? 1 : 0,
+  for (const item of [...view.boundedItems].sort((left, right) =>
+    String(left.id).localeCompare(String(right.id)),
   )) {
     if (!knownItemIds.has(item.catalogItemId)) {
       blocking.push(issue(`unknown-item:${item.catalogItemId}`, `物件未在目录中定义：${item.catalogItemId}`));
@@ -354,14 +440,19 @@ export function validatePublicSpace(draft: SpaceDraft): PublicSpaceValidation {
       blocking.push(issue(`required-item:${itemId}`, `缺少必需物件：${itemId}`));
     }
   }
-  const metrics = calculateMetrics(draft, definition);
+  const metrics = calculateMetrics(definition, view);
   if (metrics.capacity < definition.defaultCapacity.minimum) {
     blocking.push(issue(
       "minimum-capacity",
       `实际容量低于最低要求：${definition.defaultCapacity.minimum}`,
     ));
   }
-  validateStrategy(draft, definition, cells, validItems, blocking);
+  validateStrategy({
+    ...draft,
+    cells,
+    items: view.items,
+    doors: view.doors,
+  }, definition, cells, validItems, view.doors, blocking);
   if (definition.metrics.serviceDistanceAdvisoryMaximum > 0 &&
       metrics.serviceDistance > definition.metrics.serviceDistanceAdvisoryMaximum) {
     advisory.push(issue("service-distance", "服务距离过长，建议优化服务动线"));
