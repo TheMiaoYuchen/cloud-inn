@@ -23,6 +23,7 @@ import type {
 } from "../domain/spaces/spaceTypes";
 import { validatePublicSpace } from "../domain/spaces/spaceValidation";
 import type { SavePort } from "./ports/SavePort";
+import { assertPublicSpaceGraph, type PublicSpaceGraph } from "./publicSpaceGraph";
 
 function assertRevision(revision: number): void {
   if (!Number.isSafeInteger(revision) || revision < 0 ||
@@ -130,6 +131,7 @@ function reconcileCandidate(state: GameState): GameState {
 
 function resolvePlacement(
   phase4: Readonly<ContentScaleState>,
+  graph: PublicSpaceGraph,
   floorId: string,
   type: PublicSpaceType,
 ): { floorIndex: number; slotId: StableId; previous?: PublicSpaceInstance } {
@@ -146,14 +148,14 @@ function resolvePlacement(
     .filter(({ permittedTypes }) => permittedTypes.includes(type))
     .sort((left, right) => compareIds(left.id, right.id));
   if (compatibleSlots.length === 0) throw new Error("设施楼层没有允许该类型的公共空间槽位");
-  const bySlot = new Map(Object.values(phase4.publicSpaces)
+  const bySlot = new Map([...graph.instances.values()]
     .filter((instance) => instance.floorId === floor.id)
     .map((instance) => [instance.localPlacementId, instance]));
-  const sameType = Object.values(phase4.facilities).filter((facility) =>
-    facility.type === type && phase4.publicSpaces[facility.publicSpaceInstanceId]?.floorId === floor.id);
+  const sameType = [...graph.facilities.values()].filter((facility) =>
+    facility.type === type && graph.instances.get(facility.publicSpaceInstanceId)?.floorId === floor.id);
   if (sameType.length > 1) throw new Error("同一楼层存在多个同类型设施记录");
   const sameTypeInstance = sameType.length === 1
-    ? phase4.publicSpaces[sameType[0].publicSpaceInstanceId]
+    ? graph.instances.get(sameType[0].publicSpaceInstanceId)
     : undefined;
   if (sameType.length === 1 && (!sameTypeInstance ||
       !compatibleSlots.some(({ id }) => id === sameTypeInstance.localPlacementId))) {
@@ -165,6 +167,38 @@ function resolvePlacement(
       compatibleSlots.find(({ id }) => bySlot.has(id));
   if (!selected) throw new Error("设施楼层没有可用公共空间槽位");
   return { floorIndex, slotId: selected.id, previous: bySlot.get(selected.id) };
+}
+
+function assertSharedBlueprintUnchanged(
+  phase4: Readonly<ContentScaleState>,
+  blueprint: Readonly<PublicSpaceBlueprint>,
+  excludedInstanceId?: StableId,
+): void {
+  const hasOtherReference = Object.values(phase4.publicSpaces).some(({ id, blueprintId }) =>
+    id !== excludedInstanceId && blueprintId === blueprint.id);
+  if (!hasOtherReference) return;
+  const persisted = phase4.spaceBlueprints[blueprint.id];
+  if (!persisted || !deepEqual(persisted, blueprint)) {
+    throw new Error("共享公共空间蓝图不能被修改，请使用新的蓝图编号");
+  }
+}
+
+function deepEqual(left: unknown, right: unknown): boolean {
+  if (Object.is(left, right)) return true;
+  if (typeof left !== "object" || left === null ||
+      typeof right !== "object" || right === null) return false;
+  if (Array.isArray(left) || Array.isArray(right)) {
+    return Array.isArray(left) && Array.isArray(right) &&
+      left.length === right.length &&
+      left.every((value, index) => deepEqual(value, right[index]));
+  }
+  const leftRecord = left as Record<string, unknown>;
+  const rightRecord = right as Record<string, unknown>;
+  const leftKeys = Object.keys(leftRecord).sort(compareIds);
+  const rightKeys = Object.keys(rightRecord).sort(compareIds);
+  return leftKeys.length === rightKeys.length &&
+    leftKeys.every((key, index) => key === rightKeys[index] &&
+      deepEqual(leftRecord[key], rightRecord[key]));
 }
 
 export function createSpaceCommands(savePort: SavePort) {
@@ -184,11 +218,13 @@ export function createSpaceCommands(savePort: SavePort) {
       assertSafeMoney(state.cashCents);
       if (!state.phase4) throw new Error("内容规模系统尚未初始化");
       const blueprint = canonicalBlueprint(input);
+      assertPublicSpaceGraph(state.phase4);
       const referenced = Object.values(state.phase4.publicSpaces)
         .filter(({ blueprintId }) => blueprintId === blueprint.id);
       if (referenced.some(({ type }) => type !== blueprint.type)) {
         throw new Error("公共空间蓝图已被已建空间引用，不能更改类型");
       }
+      assertSharedBlueprintUnchanged(state.phase4, blueprint);
       const phase4: ContentScaleState = {
         ...state.phase4,
         spaceBlueprints: stableRecord([
@@ -214,7 +250,9 @@ export function createSpaceCommands(savePort: SavePort) {
       if (!current.catalogProgress.unlockedIds.includes(unlockId)) {
         throw new Error("该公共空间类型尚未解锁");
       }
-      const placement = resolvePlacement(current, floorId, blueprint.type);
+      const graph = assertPublicSpaceGraph(current);
+      const placement = resolvePlacement(current, graph, floorId, blueprint.type);
+      assertSharedBlueprintUnchanged(current, blueprint, placement.previous?.id);
       if (Object.values(current.facilities).some(({ id, type, publicSpaceInstanceId }) =>
         type === blueprint.type && id === `facility:${floorId}:${blueprint.type}` &&
         publicSpaceInstanceId !== placement.previous?.id)) {

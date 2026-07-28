@@ -106,6 +106,66 @@ describe("atomic public-space commands", () => {
     expect(store.commits).toBe(0);
   });
 
+  it.each([
+    ["another type", () => ({
+      ...validBarBlueprint(),
+      id: assertStableId("space-blueprint:shared-protected"),
+    })],
+    ["a different design of the same type", () => ({
+      ...validDiningBlueprint("space-blueprint:shared-protected"),
+      name: "另一套共享餐厅设计",
+    })],
+  ] as const)("rejects replacing a shared blueprint with %s before charging", async (_label, replacement) => {
+    const { state, commands, floor, store } = scaleCommandFixture("space-shared-overwrite");
+    const first = await commands.placePublicSpace(
+      state,
+      validDiningBlueprint("space-blueprint:shared-protected"),
+      floor.id,
+    );
+    const other = first.phase4!.publicSpaces["public-space:floor:02:space:02"];
+    other.blueprintId = assertStableId("space-blueprint:shared-protected");
+    const snapshot = structuredClone(first);
+    store.commits = 0;
+
+    await expect(commands.placePublicSpace(first, replacement(), floor.id))
+      .rejects.toThrow("共享");
+
+    expect(first).toEqual(snapshot);
+    expect(store.commits).toBe(0);
+  });
+
+  it("accepts an exact shared blueprint despite object property order", async () => {
+    const { state, commands, floor } = scaleCommandFixture("space-shared-exact");
+    const first = await commands.placePublicSpace(
+      state,
+      validDiningBlueprint("space-blueprint:shared-exact"),
+      floor.id,
+    );
+    const other = first.phase4!.publicSpaces["public-space:floor:02:space:02"];
+    other.blueprintId = assertStableId("space-blueprint:shared-exact");
+    const original = validDiningBlueprint("space-blueprint:shared-exact");
+    const persisted = first.phase4!.spaceBlueprints[other.blueprintId];
+    const reordered = {
+      type: persisted.type,
+      id: persisted.id,
+      name: persisted.name,
+      rows: persisted.rows,
+      columns: persisted.columns,
+      cells: persisted.cells,
+      placedItems: persisted.placedItems,
+      windows: original.windows,
+      doors: original.doors,
+      walls: original.walls,
+      committedBuildCostCents: persisted.committedBuildCostCents,
+    };
+    first.phase4!.spaceBlueprints[other.blueprintId] = reordered;
+
+    const next = await commands.placePublicSpace(first, original, floor.id);
+
+    expect(next.phase4!.publicSpaces["public-space:floor:03:space:99"].blueprintId)
+      .toBe("space-blueprint:shared-exact");
+  });
+
   it("saves blueprint, instance and facility atomically", async () => {
     const { state, commands, store, floor } = scaleCommandFixture();
 
@@ -314,6 +374,39 @@ describe("atomic public-space commands", () => {
     expect(next.phase4!.publicSpaces["public-space:floor:03:space:04"].type).toBe("bar");
     expect(next.phase4!.publicSpaces["public-space:floor:03:space:99"].type)
       .toBe("all-day-dining");
+  });
+
+  it.each([
+    ["duplicate occupied slot", (state: GameState) => {
+      const floor = state.phase4!.floors.find(({ id }) => id === "floor:03")!;
+      const source = state.phase4!.publicSpaces["public-space:floor:03:space:04"];
+      const duplicateId = assertStableId("public-space:floor:03:duplicate");
+      state.phase4!.publicSpaces[duplicateId] = { ...source, id: duplicateId };
+      floor.publicSpaceInstanceIds.push(duplicateId);
+    }],
+    ["dangling floor reference", (state: GameState) => {
+      state.phase4!.floors.find(({ id }) => id === "floor:03")!
+        .publicSpaceInstanceIds.push(assertStableId("public-space:missing"));
+    }],
+    ["missing floor reference", (state: GameState) => {
+      const floor = state.phase4!.floors.find(({ id }) => id === "floor:03")!;
+      floor.publicSpaceInstanceIds = floor.publicSpaceInstanceIds
+        .filter((id) => id !== "public-space:floor:03:space:04");
+    }],
+    ["unknown blueprint", (state: GameState) => {
+      state.phase4!.publicSpaces["public-space:floor:03:space:04"].blueprintId =
+        assertStableId("space-blueprint:missing");
+    }],
+  ] as const)("rejects a corrupt placement graph with %s without persistence", async (_label, corrupt) => {
+    const { state, commands, floor, store } = scaleCommandFixture("space-corrupt-graph");
+    corrupt(state);
+    const snapshot = structuredClone(state);
+
+    await expect(commands.placePublicSpace(state, validDiningBlueprint(), floor.id))
+      .rejects.toThrow();
+
+    expect(state).toEqual(snapshot);
+    expect(store.commits).toBe(0);
   });
 
   it("does not charge, mutate, or expose reconciliation when persistence fails", async () => {

@@ -1,7 +1,10 @@
 import { describe, expect, it } from "vitest";
 
 import { assertStableId } from "../domain/building/buildingTypes";
-import { createFacilityPolicy } from "../domain/facilities/facilityOperations";
+import {
+  FACILITY_OFFERINGS,
+  createFacilityPolicy,
+} from "../domain/facilities/facilityOperations";
 import type { GameState } from "../domain/game/state";
 import type { PublicSpaceBlueprint } from "../domain/spaces/spaceTypes";
 import { InMemorySavePort } from "../infrastructure/memory/InMemorySavePort";
@@ -101,6 +104,13 @@ function validBoostBlueprint(
 }
 
 describe("atomic facility commands", () => {
+  it("exports the authoritative maximum catalog development cost", () => {
+    expect(SIGNATURE_DEVELOPMENT_COST_CENTS).toBe(
+      Math.max(...FACILITY_OFFERINGS.map(({ developmentCostCents }) => developmentCostCents)),
+    );
+    expect(SIGNATURE_DEVELOPMENT_COST_CENTS).toBe(700_000);
+  });
+
   it("configures a facility while preserving unrelated state", async () => {
     const { state, facilityId, facility, commands, store } = activeDiningCommandFixture();
     const unrelated = structuredClone(state.phase4!.facilities["facility:floor:02:bar"]);
@@ -136,7 +146,10 @@ describe("atomic facility commands", () => {
       first, facilityId, "dish:tea-smoked-duck",
     );
 
-    expect(first.cashCents).toBe(state.cashCents - SIGNATURE_DEVELOPMENT_COST_CENTS);
+    const developmentCost = FACILITY_OFFERINGS.find(
+      ({ id }) => id === "dish:tea-smoked-duck",
+    )!.developmentCostCents;
+    expect(first.cashCents).toBe(state.cashCents - developmentCost);
     expect(second.cashCents).toBe(first.cashCents);
     expect(second.revision).toBe(first.revision);
     expect(second.phase4!.facilities[facilityId].developedOfferingIds)
@@ -315,6 +328,86 @@ describe("atomic facility commands", () => {
     expect(state.phase4!.catalogProgress.unlockedIds).toEqual([]);
   });
 
+  const corruptFacilityGraphCases: Array<[string, (state: GameState, facilityId: string) => void]> = [
+    ["a missing blueprint", (state, facilityId) => {
+      const instance = state.phase4!.publicSpaces[
+        state.phase4!.facilities[facilityId].publicSpaceInstanceId
+      ];
+      delete state.phase4!.spaceBlueprints[instance.blueprintId];
+    }],
+    ["a facility key/id mismatch", (state, facilityId) => {
+      state.phase4!.facilities[facilityId].id = assertStableId("facility:mismatched");
+    }],
+    ["an instance key/id mismatch", (state, facilityId) => {
+      const instance = state.phase4!.publicSpaces[
+        state.phase4!.facilities[facilityId].publicSpaceInstanceId
+      ];
+      instance.id = assertStableId("public-space:mismatched");
+    }],
+    ["a missing floor reference", (state, facilityId) => {
+      const instanceId = state.phase4!.facilities[facilityId].publicSpaceInstanceId;
+      const instance = state.phase4!.publicSpaces[instanceId];
+      const floor = state.phase4!.floors.find(({ id }) => id === instance.floorId)!;
+      floor.publicSpaceInstanceIds = floor.publicSpaceInstanceIds
+        .filter((candidate) => candidate !== instanceId);
+    }],
+    ["a dangling floor reference", (state, facilityId) => {
+      const instance = state.phase4!.publicSpaces[
+        state.phase4!.facilities[facilityId].publicSpaceInstanceId
+      ];
+      state.phase4!.floors.find(({ id }) => id === instance.floorId)!
+        .publicSpaceInstanceIds.push(assertStableId("public-space:missing"));
+    }],
+    ["a slot mismatch", (state, facilityId) => {
+      const instance = state.phase4!.publicSpaces[
+        state.phase4!.facilities[facilityId].publicSpaceInstanceId
+      ];
+      instance.localPlacementId = assertStableId("space:missing");
+    }],
+    ["a type mismatch", (state, facilityId) => {
+      const instance = state.phase4!.publicSpaces[
+        state.phase4!.facilities[facilityId].publicSpaceInstanceId
+      ];
+      instance.type = "bar";
+    }],
+  ];
+
+  const facilityGraphCommands: Array<[
+    string,
+    (state: GameState, facilityId: string) => void,
+    (commands: ReturnType<typeof createGameCommands>, state: GameState, facilityId: string) => Promise<GameState>,
+  ]> = [
+    ["configure", () => {}, (commands, state, facilityId) =>
+      commands.configureFacility(state, facilityId, diningPolicy())],
+    ["develop", () => {}, (commands, state, facilityId) =>
+      commands.developSignatureOffering(state, facilityId, "dish:tea-smoked-duck")],
+    ["select", (state, facilityId) => {
+      state.phase4!.facilities[facilityId].developedOfferingIds = [
+        assertStableId("dish:tea-smoked-duck"),
+      ];
+      state.phase4!.facilities[facilityId].policy = diningPolicy();
+    }, (commands, state, facilityId) =>
+      commands.selectSignatureOffering(state, facilityId, "dish:tea-smoked-duck")],
+    ["enable", (state, facilityId) => {
+      state.phase4!.facilities[facilityId].policy = diningPolicy();
+    }, (commands, state, facilityId) =>
+      commands.setFacilityEnabled(state, facilityId, true)],
+  ];
+
+  it.each(facilityGraphCommands)("rejects every corrupt facility graph before %s", async (_command, arrange, invoke) => {
+    for (const [, corrupt] of corruptFacilityGraphCases) {
+      const { state, facilityId, commands, store } = activeDiningCommandFixture("facility-corrupt-graph");
+      arrange(state, facilityId);
+      corrupt(state, facilityId);
+      const snapshot = structuredClone(state);
+
+      await expect(invoke(commands, state, facilityId)).rejects.toThrow();
+
+      expect(state).toEqual(snapshot);
+      expect(store.commits).toBe(0);
+    }
+  });
+
   it("does not charge or expose unlocks when persistence fails and retry charges once", async () => {
     const { state, facilityId } = activeDiningCommandFixture("facility-failed-port");
     state.phase4!.catalogProgress.unlockedIds = [assertStableId("facility:all-day-dining")];
@@ -332,6 +425,9 @@ describe("atomic facility commands", () => {
     const retry = await createGameCommands(new RecordingPort()).developSignatureOffering(
       state, facilityId, "dish:tea-smoked-duck",
     );
-    expect(retry.cashCents).toBe(state.cashCents - SIGNATURE_DEVELOPMENT_COST_CENTS);
+    const developmentCost = FACILITY_OFFERINGS.find(
+      ({ id }) => id === "dish:tea-smoked-duck",
+    )!.developmentCostCents;
+    expect(retry.cashCents).toBe(state.cashCents - developmentCost);
   });
 });

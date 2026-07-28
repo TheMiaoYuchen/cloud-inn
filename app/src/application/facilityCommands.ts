@@ -18,9 +18,12 @@ import { assertSafeMoney } from "../domain/primitives";
 import { validatePublicSpace } from "../domain/spaces/spaceValidation";
 import type { PublicSpaceBlueprint } from "../domain/spaces/spaceTypes";
 import type { SavePort } from "./ports/SavePort";
+import { assertPublicSpaceGraph } from "./publicSpaceGraph";
 
-/** Kept as the default/catalog maximum for callers that need a cost ceiling. */
-export const SIGNATURE_DEVELOPMENT_COST_CENTS = 600_000;
+/** Kept as the catalog maximum for callers that need a cost ceiling. */
+export const SIGNATURE_DEVELOPMENT_COST_CENTS = assertSafeMoney(
+  Math.max(...FACILITY_OFFERINGS.map(({ developmentCostCents }) => developmentCostCents)),
+);
 
 function assertRevision(revision: number): void {
   if (!Number.isSafeInteger(revision) || revision < 0 ||
@@ -47,12 +50,10 @@ function reconciled(state: GameState): GameState {
 function facilityFrom(state: Readonly<GameState>, facilityId: string): FacilityState {
   const phase4 = state.phase4;
   if (!phase4) throw new Error("内容规模系统尚未初始化");
-  const facility = phase4.facilities[facilityId];
+  const graph = assertPublicSpaceGraph(phase4);
+  const facility = graph.facilities.get(facilityId as StableId);
   if (!facility) throw new Error("设施不存在");
-  if (facility.id !== facilityId) throw new Error("设施记录键与编号不一致");
-  const instance = phase4.publicSpaces[facility.publicSpaceInstanceId];
-  if (!instance || instance.type !== facility.type) throw new Error("设施公共空间引用无效");
-  return facility;
+  return facility as FacilityState;
 }
 
 function assertUnlocked(state: Readonly<GameState>, facility: Readonly<FacilityState>): void {
