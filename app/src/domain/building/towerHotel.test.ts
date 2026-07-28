@@ -511,6 +511,34 @@ describe("tower hotel", () => {
     expect(() => applyTemplateSync(phase4, [source.id])).toThrow("客房编号冲突");
   });
 
+  it("previews a legal persisted Phase 4 state without applied template snapshots", () => {
+    const phase4 = createPhase4AcceptanceState("legacy-phase4-preview").phase4!;
+    const guestFloors = phase4.floors.filter(({ use }) => use === "guest");
+    const templateId = guestFloors[0].templateId;
+    const snapshot = structuredClone(phase4);
+
+    expect(Object.keys(phase4.floorTemplates)).not.toContain(
+      `template-snapshot:${guestFloors[0].id}`,
+    );
+
+    const preview = previewTemplateSync(phase4, templateId);
+
+    expect(preview.map(({ floorId, changed }) => ({ floorId, changed }))).toEqual(
+      guestFloors.map(({ id: floorId }) => ({ floorId, changed: false })),
+    );
+    expect(phase4).toEqual(snapshot);
+
+    const noOp = applyTemplateSync(phase4, []);
+    expect(noOp).toEqual(phase4);
+    expect(Object.keys(noOp.floorTemplates)).toEqual(
+      Object.keys(phase4.floorTemplates),
+    );
+
+    const selected = applyTemplateSync(phase4, [guestFloors[0].id]);
+    expect(selected.floorTemplates[`template-snapshot:${guestFloors[0].id}`]).toBeDefined();
+    expect(selected.floorTemplates[`template-snapshot:${guestFloors[1].id}`]).toBeUndefined();
+  });
+
   it("previews deterministic template changes and synchronizes only selected floors", () => {
     const initial = createPhase4AcceptanceState("template-sync").phase4!;
     const copied = copyGuestFloor(

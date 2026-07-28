@@ -531,8 +531,9 @@ export function previewTemplateSync(
     .filter((floor) => floor.templateId === stableTemplateId)
     .sort((left, right) => left.floorNumber - right.floorNumber || left.id.localeCompare(right.id))
     .map((floor) => {
-      const applied = state.floorTemplates[snapshotTemplateId(floor.id)];
-      if (!applied) throw new Error(`楼层 ${floor.id} 缺少已应用模板快照`);
+      const applied =
+        state.floorTemplates[snapshotTemplateId(floor.id)] ??
+        cloneTemplate(template, snapshotTemplateId(floor.id));
       return {
         floorId: floor.id,
         templateId: stableTemplateId,
@@ -548,6 +549,7 @@ export function applyTemplateSync(
   selectedFloorIds: readonly string[],
 ): ContentScaleState {
   const selected = new Set(selectedFloorIds.map(assertStableId));
+  if (selected.size === 0) return state;
   const occupiedRoomIds = new Set<StableId>();
   for (const floor of state.floors) {
     for (const room of floor.rooms) {
@@ -565,7 +567,12 @@ export function applyTemplateSync(
       throw new Error(`模板 ${selectedTemplate.id} 的客房放置编号重复`);
     }
   }
-  const floorTemplates = withGuestFloorSnapshots(state);
+  const floorTemplates = Object.fromEntries(
+    Object.entries(state.floorTemplates).map(([key, template]) => [
+      key,
+      cloneTemplate(template),
+    ]),
+  );
   const floors = state.floors.map((floor) => {
     if (!selected.has(floor.id)) return cloneFloor(floor);
     const template = floorTemplates[floor.templateId];
