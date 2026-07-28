@@ -37,6 +37,17 @@ function settlementInput() {
 }
 
 describe("settleHotelDay", () => {
+  const historyRecord = (day: number) => ({
+    day,
+    visits: 1,
+    revenueCents: 1,
+    operatingCostCents: 1,
+    utilizationBps: 1,
+    satisfactionDeltaBps: 0,
+    appealDeltaBps: 0,
+    reasonCodes: [],
+  });
+
   it("keeps exact report-v2 category arithmetic", () => {
     const report = settleHotelDay(settlementInput()).report;
 
@@ -119,6 +130,33 @@ describe("settleHotelDay", () => {
 
     expect(() => settleHotelDay(input)).toThrow("设施历史日期必须早于当前营业日");
     expect(input).toEqual(snapshot);
+  });
+
+  it("rejects a 31st facility result before hotel economics or reports are finalized", () => {
+    const input = settlementInput();
+    input.day = 31;
+    const facility = Object.values(input.phase4.facilities).find(({ enabled }) => enabled)!;
+    facility.dailyResults = Array.from({ length: 30 }, (_, index) => historyRecord(index + 1));
+    const snapshot = structuredClone(input);
+
+    expect(() => settleHotelDay(input)).toThrow("设施历史已满 30 天");
+    expect(input).toEqual(snapshot);
+    expect(input.operations.dailyReports).toEqual([]);
+  });
+
+  it("appends exactly the 30th facility result on day 30", () => {
+    const input = settlementInput();
+    input.day = 30;
+    const facility = Object.values(input.phase4.facilities).find(({ enabled }) => enabled)!;
+    facility.dailyResults = Array.from({ length: 29 }, (_, index) => historyRecord(index + 1));
+
+    const settled = settleHotelDay(input);
+
+    expect(settled.phase4.facilities[facility.id].dailyResults.map(({ day }) => day))
+      .toEqual(Array.from({ length: 30 }, (_, index) => index + 1));
+    expect(settled.operations.dailyReports).toHaveLength(1);
+    expect(input.operations.dailyReports).toEqual([]);
+    expect(facility.dailyResults).toHaveLength(29);
   });
 
   it("combines room and facility reputation evidence and finalizes loan interest once", () => {

@@ -551,6 +551,9 @@ export function settleFacilityOperations(
     .filter(({ enabled }) => enabled)
     .sort((left, right) => compareCodeUnits(left.id, right.id))) {
     if (facility.status !== "operating") continue;
+    if (facility.dailyResults.length >= MAX_FACILITY_HISTORY_DAYS) {
+      throw new Error("设施历史已满 30 天，不能追加新的日结结果");
+    }
     const instance = input.publicSpaces[facility.publicSpaceInstanceId];
     if (!instance || instance.type !== facility.type) throw new Error(`设施 ${facility.id} 引用了未知公共空间`);
     const blueprint = input.blueprints[instance.blueprintId];

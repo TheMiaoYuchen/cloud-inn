@@ -14,6 +14,17 @@ import { createPhase4AcceptanceState } from "../../testing/phase4Fixtures";
 import { createApprovedOperations } from "../operations/operationsFixtures";
 
 describe("light facility operations", () => {
+  const historyRecord = (day: number) => ({
+    day,
+    visits: 1,
+    revenueCents: 1,
+    operatingCostCents: 1,
+    utilizationBps: 1,
+    satisfactionDeltaBps: 0,
+    appealDeltaBps: 0,
+    reasonCodes: [],
+  });
+
   function settlementInput() {
     const phase4 = createPhase4AcceptanceState("facility-settlement").phase4!;
     const dining = Object.values(phase4.facilities).find(
@@ -105,6 +116,40 @@ describe("light facility operations", () => {
     facility.dailyResults = {} as never;
 
     expect(() => settleFacilityOperations(input)).toThrow("设施历史必须是数组");
+  });
+
+  it("rejects settlement that would append a 31st enabled facility result", () => {
+    const input = settlementInput();
+    input.day = 31;
+    const facility = Object.values(input.facilities).find(({ enabled }) => enabled)!;
+    facility.dailyResults = Array.from({ length: 30 }, (_, index) => historyRecord(index + 1));
+    const snapshot = structuredClone(input);
+
+    expect(() => settleFacilityOperations(input)).toThrow("设施历史已满 30 天");
+    expect(input).toEqual(snapshot);
+  });
+
+  it("accepts 29 prior results and produces exactly the day-30 facility result", () => {
+    const input = settlementInput();
+    input.day = 30;
+    const facility = Object.values(input.facilities).find(({ enabled }) => enabled)!;
+    facility.dailyResults = Array.from({ length: 29 }, (_, index) => historyRecord(index + 1));
+
+    expect(settleFacilityOperations(input).results).toEqual([
+      expect.objectContaining({ facilityId: facility.id, day: 30 }),
+    ]);
+    expect(facility.dailyResults).toHaveLength(29);
+  });
+
+  it("allows full history on a disabled facility because settlement appends no result", () => {
+    const input = settlementInput();
+    input.day = 31;
+    const facility = Object.values(input.facilities).find(({ enabled }) => enabled)!;
+    facility.enabled = false;
+    facility.dailyResults = Array.from({ length: 30 }, (_, index) => historyRecord(index + 1));
+
+    expect(settleFacilityOperations(input).results).toEqual([]);
+    expect(facility.dailyResults).toHaveLength(30);
   });
 
   it.each([
