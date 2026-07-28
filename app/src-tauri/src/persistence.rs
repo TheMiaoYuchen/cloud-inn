@@ -958,30 +958,6 @@ fn validate_phase4_money(value: &Value) -> Result<(), String> {
     }
 }
 
-fn validate_phase4_stable_ids(value: &Value) -> Result<(), String> {
-    match value {
-        Value::Array(values) => {
-            for child in values {
-                validate_phase4_stable_ids(child)?;
-            }
-        }
-        Value::Object(object) => {
-            for (key, child) in object {
-                if key == "id" || key.ends_with("Id") {
-                    phase4_stable_id(child, key)?;
-                } else if key.ends_with("Ids") || key == "reasonCodes" {
-                    for id in phase4_array(child, key)? {
-                        phase4_stable_id(id, key)?;
-                    }
-                }
-                validate_phase4_stable_ids(child)?;
-            }
-        }
-        _ => {}
-    }
-    Ok(())
-}
-
 fn validate_phase4_identity_record(value: &Value, label: &str) -> Result<(), String> {
     let definitions = phase4_object(value, label)?;
     let mut ids = HashSet::new();
@@ -1008,33 +984,20 @@ fn validate_phase4_identity_record(value: &Value, label: &str) -> Result<(), Str
 fn phase4_is_credential_key(key: &str) -> bool {
     let normalized = key
         .chars()
-        .enumerate()
-        .flat_map(|(index, character)| {
-            if character == '-' {
-                vec!['_']
-            } else if character.is_ascii_uppercase() {
-                let mut result = Vec::with_capacity(2);
-                if index > 0 {
-                    result.push('_');
-                }
-                result.push(character.to_ascii_lowercase());
-                result
-            } else {
-                vec![character.to_ascii_lowercase()]
-            }
-        })
+        .filter(|character| character.is_ascii_alphanumeric())
+        .map(|character| character.to_ascii_lowercase())
         .collect::<String>();
     matches!(
         normalized.as_str(),
         "password"
             | "passwd"
             | "secret"
-            | "api_key"
-            | "access_token"
-            | "refresh_token"
-            | "auth_token"
-            | "private_key"
-            | "client_secret"
+            | "apikey"
+            | "accesstoken"
+            | "refreshtoken"
+            | "authtoken"
+            | "privatekey"
+            | "clientsecret"
             | "credential"
             | "credentials"
     )
@@ -1112,39 +1075,40 @@ fn phase4_contains_credential(value: &str) -> bool {
     })
 }
 
-fn validate_phase4_tree(value: &Value, depth: usize) -> Result<(), String> {
-    if depth > 32 {
-        return Err(phase4_error("JSON嵌套过深"));
-    }
-    match value {
-        Value::String(text) => {
-            if text.chars().count() > 4_096 {
-                return Err(phase4_error("文本超过长度限制"));
-            }
-            if phase4_contains_credential(text) {
-                return Err(phase4_error("禁止持久化凭据"));
-            }
-            if phase4_is_base64(text) {
-                return Err(phase4_error("禁止持久化Base64数据"));
-            }
+fn validate_phase4_tree(value: &Value) -> Result<(), String> {
+    let mut pending = vec![(value, 0usize)];
+    while let Some((current, depth)) = pending.pop() {
+        if depth > 32 {
+            return Err(phase4_error("JSON嵌套过深"));
         }
-        Value::Array(values) => {
-            for child in values {
-                validate_phase4_tree(child, depth + 1)?;
-            }
-        }
-        Value::Object(object) => {
-            for (key, child) in object {
-                if key.chars().count() > 128 {
-                    return Err(phase4_error("字段名超过长度限制"));
+        match current {
+            Value::String(text) => {
+                if text.chars().count() > 4_096 {
+                    return Err(phase4_error("文本超过长度限制"));
                 }
-                if phase4_is_credential_key(key) {
+                if phase4_contains_credential(text) {
                     return Err(phase4_error("禁止持久化凭据"));
                 }
-                validate_phase4_tree(child, depth + 1)?;
+                if phase4_is_base64(text) {
+                    return Err(phase4_error("禁止持久化Base64数据"));
+                }
             }
+            Value::Array(values) => {
+                pending.extend(values.iter().map(|child| (child, depth + 1)));
+            }
+            Value::Object(object) => {
+                for (key, child) in object {
+                    if key.chars().count() > 128 {
+                        return Err(phase4_error("字段名超过长度限制"));
+                    }
+                    if phase4_is_credential_key(key) {
+                        return Err(phase4_error("禁止持久化凭据"));
+                    }
+                    pending.push((child, depth + 1));
+                }
+            }
+            _ => {}
         }
-        _ => {}
     }
     Ok(())
 }
@@ -1391,7 +1355,7 @@ fn validate_phase4(value: &Value, game: &Value) -> Result<(), String> {
     {
         return Err(phase4_error("JSON超过大小限制"));
     }
-    validate_phase4_tree(value, 0)?;
+    validate_phase4_tree(value)?;
     let phase4 = phase4_object(value, "状态")?;
     let current_day = phase4_int(
         game.get("currentDay")
@@ -1413,7 +1377,6 @@ fn validate_phase4(value: &Value, game: &Value) -> Result<(), String> {
     ] {
         phase4_object(phase4_field(phase4, key, label)?, label)?;
     }
-    validate_phase4_stable_ids(value)?;
     for (key, label) in [
         ("floorTemplates", "楼层模板"),
         ("spaceBlueprints", "公共空间蓝图"),
@@ -1571,14 +1534,18 @@ fn validate_phase4(value: &Value, game: &Value) -> Result<(), String> {
                 phase4_field(slot, "id", "公共空间槽位编号")?,
                 "公共空间槽位编号",
             )?;
-            let permitted = phase4_array(
+            let permitted_values = phase4_array(
                 phase4_field(slot, "permittedTypes", "允许设施类型")?,
                 "允许设施类型",
-            )?
-            .iter()
-            .map(|value| phase4_type(value, "设施类型"))
-            .collect::<Result<HashSet<_>, _>>()?;
-            if permitted.is_empty() || slots.insert(id, permitted).is_some() {
+            )?;
+            let permitted = permitted_values
+                .iter()
+                .map(|value| phase4_type(value, "设施类型"))
+                .collect::<Result<HashSet<_>, _>>()?;
+            if permitted.is_empty() || permitted.len() != permitted_values.len() {
+                return Err(phase4_error("允许设施类型无效"));
+            }
+            if slots.insert(id, permitted).is_some() {
                 return Err(phase4_error("公共空间槽位无效"));
             }
         }
@@ -1741,6 +1708,7 @@ fn validate_phase4(value: &Value, game: &Value) -> Result<(), String> {
     if public_spaces.len() > 32 {
         return Err(phase4_error("公共空间最多保留32项"));
     }
+    let mut occupied_space_placements = HashSet::new();
     for (space_id, raw_space) in public_spaces {
         let space = phase4_object(raw_space, "公共空间")?;
         let type_id = phase4_type(phase4_field(space, "type", "公共空间类型")?, "公共空间类型")?;
@@ -1758,6 +1726,9 @@ fn validate_phase4(value: &Value, game: &Value) -> Result<(), String> {
             phase4_field(space, "localPlacementId", "公共空间槽位编号")?,
             "公共空间槽位编号",
         )?;
+        if !occupied_space_placements.insert((floor_id, slot_id)) {
+            return Err(phase4_error("公共空间放置重复"));
+        }
         let template_id = floor_records
             .get(floor_id)
             .map(|record| record.1)
@@ -1855,30 +1826,33 @@ fn validate_phase4(value: &Value, game: &Value) -> Result<(), String> {
                 return Err(phase4_error("公共空间物品编号重复"));
             }
             phase4_item(phase4_field(item, "catalogItemId", "物品目录编号")?)?;
-            phase4_int(
+            let x = phase4_int(
                 phase4_field(item, "x", "物品横坐标")?,
                 "物品横坐标",
                 0,
                 columns - 1,
             )?;
-            phase4_int(
+            let y = phase4_int(
                 phase4_field(item, "y", "物品纵坐标")?,
                 "物品纵坐标",
                 0,
                 rows - 1,
             )?;
-            phase4_int(
+            let width = phase4_int(
                 phase4_field(item, "width", "物品宽度")?,
                 "物品宽度",
                 1,
                 columns,
             )?;
-            phase4_int(
+            let height = phase4_int(
                 phase4_field(item, "height", "物品高度")?,
                 "物品高度",
                 1,
                 rows,
             )?;
+            if x + width > columns || y + height > rows {
+                return Err(phase4_error("公共空间物品超出蓝图"));
+            }
             let rotation = phase4_int(
                 phase4_field(item, "rotation", "物品旋转")?,
                 "物品旋转",
@@ -1899,6 +1873,7 @@ fn validate_phase4(value: &Value, game: &Value) -> Result<(), String> {
     if facilities.len() > 32 {
         return Err(phase4_error("设施最多保留32项"));
     }
+    let mut facility_space_ids = HashSet::new();
     for raw_facility in facilities.values() {
         let facility = phase4_object(raw_facility, "设施")?;
         let type_id = phase4_type(phase4_field(facility, "type", "设施类型")?, "设施类型")?;
@@ -1906,6 +1881,9 @@ fn validate_phase4(value: &Value, game: &Value) -> Result<(), String> {
             phase4_field(facility, "publicSpaceInstanceId", "设施公共空间编号")?,
             "设施公共空间编号",
         )?;
+        if !facility_space_ids.insert(instance_id) {
+            return Err(phase4_error("设施公共空间引用重复"));
+        }
         if public_spaces
             .get(instance_id)
             .and_then(|space| space.get("type"))
@@ -4552,6 +4530,115 @@ mod tests {
                 assert!(result.is_ok(), "{target} bytes");
             }
         }
+    }
+
+    #[test]
+    fn phase4_rejects_graph_cardinality_and_item_containment_mutations() {
+        type Phase4Mutation = (&'static str, &'static str, Box<dyn Fn(&mut Value)>);
+        let cases: Vec<Phase4Mutation> = vec![
+            (
+                "duplicate-public-space-placement",
+                "公共空间放置重复",
+                Box::new(|value| {
+                    let mut spaces = value["phase4"]["publicSpaces"]
+                        .as_object_mut()
+                        .unwrap()
+                        .values_mut()
+                        .take(2)
+                        .collect::<Vec<_>>();
+                    let floor_id = spaces[0]["floorId"].clone();
+                    let placement_id = spaces[0]["localPlacementId"].clone();
+                    spaces[1]["floorId"] = floor_id;
+                    spaces[1]["localPlacementId"] = placement_id;
+                }),
+            ),
+            (
+                "duplicate-facility-ownership",
+                "设施公共空间引用重复",
+                Box::new(|value| {
+                    let mut facilities = value["phase4"]["facilities"]
+                        .as_object_mut()
+                        .unwrap()
+                        .values_mut()
+                        .take(2)
+                        .collect::<Vec<_>>();
+                    let instance_id = facilities[0]["publicSpaceInstanceId"].clone();
+                    let type_id = facilities[0]["type"].clone();
+                    facilities[1]["publicSpaceInstanceId"] = instance_id;
+                    facilities[1]["type"] = type_id;
+                }),
+            ),
+            (
+                "duplicate-permitted-type",
+                "允许设施类型无效",
+                Box::new(|value| {
+                    let permitted = value["phase4"]["floorTemplates"]["template:facility:standard"]
+                        ["publicSpaceSlots"][0]["permittedTypes"]
+                        .as_array_mut()
+                        .unwrap();
+                    permitted.push(permitted[0].clone());
+                }),
+            ),
+            (
+                "item-outside-blueprint",
+                "公共空间物品超出蓝图",
+                Box::new(|value| {
+                    let blueprint =
+                        &mut value["phase4"]["spaceBlueprints"]["space-blueprint:all-day-dining"];
+                    blueprint["placedItems"][0]["x"] = json!(127);
+                    blueprint["placedItems"][0]["width"] = json!(2);
+                }),
+            ),
+        ];
+        for (name, expected, mutate) in cases {
+            let mut invalid = phase4_fixture(include_str!("../tests/fixtures/phase4-valid.json"));
+            mutate(&mut invalid);
+            let error = validate_game(&invalid).err().unwrap();
+            assert!(
+                error.contains(expected),
+                "{name} expected {expected}, got {error}"
+            );
+        }
+
+        let mut boundary = phase4_fixture(include_str!("../tests/fixtures/phase4-valid.json"));
+        let blueprint =
+            &mut boundary["phase4"]["spaceBlueprints"]["space-blueprint:all-day-dining"];
+        blueprint["placedItems"][0]["x"] = json!(127);
+        blueprint["placedItems"][0]["y"] = json!(63);
+        assert!(validate_game(&boundary).is_ok());
+    }
+
+    #[test]
+    fn phase4_extension_ids_and_credential_keys_match_browser() {
+        let mut extension = phase4_fixture(include_str!("../tests/fixtures/phase4-valid.json"));
+        extension["phase4"]["persistenceMetadata"] =
+            json!({"futureId": "Future ID", "futureIds": ["Future ID"]});
+        assert!(validate_game(&extension).is_ok());
+
+        for field in [
+            "password",
+            "secret",
+            "credential",
+            "apiKey",
+            "APIKey",
+            "ACCESS_TOKEN",
+            "Api-Key",
+        ] {
+            let mut invalid = phase4_fixture(include_str!("../tests/fixtures/phase4-valid.json"));
+            invalid["phase4"]["persistenceMetadata"] = json!({field: "fixture"});
+            let error = validate_game(&invalid).err().unwrap();
+            assert!(error.contains("禁止持久化凭据"), "{field}: {error}");
+        }
+    }
+
+    #[test]
+    fn phase4_deep_extension_tree_has_a_controlled_error() {
+        let mut nested = Value::Null;
+        for _ in 0..100 {
+            nested = json!({"child": nested});
+        }
+        let error = validate_phase4_tree(&nested).err().unwrap();
+        assert!(error.contains("JSON嵌套过深"), "{error}");
     }
 
     #[test]

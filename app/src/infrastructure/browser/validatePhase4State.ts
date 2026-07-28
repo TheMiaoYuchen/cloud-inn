@@ -62,7 +62,10 @@ const OFFERING_TYPES: Readonly<Record<string, readonly string[]>> = {
   "service:cloud-wedding": ["ballroom", "meeting-room"], "service:executive-summit": ["ballroom", "meeting-room"],
   "service:cultural-gala": ["ballroom", "meeting-room"],
 };
-const CREDENTIAL_KEY = /^(?:password|passwd|secret|api[_-]?key|access[_-]?token|refresh[_-]?token|auth[_-]?token|private[_-]?key|client[_-]?secret|credentials?)$/i;
+const CREDENTIAL_KEYS = new Set([
+  "password", "passwd", "secret", "apikey", "accesstoken", "refreshtoken", "authtoken",
+  "privatekey", "clientsecret", "credential", "credentials",
+]);
 const CREDENTIAL_VALUE = /(?:-----BEGIN [A-Z ]*PRIVATE KEY-----|\b(?:api[_-]?key|access[_-]?token|refresh[_-]?token|auth[_-]?token|private[_-]?key|client[_-]?secret|password|secret|credentials?)\s*[:=]|\bBearer\s+[A-Za-z0-9._~-]{16,})/i;
 const STRICT_BASE64 = /^[A-Za-z0-9+/]+={0,2}$/;
 const MAX_JSON_BYTES = 8 * 1024 * 1024;
@@ -123,8 +126,13 @@ function isStrictBase64(value: string): boolean {
   return payload.length >= 128 && payload.length % 4 === 0 && STRICT_BASE64.test(payload);
 }
 
+function isCredentialKey(key: string): boolean {
+  return CREDENTIAL_KEYS.has(key.toLowerCase().replace(/[^a-z0-9]/g, ""));
+}
+
 function validateTree(value: unknown): void {
   const pending: Array<{ value: unknown; depth: number }> = [{ value, depth: 0 }];
+  const seen = new WeakSet<object>();
   while (pending.length > 0) {
     const current = pending.pop()!;
     if (current.depth > 32) phase4Error("JSON嵌套过深");
@@ -135,13 +143,19 @@ function validateTree(value: unknown): void {
         phase4Error("禁止持久化Base64数据");
       }
     } else if (Array.isArray(current.value)) {
+      if (seen.has(current.value)) phase4Error("JSON包含循环或重复对象引用");
+      seen.add(current.value);
       current.value.forEach((child) => pending.push({ value: child, depth: current.depth + 1 }));
     } else if (typeof current.value === "object" && current.value !== null) {
+      if (seen.has(current.value)) phase4Error("JSON包含循环或重复对象引用");
+      seen.add(current.value);
       for (const [key, child] of Object.entries(current.value)) {
         if (Array.from(key).length > 128) phase4Error("字段名超过长度限制");
-        if (CREDENTIAL_KEY.test(key)) phase4Error("禁止持久化凭据");
+        if (isCredentialKey(key)) phase4Error("禁止持久化凭据");
         pending.push({ value: child, depth: current.depth + 1 });
       }
+    } else if (!["number", "boolean"].includes(typeof current.value) && current.value !== null) {
+      phase4Error("JSON结构无效");
     }
   }
 }
@@ -191,9 +205,10 @@ function validateFacilityHistory(facility: JsonObject, currentDay: number): void
 }
 
 export function validatePhase4State(value: unknown, gameValue?: unknown): void {
-  const serialized = JSON.stringify(value);
-  if (new TextEncoder().encode(serialized).byteLength > MAX_JSON_BYTES) phase4Error("JSON超过大小限制");
   validateTree(value);
+  const serialized = JSON.stringify(value);
+  if (typeof serialized !== "string") phase4Error("JSON结构无效");
+  if (new TextEncoder().encode(serialized).byteLength > MAX_JSON_BYTES) phase4Error("JSON超过大小限制");
   const phase4 = object(value, "状态");
   const game = gameValue === undefined ? undefined : object(gameValue, "游戏");
   if (phase4.rulesetVersion !== "content-scale-v1") phase4Error("规则版本无效");
@@ -352,10 +367,11 @@ export function validatePhase4State(value: unknown, gameValue?: unknown): void {
       const item = object(rawItem, "公共空间物品");
       if (!itemIds.add(stableId(item.id, "公共空间物品编号"))) phase4Error("公共空间物品编号重复");
       if (!ITEM_IDS.has(stableId(item.catalogItemId, "物品目录编号"))) phase4Error("目录引用无效");
-      integer(item.x, "物品横坐标", 0, columns - 1);
-      integer(item.y, "物品纵坐标", 0, rows - 1);
-      integer(item.width, "物品宽度", 1, columns);
-      integer(item.height, "物品高度", 1, rows);
+      const x = integer(item.x, "物品横坐标", 0, columns - 1);
+      const y = integer(item.y, "物品纵坐标", 0, rows - 1);
+      const width = integer(item.width, "物品宽度", 1, columns);
+      const height = integer(item.height, "物品高度", 1, rows);
+      if (x + width > columns || y + height > rows) phase4Error("公共空间物品超出蓝图");
       if (![0, 90, 180, 270].includes(Number(item.rotation))) phase4Error("物品旋转无效");
     }
     integer(blueprint.committedBuildCostCents, "施工金额");
@@ -369,12 +385,16 @@ export function validatePhase4State(value: unknown, gameValue?: unknown): void {
       ownedSpaces.set(instanceId, String(floor.id));
     }
   }
+  const occupiedPublicSpacePlacements = new Set<string>();
   for (const [id, raw] of Object.entries(publicSpaces)) {
     const space = object(raw, "公共空间");
     const floorId = stableId(space.floorId, "公共空间楼层编号");
     const floor = floorById.get(floorId);
     if (!floor || ownedSpaces.get(id) !== floorId) phase4Error("公共空间楼层引用无效");
     const localPlacementId = stableId(space.localPlacementId, "公共空间槽位编号");
+    const placementKey = `${floorId}\u0000${localPlacementId}`;
+    if (occupiedPublicSpacePlacements.has(placementKey)) phase4Error("公共空间放置重复");
+    occupiedPublicSpacePlacements.add(placementKey);
     const permitted = templateSlots.get(String(floor.templateId))?.get(localPlacementId);
     const type = oneOf(space.type, PUBLIC_SPACE_TYPES, "公共空间类型");
     if (!permitted?.includes(type)) phase4Error("公共空间槽位或类型引用无效");
@@ -384,10 +404,14 @@ export function validatePhase4State(value: unknown, gameValue?: unknown): void {
   }
   if (ownedSpaces.size !== Object.keys(publicSpaces).length) phase4Error("楼层公共空间反向引用不完整");
 
+  const facilitySpaceIds = new Set<string>();
   for (const raw of Object.values(facilities)) {
     const facility = object(raw, "设施");
     const type = oneOf(facility.type, PUBLIC_SPACE_TYPES, "设施类型");
-    const instance = publicSpaces[stableId(facility.publicSpaceInstanceId, "设施公共空间编号")];
+    const instanceId = stableId(facility.publicSpaceInstanceId, "设施公共空间编号");
+    if (facilitySpaceIds.has(instanceId)) phase4Error("设施公共空间引用重复");
+    facilitySpaceIds.add(instanceId);
+    const instance = publicSpaces[instanceId];
     if (!instance || object(instance, "公共空间").type !== type) phase4Error("设施公共空间引用无效");
     oneOf(facility.status, ["planned", "operating", "closed"], "设施状态");
     if (typeof facility.enabled !== "boolean") phase4Error("设施启用状态无效");

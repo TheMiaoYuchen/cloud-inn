@@ -131,7 +131,7 @@ describe("complete Phase 4 browser persistence validation", () => {
     ["unknown-room-floor", (value: any) => { value.phase4.floors[4].rooms[0].floorId = "floor:unknown"; }],
     ["unsafe-money", (value: any) => { value.phase4.floors[4].rooms[0].committedBuildCostCents = Number.MAX_SAFE_INTEGER + 1; }],
     ["wrong-containing-floor", (value: any) => { value.phase4.floors[4].rooms[0].floorId = "floor:06"; }],
-    ["malformed-record-key", (value: any) => { value.phase4.publicSpaces["Bad Key"] = value.phase4.publicSpaces[Object.keys(value.phase4.publicSpaces)[0]]; }],
+    ["malformed-record-key", (value: any) => { value.phase4.publicSpaces["Bad Key"] = structuredClone(value.phase4.publicSpaces[Object.keys(value.phase4.publicSpaces)[0]]); }],
     ["non-object-record-value", (value: any) => { value.phase4.spaceBlueprints[Object.keys(value.phase4.spaceBlueprints)[0]] = "bad"; }],
     ["record-key-id-mismatch", (value: any) => { value.phase4.facilities[Object.keys(value.phase4.facilities)[0]].id = "facility:mismatch"; }],
     ["duplicate-record-value-id", (value: any) => {
@@ -155,6 +155,67 @@ describe("complete Phase 4 browser persistence validation", () => {
     const validation = () => validateBrowserGameState(value, "phase4-shared");
     if (rejected) expect(validation).toThrow("JSON超过大小限制");
     else expect(validation).not.toThrow();
+  });
+
+  it("rejects deep and cyclic extension trees with controlled errors", () => {
+    const deep = structuredClone(sharedPhase4Fixture) as any;
+    let cursor: any = {};
+    deep.phase4.persistenceMetadata = cursor;
+    for (let index = 0; index < 10_000; index += 1) {
+      cursor.child = {};
+      cursor = cursor.child;
+    }
+    expect(() => validatePhase4State(deep.phase4, deep)).toThrow("JSON嵌套过深");
+
+    const cyclic = structuredClone(sharedPhase4Fixture) as any;
+    cyclic.phase4.persistenceMetadata = {};
+    cyclic.phase4.persistenceMetadata.self = cyclic.phase4.persistenceMetadata;
+    expect(() => validatePhase4State(cyclic.phase4, cyclic)).toThrow("JSON包含循环或重复对象引用");
+
+    const repeated = structuredClone(sharedPhase4Fixture) as any;
+    const shared = { description: "fixture" };
+    repeated.phase4.persistenceMetadata = { first: shared, second: shared };
+    expect(() => validatePhase4State(repeated.phase4, repeated)).toThrow("JSON包含循环或重复对象引用");
+  });
+
+  it.each([
+    ["duplicate public-space placement", "公共空间放置重复", (value: any) => {
+      const spaces = Object.values(value.phase4.publicSpaces) as any[];
+      spaces[1].floorId = spaces[0].floorId;
+      spaces[1].localPlacementId = spaces[0].localPlacementId;
+    }],
+    ["duplicate facility ownership", "设施公共空间引用重复", (value: any) => {
+      const facilities = Object.values(value.phase4.facilities) as any[];
+      facilities[1].publicSpaceInstanceId = facilities[0].publicSpaceInstanceId;
+      facilities[1].type = facilities[0].type;
+    }],
+    ["duplicate permitted type", "允许设施类型无效", (value: any) => {
+      const slot = value.phase4.floorTemplates["template:facility:standard"].publicSpaceSlots[0];
+      slot.permittedTypes.push(slot.permittedTypes[0]);
+    }],
+  ] as Array<[string, string, (value: any) => void]>)
+  ("rejects graph cardinality invariant %s", (_name, errorClass, mutate) => {
+    const value = structuredClone(sharedPhase4Fixture) as any;
+    mutate(value);
+    expect(() => validateBrowserGameState(value, "phase4-shared")).toThrow(errorClass);
+  });
+
+  it("enforces placed-item containment at the exact boundary", () => {
+    const boundary = structuredClone(sharedPhase4Fixture) as any;
+    const blueprint = boundary.phase4.spaceBlueprints["space-blueprint:all-day-dining"];
+    blueprint.placedItems[0].x = blueprint.columns - blueprint.placedItems[0].width;
+    blueprint.placedItems[0].y = blueprint.rows - blueprint.placedItems[0].height;
+    expect(() => validateBrowserGameState(boundary, "phase4-shared")).not.toThrow();
+
+    const outside = structuredClone(boundary);
+    outside.phase4.spaceBlueprints["space-blueprint:all-day-dining"].placedItems[0].width += 1;
+    expect(() => validateBrowserGameState(outside, "phase4-shared")).toThrow("公共空间物品超出蓝图");
+  });
+
+  it("accepts extension ID-like metadata without treating it as schema", () => {
+    const value = structuredClone(sharedPhase4Fixture) as any;
+    value.phase4.persistenceMetadata = { futureId: "Future ID", futureIds: ["Future ID"] };
+    expect(() => validateBrowserGameState(value, "phase4-shared")).not.toThrow();
   });
 
   const facilityCases: Array<[string, (value: any, facility: any) => void]> = [
@@ -192,7 +253,7 @@ describe("complete Phase 4 browser persistence validation", () => {
     ["65 templates", "楼层模板最多保留64项", (value) => {
       for (let index = 0; index < 60; index += 1) {
         const id = `template:extra:${String(index).padStart(2, "0")}`;
-        value.phase4.floorTemplates[id] = { ...value.phase4.floorTemplates["template:entrance:standard"], id };
+        value.phase4.floorTemplates[id] = structuredClone({ ...value.phase4.floorTemplates["template:entrance:standard"], id });
       }
     }],
     ["zero template columns", "楼层模板列数必须是安全整数", (value) => { value.phase4.floorTemplates["template:guest:dense-ring"].columns = 0; }],
@@ -259,7 +320,7 @@ describe("complete Phase 4 browser persistence validation", () => {
     expect(() => validateBrowserGameState(value, "phase4-shared")).not.toThrow();
   });
 
-  it.each(["password", "secret", "credential", "apiKey", "access_token"])(
+  it.each(["password", "secret", "credential", "apiKey", "APIKey", "ACCESS_TOKEN", "Api-Key"])(
     "rejects forbidden credential field %s",
     (field) => {
       const value = structuredClone(sharedPhase4Fixture) as any;
