@@ -106,9 +106,9 @@ export function finalizeOperationsSettlement(
     availableRooms: input.room.availableRooms,
     soldRooms: input.room.soldRooms,
     occupancyBps: input.room.occupancyBps,
+    departmentCostCents: input.room.departmentCostCents,
+    roomRevenueCents: input.room.roomRevenueCents,
     ...(input.includePhase4Categories ? {
-      departmentCostCents: input.room.departmentCostCents,
-      roomRevenueCents: input.room.roomRevenueCents,
       publicSpaceRevenueCents,
       facilityOperatingCostCents,
     } : {}),

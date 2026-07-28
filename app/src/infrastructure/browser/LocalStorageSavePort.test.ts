@@ -6,6 +6,8 @@ import { createGameCommands } from "../../application/gameCommands";
 import { createPhase4AcceptanceState } from "../../testing/phase4Fixtures";
 import { createApprovedOperations } from "../../domain/operations/operationsFixtures";
 import { createFacilityPolicy } from "../../domain/facilities/facilityOperations";
+import { createApprovedSettlementInput } from "../../domain/operations/operationsFixtures";
+import { settleOperationsDay } from "../../domain/operations/settleOperationsDay";
 
 const storageKey = (saveId: string) => `cloud-inn:save:${saveId}`;
 
@@ -80,6 +82,28 @@ describe("LocalStorageSavePort", () => {
 
     expect(loaded).toEqual(state);
     expect(loaded).not.toBe(state);
+  });
+
+  it("loads a classic Phase 3 report snapshot with room and department categories", async () => {
+    const settled = settleOperationsDay(createApprovedSettlementInput());
+    const state: GameState = {
+      ...createNewGame("phase3-classic-browser"),
+      revision: 1,
+      currentDay: 1,
+      cashCents: settled.cashCents,
+      reports: [settled.legacyReport],
+      latestReport: settled.legacyReport,
+      operations: settled.operations,
+    };
+    window.localStorage.setItem(storageKey(state.saveId), JSON.stringify(state));
+
+    const loaded = await new LocalStorageSavePort().load(state.saveId);
+
+    expect(loaded).toEqual(state);
+    expect(loaded?.operations?.dailyReports[0]).toMatchObject({
+      roomRevenueCents: settled.report.revenueCents,
+      departmentCostCents: settled.report.operatingCostCents,
+    });
   });
 
   function mixedHotel(saveId: string): GameState {

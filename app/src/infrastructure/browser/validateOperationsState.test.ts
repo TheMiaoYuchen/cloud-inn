@@ -27,6 +27,8 @@ function daily(day: number): OperationsDailyReport {
     availableRooms: 2,
     soldRooms: 1,
     occupancyBps: 5_000,
+    departmentCostCents: 100,
+    roomRevenueCents: 1_000,
     loanInterestCents: 10,
     cashShortfallCents: 0,
     lostBookings: [{ segmentId: "couple", code: "price", count: 1, explanation: "rate" }],
@@ -148,10 +150,26 @@ describe("browser operations persistence validation", () => {
     expect(loaded).not.toBe(state);
   });
 
-  it.each(Array.from({ length: 14 }, (_, index) => index + 1))(
+  it("accepts classic daily categories with category-free Phase 3 aggregates", () => {
+    const state = thirtyDayState();
+
+    expect(state.operations?.dailyReports[0]).toMatchObject({
+      roomRevenueCents: 1_000,
+      departmentCostCents: 100,
+    });
+    expect(state.operations?.weeklyReports[0]).not.toHaveProperty("roomRevenueCents");
+    expect(state.operations?.monthlyCloses[0]).not.toHaveProperty("departmentCostCents");
+    expect(validateBrowserGameState(state, state.saveId)).toEqual(state);
+  });
+
+  it.each(Array.from({ length: 14 }, (_, index) => index + 1).filter((mask) => mask !== 5))(
     "rejects partial report-v2 category presence mask %s",
     (mask) => {
       const report = daily(1);
+      delete report.roomRevenueCents;
+      delete report.publicSpaceRevenueCents;
+      delete report.departmentCostCents;
+      delete report.facilityOperatingCostCents;
       const categoryValues = {
         roomRevenueCents: 1_000,
         publicSpaceRevenueCents: 0,

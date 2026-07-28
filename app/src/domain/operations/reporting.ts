@@ -9,21 +9,18 @@ import type {
 
 const MAX_SAFE_BIGINT = BigInt(Number.MAX_SAFE_INTEGER);
 const MIN_SAFE_BIGINT = -MAX_SAFE_BIGINT;
-const REPORT_V2_CATEGORY_FIELDS = [
-  "roomRevenueCents",
-  "publicSpaceRevenueCents",
-  "departmentCostCents",
-  "facilityOperatingCostCents",
-] as const;
+type ReportCategoryVersion = "legacy-none" | "legacy-classic" | "v2";
 
 function reportCategoryVersion(
   report: Readonly<OperationsDailyReport>,
-): "legacy" | "v2" {
-  const count = REPORT_V2_CATEGORY_FIELDS.filter(
-    (field) => report[field] !== undefined,
-  ).length;
-  if (count === 0) return "legacy";
-  if (count === REPORT_V2_CATEGORY_FIELDS.length) return "v2";
+): ReportCategoryVersion {
+  const hasRoom = report.roomRevenueCents !== undefined;
+  const hasPublicSpace = report.publicSpaceRevenueCents !== undefined;
+  const hasDepartment = report.departmentCostCents !== undefined;
+  const hasFacility = report.facilityOperatingCostCents !== undefined;
+  if (!hasRoom && !hasPublicSpace && !hasDepartment && !hasFacility) return "legacy-none";
+  if (hasRoom && !hasPublicSpace && hasDepartment && !hasFacility) return "legacy-classic";
+  if (hasRoom && hasPublicSpace && hasDepartment && hasFacility) return "v2";
   throw new Error("新版日报必须完整包含四项收入与成本分类");
 }
 
@@ -52,7 +49,7 @@ function validateReports(
 ): void {
   if (reports.length !== expectedLength) throw new Error(`${label}必须包含连续${expectedLength === 7 ? "七" : "三十"}天日报`);
   const seen = new Set<number>();
-  let phase4ReportCount = 0;
+  const versions = new Set<ReportCategoryVersion>();
   reports.forEach((report, index) => {
     safeInteger(report.day, "日报日期");
     if (report.day <= 0) throw new Error("日报日期必须是正安全整数");
@@ -61,9 +58,19 @@ function validateReports(
     if (index > 0 && report.day !== reports[index - 1].day + 1) {
       throw new Error("日报日期必须连续且严格递增");
     }
-    const isPhase4 = reportCategoryVersion(report) === "v2";
-    if (isPhase4) phase4ReportCount += 1;
-    if (isPhase4) {
+    const version = reportCategoryVersion(report);
+    versions.add(version);
+    if (version === "legacy-classic") {
+      const roomRevenueCents = safeInteger(report.roomRevenueCents!, "客房收入");
+      const departmentCostCents = safeInteger(report.departmentCostCents!, "部门成本");
+      if (roomRevenueCents !== report.revenueCents) {
+        throw new Error("经典日报客房收入必须等于营业收入");
+      }
+      if (departmentCostCents !== report.operatingCostCents) {
+        throw new Error("经典日报部门成本必须等于经营成本");
+      }
+    }
+    if (version === "v2") {
       const roomRevenueCents = safeInteger(report.roomRevenueCents!, "客房收入");
       const publicSpaceRevenueCents = safeInteger(report.publicSpaceRevenueCents!, "公共空间收入");
       const departmentCostCents = safeInteger(report.departmentCostCents!, "部门成本");
@@ -83,7 +90,7 @@ function validateReports(
       }
     }
   });
-  if (phase4ReportCount !== 0 && phase4ReportCount !== reports.length) {
+  if (versions.size !== 1) {
     throw new Error("同一报表窗口必须使用同一版本的日报合同");
   }
 }

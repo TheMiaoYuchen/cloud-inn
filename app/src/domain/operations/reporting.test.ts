@@ -61,16 +61,32 @@ describe("operations reporting", () => {
     });
   });
 
-  it("keeps Phase 3 reports compatible when all report-v2 categories are absent", () => {
-    const reports = Array.from({ length: 7 }, (_, index) => daily(index + 1));
+  it("keeps classic Phase 3 daily categories and aggregate shape byte-compatible", () => {
+    const reports = Array.from({ length: 7 }, (_, index) => ({
+      ...daily(index + 1),
+      roomRevenueCents: (index + 1) * 1_000,
+      departmentCostCents: (index + 1) * 100,
+    }));
 
-    expect(aggregateWeeklyReport(reports)).toMatchObject({
+    expect(aggregateWeeklyReport(reports)).toEqual({
+      week: 1,
+      startDay: 1,
+      endDay: 7,
       revenueCents: 28_000,
       operatingCostCents: 2_800,
+      financeCostCents: 280,
+      netIncomeCents: 24_920,
+      availableRooms: 35,
+      soldRooms: 28,
+      averageOccupancyBps: 400,
+      reputationBps: 5_004,
+      topResultCode: "segment:business",
+      topReasonCode: "price",
+      suggestedActionCode: "adjust-pricing",
     });
   });
 
-  it.each(Array.from({ length: 14 }, (_, index) => index + 1))(
+  it.each(Array.from({ length: 14 }, (_, index) => index + 1).filter((mask) => mask !== 5))(
     "rejects partial report-v2 category presence mask %s",
     (mask) => {
       const categoryValues = {

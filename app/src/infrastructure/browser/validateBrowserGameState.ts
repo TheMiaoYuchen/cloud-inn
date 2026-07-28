@@ -159,22 +159,21 @@ function validateNeed(raw: unknown, currentDay: number): void {
 type DailyTotals = {
   day: number; revenue: number; operating: number; finance: number; net: number;
   cash: number; reputation: number; available: number; sold: number; occupancy: number;
-  categoryVersion: "legacy" | "v2";
+  categoryVersion: ReportCategoryVersion;
   roomRevenue: number; publicSpaceRevenue: number;
   departmentCost: number; facilityOperatingCost: number;
 };
 
-const REPORT_V2_CATEGORY_FIELDS = [
-  "roomRevenueCents",
-  "publicSpaceRevenueCents",
-  "departmentCostCents",
-  "facilityOperatingCostCents",
-] as const;
+type ReportCategoryVersion = "legacy-none" | "legacy-classic" | "v2";
 
-function reportCategoryVersion(report: JsonObject, label: string): "legacy" | "v2" {
-  const count = REPORT_V2_CATEGORY_FIELDS.filter((field) => field in report).length;
-  if (count === 0) return "legacy";
-  if (count === REPORT_V2_CATEGORY_FIELDS.length) return "v2";
+function reportCategoryVersion(report: JsonObject, label: string): ReportCategoryVersion {
+  const hasRoom = "roomRevenueCents" in report;
+  const hasPublicSpace = "publicSpaceRevenueCents" in report;
+  const hasDepartment = "departmentCostCents" in report;
+  const hasFacility = "facilityOperatingCostCents" in report;
+  if (!hasRoom && !hasPublicSpace && !hasDepartment && !hasFacility) return "legacy-none";
+  if (hasRoom && !hasPublicSpace && hasDepartment && !hasFacility) return "legacy-classic";
+  if (hasRoom && hasPublicSpace && hasDepartment && hasFacility) return "v2";
   operationsError(`${label}必须完整包含四项收入与成本分类`);
 }
 
@@ -206,13 +205,13 @@ function validateDailyReport(raw: unknown, currentDay: number): DailyTotals {
   const cash = integer(report.endingCashCents, "日报期末现金");
   const reputation = bps(report.reputationBps, "日报声誉");
   const categoryVersion = reportCategoryVersion(report, "新版日报");
-  const roomRevenue = categoryVersion === "v2"
+  const roomRevenue = categoryVersion !== "legacy-none"
     ? integer(report.roomRevenueCents, "客房收入")
     : revenue;
   const publicSpaceRevenue = categoryVersion === "v2"
     ? integer(report.publicSpaceRevenueCents, "公共空间收入")
     : 0;
-  const departmentCost = categoryVersion === "v2"
+  const departmentCost = categoryVersion !== "legacy-none"
     ? integer(report.departmentCostCents, "部门成本")
     : operating;
   const facilityOperatingCost = categoryVersion === "v2"
@@ -291,7 +290,8 @@ function validateAggregate(raw: unknown, reports: readonly DailyTotals[], kind: 
   const versions = new Set(reports.map(({ categoryVersion }) => categoryVersion));
   if (versions.size !== 1) operationsError("周期报告不能混合日报版本");
   const categoryVersion = reports[0].categoryVersion;
-  if (reportCategoryVersion(aggregate, "新版周期报告") !== categoryVersion) {
+  const expectedAggregateVersion = categoryVersion === "v2" ? "v2" : "legacy-none";
+  if (reportCategoryVersion(aggregate, "新版周期报告") !== expectedAggregateVersion) {
     operationsError("周期报告与日报版本不一致");
   }
   if (aggregate.revenueCents !== totals.revenue || aggregate.netIncomeCents !== totals.net) operationsError("周期报告汇总不一致");
