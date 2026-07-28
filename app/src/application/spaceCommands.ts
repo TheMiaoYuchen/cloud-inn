@@ -161,7 +161,8 @@ function resolvePlacement(
   }
   const selected = sameTypeInstance
     ? compatibleSlots.find(({ id }) => id === sameTypeInstance.localPlacementId)
-    : compatibleSlots.find(({ id }) => !bySlot.has(id));
+    : compatibleSlots.find(({ id }) => !bySlot.has(id)) ??
+      compatibleSlots.find(({ id }) => bySlot.has(id));
   if (!selected) throw new Error("设施楼层没有可用公共空间槽位");
   return { floorIndex, slotId: selected.id, previous: bySlot.get(selected.id) };
 }

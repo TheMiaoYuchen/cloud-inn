@@ -262,23 +262,58 @@ describe("atomic public-space commands", () => {
     expect(next.phase4!.spaceBlueprints["space-blueprint:first"]).toBeUndefined();
   });
 
-  it("places a different type only in an empty compatible slot", async () => {
-    const { state, commands, floor } = scaleCommandFixture("space-replace-incompatible");
+  it("atomically replaces an occupied compatible slot with a different facility type", async () => {
+    const { state, commands, floor, store } = scaleCommandFixture("space-replace-incompatible");
     const first = await commands.placePublicSpace(state, validDiningBlueprint("space-blueprint:shared"), floor.id);
     const instance = first.phase4!.publicSpaces["public-space:floor:03:space:99"];
-    const template = first.phase4!.floorTemplates[floor.templateId];
-    template.publicSpaceSlots.push({
-      id: assertStableId("space:98"),
-      permittedTypes: ["bar"],
-    });
+    const sharedInstance = first.phase4!.publicSpaces["public-space:floor:02:space:02"];
+    sharedInstance.blueprintId = instance.blueprintId;
+    const oldValue = instance.committedBuildCostCents;
+    const snapshot = structuredClone(first);
     const bar = { ...validBarBlueprint(), id: assertStableId("space-blueprint:new-bar") };
+    store.commits = 0;
+
+    const next = await commands.placePublicSpace(first, bar, floor.id);
+    const replacement = next.phase4!.publicSpaces[instance.id];
+
+    expect(replacement).toMatchObject({
+      id: instance.id,
+      localPlacementId: "space:99",
+      type: "bar",
+      blueprintId: "space-blueprint:new-bar",
+    });
+    expect(next.phase4!.facilities["facility:floor:03:all-day-dining"]).toBeUndefined();
+    expect(next.phase4!.facilities["facility:floor:03:bar"].publicSpaceInstanceId)
+      .toBe(instance.id);
+    expect(next.cashCents).toBe(
+      first.cashCents + oldValue - replacement.committedBuildCostCents,
+    );
+    expect(next.phase4!.spaceBlueprints["space-blueprint:shared"]).toBeDefined();
+    expect(next.phase4!.floors.find(({ id }) => id === floor.id)!.publicSpaceInstanceIds)
+      .toContain(instance.id);
+    expect(first).toEqual(snapshot);
+    expect(store.commits).toBe(1);
+    expect(await store.load(state.saveId)).toEqual(next);
+  });
+
+  it("replaces the first occupied compatible slot by stable slot id", async () => {
+    const { state, commands, floor } = scaleCommandFixture("space-replace-first-occupied");
+    const first = await commands.placePublicSpace(
+      state,
+      validDiningBlueprint("space-blueprint:occupied-high"),
+      floor.id,
+    );
+    const template = first.phase4!.floorTemplates[floor.templateId];
+    const lowerSlot = template.publicSpaceSlots.find(({ id }) => id === "space:04")!;
+    lowerSlot.permittedTypes.push("bar");
+    template.publicSpaceSlots.reverse();
+    const bar = { ...validBarBlueprint(), id: assertStableId("space-blueprint:ordered-bar") };
 
     const next = await commands.placePublicSpace(first, bar, floor.id);
 
-    expect(next.phase4!.facilities["facility:floor:03:all-day-dining"]).toBeDefined();
-    expect(next.phase4!.facilities["facility:floor:03:bar"]).toBeDefined();
-    expect(next.phase4!.publicSpaces[instance.id].type).toBe("all-day-dining");
-    expect(next.phase4!.publicSpaces["public-space:floor:03:space:98"].type).toBe("bar");
+    expect(next.phase4!.publicSpaces["public-space:floor:03:space:04"].type).toBe("bar");
+    expect(next.phase4!.publicSpaces["public-space:floor:03:space:99"].type)
+      .toBe("all-day-dining");
   });
 
   it("does not charge, mutate, or expose reconciliation when persistence fails", async () => {
