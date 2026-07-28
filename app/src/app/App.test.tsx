@@ -3,6 +3,7 @@ import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { App } from "./App";
 import { InMemorySavePort } from "../infrastructure/memory/InMemorySavePort";
+import { createPhase4AcceptanceState } from "../testing/phase4Fixtures";
 
 vi.mock("../canvas/MinimalCanvas", () => ({
   MinimalCanvas: () => <div data-testid="pixi-host" />,
@@ -36,5 +37,38 @@ describe("App", () => {
 
     await userEvent.setup().click(screen.getByRole("link", { name: "楼层" }));
     expect(screen.getByRole("heading", { name: "Cloud Inn" })).toBeInTheDocument();
+  });
+
+  it("routes Phase 4 saves and legacy tower paths to one building overview", async () => {
+    const port = new InMemorySavePort();
+    const state = createPhase4AcceptanceState("save-1");
+    state.revision = 1;
+    await port.commit(0, state);
+    window.location.hash = "#/";
+    const view = render(<App savePort={port} />);
+
+    expect(await screen.findByRole("heading", { name: "云端塔楼总览" })).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "塔楼" })).toBeInTheDocument();
+    expect(screen.queryByRole("link", { name: "设计" })).not.toBeInTheDocument();
+
+    view.unmount();
+    window.location.hash = "#/tower";
+    render(<App savePort={port} />);
+    expect(await screen.findByRole("heading", { name: "云端塔楼总览" })).toBeInTheDocument();
+  });
+
+  it("guards direct legacy building routes and converts old floor links for Phase 4", async () => {
+    window.location.hash = "#/building";
+    const legacyView = render(<App savePort={new InMemorySavePort()} />);
+    expect(await screen.findByRole("heading", { name: "Cloud Inn" })).toBeInTheDocument();
+
+    legacyView.unmount();
+    const port = new InMemorySavePort();
+    const state = createPhase4AcceptanceState("save-1");
+    state.revision = 1;
+    await port.commit(0, state);
+    window.location.hash = "#/floor-plan";
+    render(<App savePort={port} />);
+    expect(await screen.findByRole("heading", { name: "云端塔楼总览" })).toBeInTheDocument();
   });
 });

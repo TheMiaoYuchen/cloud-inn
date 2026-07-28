@@ -16,7 +16,10 @@ export function AppShell() {
       <nav aria-label="主导航">
         <NavLink to="/">酒店总览</NavLink>
         <NavLink to="/canvas">楼层画布</NavLink>
-        {progressLink("/design", "设计", "design")}{progressLink("/floor-plan", "楼层", "floor")}{progressLink("/operations", "运营", "ready")}
+        {state?.phase4
+          ? <NavLink to="/building">塔楼</NavLink>
+          : <>{progressLink("/design", "设计", "design")}{progressLink("/floor-plan", "楼层", "floor")}</>}
+        {progressLink("/operations", "运营", "ready")}
       </nav>
       <Outlet />
     </div>

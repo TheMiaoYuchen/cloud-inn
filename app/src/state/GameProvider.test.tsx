@@ -8,6 +8,7 @@ import type { SavePort } from '../application/ports/SavePort';
 import { createNewGame, type GameState } from '../domain/game/state';
 import { createOperationsState } from '../domain/operations/createOperationsState';
 import { StrictMode } from 'react';
+import { createPhase4AcceptanceState } from '../testing/phase4Fixtures';
 
 afterEach(() => vi.useRealTimers());
 
@@ -322,5 +323,44 @@ describe('GameProvider flow', () => {
 
     expect(screen.getByText('save-generation-b:900:ok')).toBeInTheDocument();
     expect(commits).toBe(1);
+  });
+
+  it('serializes building and legacy commands through one queue and updates projections', async () => {
+    const initial = createPhase4AcceptanceState('provider-building');
+    initial.revision = 1;
+    initial.cashCents = 100_000_000;
+    initial.roomBlueprint = structuredClone(initial.phase2!.roomMaster);
+    initial.phase2!.roomMaster = null;
+    initial.phase4!.building.availableExpansionFloorNumbers = [17];
+    const backing = new InMemorySavePort();
+    await backing.commit(0, initial);
+    let activeCommits = 0;
+    let maximumActiveCommits = 0;
+    const port: SavePort = {
+      load: (saveId) => backing.load(saveId),
+      commit: async (revision, next) => {
+        activeCommits += 1;
+        maximumActiveCommits = Math.max(maximumActiveCommits, activeCommits);
+        await Promise.resolve();
+        await backing.commit(revision, next);
+        activeCommits -= 1;
+      },
+    };
+    function Probe() {
+      const { state, building, commandPending, commands } = useGame();
+      return <>
+        <output>{`${state?.revision}:${state?.rateCents}:${building?.floors.length}:${building?.floors[0]?.floor.floorNumber}:${commandPending ? 'busy' : 'idle'}`}</output>
+        <button onClick={() => { void commands.purchaseFloor(17, 'dense-ring'); void commands.setRate(123_400); }}>run</button>
+      </>;
+    }
+    const user = userEvent.setup();
+    render(<GameProvider savePort={port} saveId={initial.saveId}><Probe /></GameProvider>);
+    await screen.findByText(/1:.*:16:16:idle/);
+
+    await user.click(screen.getByRole('button', { name: 'run' }));
+
+    expect(await screen.findByText('3:123400:17:17:idle')).toBeInTheDocument();
+    expect(maximumActiveCommits).toBe(1);
+    expect((await backing.load(initial.saveId))?.revision).toBe(3);
   });
 });

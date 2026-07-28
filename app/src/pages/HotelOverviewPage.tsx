@@ -1,4 +1,9 @@
+import { Navigate } from "react-router-dom";
+import { useGame } from "../state/GameProvider";
+
 export function HotelOverviewPage() {
+  const { state } = useGame();
+  if (state?.phase4) return <Navigate to="/building" replace />;
   return (
     <main>
       <h1>Cloud Inn</h1>
