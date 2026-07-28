@@ -64,6 +64,16 @@ export interface SpaceMetricRules {
   serviceDistanceAdvisoryMaximum: number;
 }
 
+const SPACE_METRIC_FIELDS = [
+  "constructionCellCostCents",
+  "constructionItemCostCents",
+  "baseAppealBps",
+  "appealPerCellBps",
+  "basePrivacyBps",
+  "quietZonePrivacyBps",
+  "serviceDistanceAdvisoryMaximum",
+] as const satisfies readonly (keyof SpaceMetricRules)[];
+
 export interface SpaceTypeDefinition {
   id: StableId;
   type: PublicSpaceType;
@@ -371,8 +381,11 @@ export function validateContentCatalog(
           !(["guest", "service", "feature"] as const).includes(rule.role))) {
       throw new Error("设施物件规则无效");
     }
-    const metricValues = Object.values(entry.metrics);
-    if (metricValues.some((value) => !Number.isSafeInteger(value) || value < 0) ||
+    if (SPACE_METRIC_FIELDS.some((field) => {
+      const value = entry.metrics[field];
+      return !Object.prototype.hasOwnProperty.call(entry.metrics, field) ||
+        !Number.isSafeInteger(value) || value < 0;
+    }) ||
         entry.metrics.constructionCellCostCents <= 0 ||
         entry.metrics.constructionItemCostCents <= 0 ||
         entry.metrics.baseAppealBps > 10_000 || entry.metrics.appealPerCellBps > 10_000 ||

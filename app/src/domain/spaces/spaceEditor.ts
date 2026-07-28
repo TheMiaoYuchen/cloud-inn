@@ -463,11 +463,15 @@ function assertHistoryLimit(limit: number): void {
   }
 }
 
-function cloneSpaceHistory(history: SpaceHistory): SpaceHistory {
+function lastSnapshots(snapshots: SpaceDraft[], count: number): SpaceDraft[] {
+  return count === 0 ? [] : snapshots.slice(-count);
+}
+
+function cloneSpaceHistory(history: SpaceHistory, limit: number): SpaceHistory {
   return {
-    past: history.past.map(cloneSpaceDraft),
+    past: lastSnapshots(history.past, limit).map(cloneSpaceDraft),
     present: cloneSpaceDraft(history.present),
-    future: history.future.map(cloneSpaceDraft),
+    future: history.future.slice(0, limit).map(cloneSpaceDraft),
   };
 }
 
@@ -478,7 +482,10 @@ export function commitSpaceEdit(
 ): SpaceHistory {
   assertHistoryLimit(limit);
   return {
-    past: [...history.past.map(cloneSpaceDraft), cloneSpaceDraft(history.present)].slice(-limit),
+    past: [
+      ...lastSnapshots(history.past, limit - 1).map(cloneSpaceDraft),
+      cloneSpaceDraft(history.present),
+    ],
     present: cloneSpaceDraft(next),
     future: [],
   };
@@ -489,13 +496,16 @@ export function undoSpaceEdit(
   limit = SPACE_EDITOR_HISTORY_LIMIT,
 ): SpaceHistory {
   assertHistoryLimit(limit);
-  if (history.past.length === 0) return cloneSpaceHistory(history);
+  if (history.past.length === 0) return cloneSpaceHistory(history, limit);
   const previous = history.past[history.past.length - 1];
   if (!previous) return history;
   return {
-    past: history.past.slice(0, -1).map(cloneSpaceDraft),
+    past: lastSnapshots(history.past.slice(0, -1), limit).map(cloneSpaceDraft),
     present: cloneSpaceDraft(previous),
-    future: [cloneSpaceDraft(history.present), ...history.future.map(cloneSpaceDraft)].slice(0, limit),
+    future: [
+      cloneSpaceDraft(history.present),
+      ...history.future.slice(0, limit - 1).map(cloneSpaceDraft),
+    ],
   };
 }
 
@@ -505,10 +515,13 @@ export function redoSpaceEdit(
 ): SpaceHistory {
   assertHistoryLimit(limit);
   const next = history.future[0];
-  if (!next) return cloneSpaceHistory(history);
+  if (!next) return cloneSpaceHistory(history, limit);
   return {
-    past: [...history.past.map(cloneSpaceDraft), cloneSpaceDraft(history.present)].slice(-limit),
+    past: [
+      ...lastSnapshots(history.past, limit - 1).map(cloneSpaceDraft),
+      cloneSpaceDraft(history.present),
+    ],
     present: cloneSpaceDraft(next),
-    future: history.future.slice(1).map(cloneSpaceDraft),
+    future: history.future.slice(1, limit + 1).map(cloneSpaceDraft),
   };
 }

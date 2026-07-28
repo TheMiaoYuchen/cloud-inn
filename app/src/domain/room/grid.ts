@@ -3,8 +3,10 @@ import type { Cell, ZoneKind } from "../game/state";
 import {
   createSpaceRectangleCells,
   removeSpaceCellAt,
-  replaceSpaceCell,
 } from "../spaces/spaceEditor";
+
+// The legacy scoring contract includes a 100 × 101 room fixture.
+export const ROOM_MAX_CELLS = 10_100;
 
 export type RoomValidation =
   | { ok: true; areaSquareMeters: number }
@@ -23,14 +25,11 @@ function compareCells(a: Cell, b: Cell): number {
 }
 
 function normalizeCells(cells: Cell[]): Cell[] {
-  return cells.reduce(
-    (normalized, cell) => replaceSpaceCell(normalized, {
-      x: cell.x,
-      y: cell.y,
-      zoneId: cell.zone,
-    }),
-    [] as Array<{ x: number; y: number; zoneId: string }>,
-  ).map(({ x, y, zoneId }) => ({ x, y, zone: zoneId as ZoneKind })).sort(compareCells);
+  const byCoordinate = new Map<string, Cell>();
+  for (const cell of cells) {
+    byCoordinate.set(coordinateKey(cell.x, cell.y), { ...cell });
+  }
+  return [...byCoordinate.values()].sort(compareCells);
 }
 
 export function createRectangle(
@@ -55,7 +54,7 @@ export function createRectangle(
     return createSpaceRectangleCells(
       { x, y, width, height },
       zone,
-      Number.MAX_SAFE_INTEGER,
+      ROOM_MAX_CELLS,
     )
       .map(({ x: cellX, y: cellY, zoneId }) => ({
         x: cellX,
@@ -65,6 +64,9 @@ export function createRectangle(
   } catch (error) {
     if (error instanceof Error && error.message === "矩形参数必须是有限整数且宽高不能为负数") {
       throw new Error("矩形参数必须是有限整数，宽高不能为负数");
+    }
+    if (error instanceof Error && error.message === "空间单元数量超过上限") {
+      throw new Error("房间单元数量超过上限");
     }
     throw error;
   }
@@ -95,10 +97,12 @@ export function validateRoomCells(
   columns: number,
   rows: number,
 ): RoomValidation {
-  const normalizedCells = normalizeCells(cells);
-
-  if (normalizedCells.length === 0) {
+  if (cells.length === 0) {
     return { ok: false, reason: "房间不能为空" };
+  }
+
+  if (cells.length > ROOM_MAX_CELLS) {
+    return { ok: false, reason: "房间单元数量超过上限" };
   }
 
   if (
@@ -106,7 +110,7 @@ export function validateRoomCells(
     !isFiniteInteger(rows) ||
     columns <= 0 ||
     rows <= 0 ||
-    normalizedCells.some(
+    cells.some(
       (cell) =>
         !isFiniteInteger(cell.x) ||
         !isFiniteInteger(cell.y) ||
@@ -118,6 +122,8 @@ export function validateRoomCells(
   ) {
     return { ok: false, reason: "房间超出网格边界" };
   }
+
+  const normalizedCells = normalizeCells(cells);
 
   const zones = new Set(normalizedCells.map((cell) => cell.zone));
   if (!zones.has("bedroom") || !zones.has("bathroom")) {

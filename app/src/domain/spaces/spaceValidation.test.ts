@@ -538,6 +538,37 @@ describe("public-space validation strategies", () => {
     );
   });
 
+  it("clamps an imported service-distance average that exceeds the safe integer range", () => {
+    const maximum = Number.MAX_SAFE_INTEGER;
+    const draft: SpaceDraft = {
+      type: "executive-lounge",
+      columns: maximum,
+      rows: maximum,
+      cells: [
+        { x: 0, y: 0, zoneId: "zone:quiet" },
+        { x: maximum - 2, y: maximum - 2, zoneId: "zone:quiet" },
+      ],
+      items: [
+        {
+          id: "service:1", catalogItemId: "item:service-counter",
+          x: 0, y: 0, width: 1, height: 1, rotation: 0,
+        },
+        {
+          id: "seat:1", catalogItemId: "item:lounge-seat",
+          x: maximum - 2, y: maximum - 2, width: 1, height: 1, rotation: 0,
+        },
+      ],
+      walls: [],
+      doors: [],
+      windows: [],
+    };
+
+    const result = validatePublicSpace(draft);
+
+    expect(result.metrics.serviceDistance).toBe(maximum);
+    expect(result.advisory.map(({ code }) => code)).toContain("service-distance");
+  });
+
   it("excludes unknown and colliding items from every metric", () => {
     const draft = playableDraft("gym");
     const baseline = validatePublicSpace(draft).metrics;

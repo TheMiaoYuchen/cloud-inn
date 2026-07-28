@@ -21,6 +21,7 @@ import {
   resizeRoom,
   rotateRoom,
 } from "./transformRoom";
+import { SPACE_EDITOR_HISTORY_LIMIT } from "../spaces/spaceTypes";
 
 const cells: Cell[] = [
   { x: 0, y: 0, zone: "bedroom" },
@@ -28,6 +29,18 @@ const cells: Cell[] = [
   { x: 0, y: 1, zone: "bathroom" },
   { x: 1, y: 1, zone: "bathroom" },
 ];
+
+function markedRoomDraft(marker: number) {
+  return createRoomDraft(cells, marker + 1, 1);
+}
+
+function poisonRoomDraft(message: string) {
+  const draft = createRoomDraft(cells, 1, 1);
+  Object.defineProperty(draft.cells, "map", {
+    value: () => { throw new Error(message); },
+  });
+  return draft;
+}
 
 describe("room editing primitives", () => {
   it("round-trips through the neutral editor with deep-independent zone adapters", () => {
@@ -164,6 +177,40 @@ describe("room editing primitives", () => {
     redone.present.doors.push({ x: 0, y: 0, side: "north" });
     expect(history.present.cells[0].zone).toBe("bedroom");
     expect(history.present.doors).toEqual([]);
+  });
+
+  it("slices imported room history in undo directions before adapting snapshots", () => {
+    const past = Array.from({ length: SPACE_EDITOR_HISTORY_LIMIT + 2 }, (_, index) =>
+      markedRoomDraft(index));
+    const future = Array.from({ length: SPACE_EDITOR_HISTORY_LIMIT + 2 }, (_, index) =>
+      markedRoomDraft(300 + index));
+    past[0] = poisonRoomDraft("discarded room undo past was adapted");
+    future[SPACE_EDITOR_HISTORY_LIMIT - 1] = poisonRoomDraft(
+      "discarded room undo future was adapted",
+    );
+
+    const undone = undoRoomEdit({ past, present: markedRoomDraft(200), future });
+
+    expect(undone.past).toHaveLength(SPACE_EDITOR_HISTORY_LIMIT);
+    expect(undone.present.columns).toBe(102);
+    expect(undone.future).toHaveLength(SPACE_EDITOR_HISTORY_LIMIT);
+  });
+
+  it("slices imported room history in redo directions before adapting snapshots", () => {
+    const past = Array.from({ length: SPACE_EDITOR_HISTORY_LIMIT + 2 }, (_, index) =>
+      markedRoomDraft(index));
+    const future = Array.from({ length: SPACE_EDITOR_HISTORY_LIMIT + 2 }, (_, index) =>
+      markedRoomDraft(300 + index));
+    past[0] = poisonRoomDraft("discarded room redo past was adapted");
+    future[SPACE_EDITOR_HISTORY_LIMIT + 1] = poisonRoomDraft(
+      "discarded room redo future was adapted",
+    );
+
+    const redone = redoRoomEdit({ past, present: markedRoomDraft(200), future });
+
+    expect(redone.past).toHaveLength(SPACE_EDITOR_HISTORY_LIMIT);
+    expect(redone.present.columns).toBe(301);
+    expect(redone.future).toHaveLength(SPACE_EDITOR_HISTORY_LIMIT);
   });
 });
 

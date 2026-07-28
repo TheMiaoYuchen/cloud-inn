@@ -12,7 +12,18 @@ import {
   ZONE_CATALOG,
   validateContentCatalog,
   type FacilityCatalogEntry,
+  type SpaceMetricRules,
 } from "./contentCatalog";
+
+const spaceMetricFields = [
+  "constructionCellCostCents",
+  "constructionItemCostCents",
+  "baseAppealBps",
+  "appealPerCellBps",
+  "basePrivacyBps",
+  "quietZonePrivacyBps",
+  "serviceDistanceAdvisoryMaximum",
+] as const satisfies readonly (keyof SpaceMetricRules)[];
 
 describe("content catalog", () => {
   it("exposes all approved facilities in deterministic display order", () => {
@@ -231,6 +242,25 @@ describe("content catalog", () => {
     mutate(catalog);
 
     expect(() => validateContentCatalog(catalog)).toThrow();
+  });
+
+  it.each(spaceMetricFields)("rejects a missing metric field: %s", (field) => {
+    const catalog = structuredClone(FACILITY_CATALOG) as any[];
+    delete catalog[0].metrics[field];
+
+    expect(() => validateContentCatalog(catalog)).toThrow("设施运营指标规则无效");
+  });
+
+  it.each([
+    ["undefined", undefined],
+    ["NaN", Number.NaN],
+    ["Infinity", Number.POSITIVE_INFINITY],
+    ["negative", -1],
+  ])("rejects an explicit %s metric value", (_label, value) => {
+    const catalog = structuredClone(FACILITY_CATALOG) as any[];
+    catalog[0].metrics.serviceDistanceAdvisoryMaximum = value;
+
+    expect(() => validateContentCatalog(catalog)).toThrow("设施运营指标规则无效");
   });
 
   it("defines every editor and strategy zone in the single reference catalog", () => {

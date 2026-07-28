@@ -163,7 +163,11 @@ function calculateMetrics(
         pairs += 1n;
       }
     }
-    serviceDistance = safeNumber((total + pairs / 2n) / pairs, "服务距离");
+    const average = (total + pairs / 2n) / pairs;
+    serviceDistance = safeNumber(
+      average > BigInt(Number.MAX_SAFE_INTEGER) ? BigInt(Number.MAX_SAFE_INTEGER) : average,
+      "服务距离",
+    );
   }
   return { constructionCostCents, capacity, guestAppealBps, privacyBps, serviceDistance };
 }

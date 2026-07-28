@@ -166,14 +166,32 @@ export function createRoomHistory(initial: RoomDraft, edits: RoomDraft[] = []): 
 }
 
 export function undoRoomEdit(history: RoomHistory): RoomHistory {
+  const hasPast = history.past.length > 0;
   return spaceHistoryToRoomHistory(undoSpaceEdit(
-    roomHistoryToSpaceHistory(history),
+    roomHistoryToSpaceHistory({
+      ...history,
+      past: history.past.slice(-(hasPast
+        ? SPACE_EDITOR_HISTORY_LIMIT + 1
+        : SPACE_EDITOR_HISTORY_LIMIT)),
+      future: history.future.slice(0, hasPast
+        ? SPACE_EDITOR_HISTORY_LIMIT - 1
+        : SPACE_EDITOR_HISTORY_LIMIT),
+    }),
   ));
 }
 
 export function redoRoomEdit(history: RoomHistory): RoomHistory {
+  const hasFuture = history.future.length > 0;
   return spaceHistoryToRoomHistory(redoSpaceEdit(
-    roomHistoryToSpaceHistory(history),
+    roomHistoryToSpaceHistory({
+      ...history,
+      past: history.past.slice(-(hasFuture
+        ? SPACE_EDITOR_HISTORY_LIMIT - 1
+        : SPACE_EDITOR_HISTORY_LIMIT)),
+      future: history.future.slice(0, hasFuture
+        ? SPACE_EDITOR_HISTORY_LIMIT + 1
+        : SPACE_EDITOR_HISTORY_LIMIT),
+    }),
   ));
 }
 

@@ -5,6 +5,7 @@ import {
   addCell,
   createRectangle,
   eraseCell,
+  ROOM_MAX_CELLS,
   validateRoomCells,
 } from "./grid";
 
@@ -43,6 +44,26 @@ describe("createRectangle", () => {
       );
     },
   );
+
+  it("accepts the legacy room-cell cap and rejects the first cell beyond it", () => {
+    expect(createRectangle(0, 0, ROOM_MAX_CELLS, 1, "bedroom"))
+      .toHaveLength(ROOM_MAX_CELLS);
+    expect(() => createRectangle(0, 0, ROOM_MAX_CELLS + 1, 1, "bedroom"))
+      .toThrow("房间单元数量超过上限");
+  });
+
+  it("rejects a huge rectangle before entering a cell-generation loop", () => {
+    const startedAt = performance.now();
+
+    expect(() => createRectangle(
+      0,
+      0,
+      Number.MAX_SAFE_INTEGER,
+      Number.MAX_SAFE_INTEGER,
+      "bedroom",
+    )).toThrow("房间单元数量超过上限");
+    expect(performance.now() - startedAt).toBeLessThan(100);
+  });
 });
 
 describe("cell editing", () => {
@@ -187,5 +208,23 @@ describe("validateRoomCells", () => {
         12,
       ),
     ).toEqual({ ok: true, areaSquareMeters: 0.5 });
+  });
+
+  it("rejects oversized imported cells before reading or normalizing entries", () => {
+    const imported = Array.from({ length: ROOM_MAX_CELLS + 1 }, (_, x) => ({
+      x,
+      y: 0,
+      zone: "bedroom" as const,
+    }));
+    Object.defineProperty(imported[0], "x", {
+      get: () => { throw new Error("oversized imported cell was read"); },
+    });
+    const startedAt = performance.now();
+
+    expect(validateRoomCells(imported, ROOM_MAX_CELLS + 1, 1)).toEqual({
+      ok: false,
+      reason: "房间单元数量超过上限",
+    });
+    expect(performance.now() - startedAt).toBeLessThan(100);
   });
 });

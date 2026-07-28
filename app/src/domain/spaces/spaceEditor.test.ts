@@ -32,7 +32,20 @@ import {
   SPACE_EDITOR_MAX_CELLS,
   SPACE_EDITOR_MAX_ITEMS,
   SPACE_EDITOR_MAX_OPENINGS,
+  type SpaceDraft,
 } from "./spaceTypes";
+
+function markedSpaceDraft(marker: number): SpaceDraft {
+  return createSpaceDraft("gym", marker + 1, 1);
+}
+
+function poisonSpaceDraft(message: string): SpaceDraft {
+  const draft = createSpaceDraft("gym", 1, 1);
+  Object.defineProperty(draft.cells, "map", {
+    value: () => { throw new Error(message); },
+  });
+  return draft;
+}
 
 function legacyValidRoomDraft() {
   const cells: Cell[] = [
@@ -413,6 +426,88 @@ describe("shared space editor boundaries", () => {
       () => createSpaceDraft("gym", 2, 2),
     );
     expect(() => createSpaceHistory(initial, [discarded, ...retained])).not.toThrow();
+  });
+
+  it("bounds imported commit history before cloning its retained past", () => {
+    const past = Array.from({ length: SPACE_EDITOR_HISTORY_LIMIT + 2 }, (_, index) =>
+      markedSpaceDraft(index));
+    past[0] = poisonSpaceDraft("discarded commit past was cloned");
+
+    const committed = commitSpaceEdit({
+      past,
+      present: markedSpaceDraft(200),
+      future: [poisonSpaceDraft("cleared commit future was cloned")],
+    }, markedSpaceDraft(300));
+
+    expect(committed.past).toHaveLength(SPACE_EDITOR_HISTORY_LIMIT);
+    expect(committed.past[0].columns).toBe(4);
+    expect(committed.past[committed.past.length - 1]?.columns).toBe(201);
+    expect(committed.future).toEqual([]);
+  });
+
+  it("bounds both imported undo directions before cloning retained snapshots", () => {
+    const past = Array.from({ length: SPACE_EDITOR_HISTORY_LIMIT + 2 }, (_, index) =>
+      markedSpaceDraft(index));
+    const future = Array.from({ length: SPACE_EDITOR_HISTORY_LIMIT + 2 }, (_, index) =>
+      markedSpaceDraft(300 + index));
+    past[0] = poisonSpaceDraft("discarded undo past was cloned");
+    future[SPACE_EDITOR_HISTORY_LIMIT - 1] = poisonSpaceDraft(
+      "discarded undo future was cloned",
+    );
+
+    const undone = undoSpaceEdit({ past, present: markedSpaceDraft(200), future });
+
+    expect(undone.past).toHaveLength(SPACE_EDITOR_HISTORY_LIMIT);
+    expect(undone.past[0].columns).toBe(2);
+    expect(undone.present.columns).toBe(102);
+    expect(undone.future).toHaveLength(SPACE_EDITOR_HISTORY_LIMIT);
+    expect(undone.future[0].columns).toBe(201);
+    expect(undone.future[undone.future.length - 1]?.columns).toBe(399);
+  });
+
+  it("bounds both imported redo directions before cloning retained snapshots", () => {
+    const past = Array.from({ length: SPACE_EDITOR_HISTORY_LIMIT + 2 }, (_, index) =>
+      markedSpaceDraft(index));
+    const future = Array.from({ length: SPACE_EDITOR_HISTORY_LIMIT + 2 }, (_, index) =>
+      markedSpaceDraft(300 + index));
+    past[0] = poisonSpaceDraft("discarded redo past was cloned");
+    future[SPACE_EDITOR_HISTORY_LIMIT + 1] = poisonSpaceDraft(
+      "discarded redo future was cloned",
+    );
+
+    const redone = redoSpaceEdit({ past, present: markedSpaceDraft(200), future });
+
+    expect(redone.past).toHaveLength(SPACE_EDITOR_HISTORY_LIMIT);
+    expect(redone.past[0].columns).toBe(4);
+    expect(redone.past[redone.past.length - 1]?.columns).toBe(201);
+    expect(redone.present.columns).toBe(301);
+    expect(redone.future).toHaveLength(SPACE_EDITOR_HISTORY_LIMIT);
+    expect(redone.future[0].columns).toBe(302);
+    expect(redone.future[redone.future.length - 1]?.columns).toBe(401);
+  });
+
+  it("bounds imported future before cloning an empty undo path", () => {
+    const future = Array.from({ length: SPACE_EDITOR_HISTORY_LIMIT + 1 }, (_, index) =>
+      markedSpaceDraft(index));
+    future[SPACE_EDITOR_HISTORY_LIMIT] = poisonSpaceDraft(
+      "discarded empty-undo future was cloned",
+    );
+
+    const undone = undoSpaceEdit({ past: [], present: markedSpaceDraft(200), future });
+
+    expect(undone.future).toHaveLength(SPACE_EDITOR_HISTORY_LIMIT);
+    expect(undone.future[undone.future.length - 1]?.columns).toBe(SPACE_EDITOR_HISTORY_LIMIT);
+  });
+
+  it("bounds imported past before cloning an empty redo path", () => {
+    const past = Array.from({ length: SPACE_EDITOR_HISTORY_LIMIT + 1 }, (_, index) =>
+      markedSpaceDraft(index));
+    past[0] = poisonSpaceDraft("discarded empty-redo past was cloned");
+
+    const redone = redoSpaceEdit({ past, present: markedSpaceDraft(200), future: [] });
+
+    expect(redone.past).toHaveLength(SPACE_EDITOR_HISTORY_LIMIT);
+    expect(redone.past[0].columns).toBe(2);
   });
 
   it("bounds selection input and rejects non-safe coordinates before calculating", () => {
