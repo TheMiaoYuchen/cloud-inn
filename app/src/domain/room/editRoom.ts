@@ -1,4 +1,12 @@
 import type { Cell, ZoneKind } from "../game/state";
+import {
+  cloneSpaceDraft,
+  createSpaceHistory,
+  redoSpaceEdit,
+  spaceSelectionBounds,
+  undoSpaceEdit,
+} from "../spaces/spaceEditor";
+import type { SpaceDraft, SpaceHistory } from "../spaces/spaceTypes";
 import { addCell, eraseCell, validateRoomCells } from "./grid";
 
 export type RoomSide = "north" | "east" | "south" | "west";
@@ -19,9 +27,34 @@ export type RoomHistory = {
 };
 
 function cloneDraft(draft: RoomDraft): RoomDraft {
+  return spaceDraftToRoomDraft(cloneSpaceDraft(roomDraftToSpaceDraft(draft)));
+}
+
+export function roomDraftToSpaceDraft(draft: RoomDraft): SpaceDraft {
   return {
-    ...draft,
-    cells: draft.cells.map((cell) => ({ ...cell })),
+    type: "sky-lobby",
+    columns: draft.columns,
+    rows: draft.rows,
+    cells: draft.cells.map(({ x, y, zone }) => ({ x, y, zoneId: zone })),
+    items: [],
+    walls: draft.walls.map((opening) => ({ ...opening })),
+    doors: draft.doors.map((opening) => ({ ...opening })),
+    windows: draft.windows.map((opening) => ({ ...opening })),
+  };
+}
+
+export function spaceDraftToRoomDraft(draft: SpaceDraft): RoomDraft {
+  const cells = draft.cells.map(({ x, y, zoneId }) => {
+    if (zoneId !== "bedroom" && zoneId !== "bathroom") {
+      throw new Error("客房分区必须是卧室或卫浴");
+    }
+    const zone: ZoneKind = zoneId;
+    return { x, y, zone };
+  });
+  return {
+    cells,
+    columns: draft.columns,
+    rows: draft.rows,
     walls: draft.walls.map((opening) => ({ ...opening })),
     doors: draft.doors.map((opening) => ({ ...opening })),
     windows: draft.windows.map((opening) => ({ ...opening })),
@@ -114,12 +147,7 @@ export function selectionBounds(
   selection: Array<{ x: number; y: number }>,
 ): { x: number; y: number; width: number; height: number } | null {
   void draft;
-  if (selection.length === 0) return null;
-  const xs = selection.map(({ x }) => x);
-  const ys = selection.map(({ y }) => y);
-  const x = Math.min(...xs);
-  const y = Math.min(...ys);
-  return { x, y, width: Math.max(...xs) - x + 1, height: Math.max(...ys) - y + 1 };
+  return spaceSelectionBounds(selection);
 }
 
 export function validateRoomDraft(draft: RoomDraft) {
@@ -141,31 +169,42 @@ export function validateRoomDraft(draft: RoomDraft) {
 }
 
 export function createRoomHistory(initial: RoomDraft, edits: RoomDraft[] = []): RoomHistory {
-  const snapshots = [initial, ...edits].map(cloneDraft);
-  return {
-    past: snapshots.slice(0, -1),
-    present: snapshots[snapshots.length - 1] ?? cloneDraft(initial),
-    future: [],
-  };
+  return spaceHistoryToRoomHistory(createSpaceHistory(
+    roomDraftToSpaceDraft(initial),
+    edits.map(roomDraftToSpaceDraft),
+    Number.MAX_SAFE_INTEGER,
+  ));
 }
 
 export function undoRoomEdit(history: RoomHistory): RoomHistory {
   if (history.past.length === 0) return history;
-  const previous = history.past[history.past.length - 1];
-  return {
-    past: history.past.slice(0, -1).map(cloneDraft),
-    present: cloneDraft(previous),
-    future: [cloneDraft(history.present), ...history.future.map(cloneDraft)],
-  };
+  return spaceHistoryToRoomHistory(undoSpaceEdit(
+    roomHistoryToSpaceHistory(history),
+    Number.MAX_SAFE_INTEGER,
+  ));
 }
 
 export function redoRoomEdit(history: RoomHistory): RoomHistory {
   if (history.future.length === 0) return history;
-  const next = history.future[0];
+  return spaceHistoryToRoomHistory(redoSpaceEdit(
+    roomHistoryToSpaceHistory(history),
+    Number.MAX_SAFE_INTEGER,
+  ));
+}
+
+function roomHistoryToSpaceHistory(history: RoomHistory): SpaceHistory {
   return {
-    past: [...history.past.map(cloneDraft), cloneDraft(history.present)],
-    present: cloneDraft(next),
-    future: history.future.slice(1).map(cloneDraft),
+    past: history.past.map(roomDraftToSpaceDraft),
+    present: roomDraftToSpaceDraft(history.present),
+    future: history.future.map(roomDraftToSpaceDraft),
+  };
+}
+
+function spaceHistoryToRoomHistory(history: SpaceHistory): RoomHistory {
+  return {
+    past: history.past.map(spaceDraftToRoomDraft),
+    present: spaceDraftToRoomDraft(history.present),
+    future: history.future.map(spaceDraftToRoomDraft),
   };
 }
 

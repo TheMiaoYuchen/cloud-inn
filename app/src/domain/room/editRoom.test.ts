@@ -10,7 +10,9 @@ import {
   eraseRoomCell,
   paintRoomCell,
   redoRoomEdit,
+  roomDraftToSpaceDraft,
   selectionBounds,
+  spaceDraftToRoomDraft,
   undoRoomEdit,
   validateRoomDraft,
 } from "./editRoom";
@@ -28,6 +30,29 @@ const cells: Cell[] = [
 ];
 
 describe("room editing primitives", () => {
+  it("round-trips through the neutral editor with deep-independent zone adapters", () => {
+    const room = createRoomDraft(cells, 8, 12);
+    const space = roomDraftToSpaceDraft(room);
+    const restored = spaceDraftToRoomDraft(space);
+
+    expect(space.cells[0]).toEqual({ x: 0, y: 0, zoneId: "bedroom" });
+    expect(restored).toEqual(room);
+    space.cells[0].zoneId = "mutated";
+    space.doors.push({ x: 0, y: 0, side: "north" });
+    expect(room.cells[0]).toEqual({ x: 0, y: 0, zone: "bedroom" });
+    expect(room.doors).toEqual([]);
+    expect(restored.cells[0]).toEqual({ x: 0, y: 0, zone: "bedroom" });
+  });
+
+  it("rejects neutral zones that are not valid legacy room zones", () => {
+    const space = roomDraftToSpaceDraft(createRoomDraft(cells, 8, 12));
+    space.cells[0].zoneId = "zone:arrival";
+
+    expect(() => spaceDraftToRoomDraft(space)).toThrow(
+      "客房分区必须是卧室或卫浴",
+    );
+  });
+
   it("paints and erases immutably, and reports selection bounds", () => {
     const draft = createRoomDraft(cells, 8, 12);
     const painted = paintRoomCell(draft, { x: 2, y: 1, zone: "bedroom" });
