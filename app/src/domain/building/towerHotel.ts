@@ -20,12 +20,19 @@ const FIRST_TOWER_ID = TOWER_CATALOG[0].id;
 const GUEST_TEMPLATE_ID = FLOOR_TEMPLATE_CATALOG[0].id;
 const EXPANSION_COST_CENTS = assertSafeMoney(25_000_000);
 const MAXIMUM_TOWER_FLOOR = 64;
+const MAXIMUM_ROOM_COUNT = 240;
 
 export interface ExpansionPreview {
   floorNumber: number;
   costCents: number;
   available: boolean;
-  reason: "available" | "phase4-required" | "already-purchased" | "not-offered";
+  reason:
+    | "available"
+    | "phase4-required"
+    | "already-purchased"
+    | "not-offered"
+    | "capacity-limit"
+    | "no-guest-template";
 }
 
 export interface FloorCopyResult {
@@ -152,6 +159,25 @@ function cloneFloor(floor: HotelFloor): HotelFloor {
   };
 }
 
+function firstGuestFloor(
+  state: Readonly<ContentScaleState>,
+): Readonly<HotelFloor> | undefined {
+  return [...state.floors]
+    .filter(({ use }) => use === "guest")
+    .sort(
+      (left, right) =>
+        left.floorNumber - right.floorNumber || left.id.localeCompare(right.id),
+    )[0];
+}
+
+function projectedExpansionRoomCount(
+  state: Readonly<ContentScaleState>,
+  source: Readonly<HotelFloor>,
+): number {
+  return state.floors.reduce((total, floor) => total + floor.rooms.length, 0) +
+    source.rooms.length;
+}
+
 function roomId(targetFloorId: StableId, localPlacementId: StableId): StableId {
   return assertStableId(`room:${targetFloorId}:${localPlacementId}`);
 }
@@ -230,6 +256,37 @@ function authoritativeRoomArea(state: Readonly<GameState>, room: Readonly<RoomIn
   throw new Error(`找不到客房 ${room.id} 的权威设计`);
 }
 
+function validateLegacyPlacementLayout(
+  placements: readonly ScaleRoomPlacement[],
+  columns: number,
+  rows: number,
+): void {
+  for (const [index, placement] of placements.entries()) {
+    if (
+      !Number.isInteger(placement.anchorX) ||
+      !Number.isInteger(placement.anchorY) ||
+      !Number.isInteger(placement.width) ||
+      !Number.isInteger(placement.height) ||
+      placement.anchorX < 0 ||
+      placement.anchorY < 0 ||
+      placement.width <= 0 ||
+      placement.height <= 0 ||
+      placement.anchorX + placement.width > columns ||
+      placement.anchorY + placement.height > rows
+    ) {
+      throw new Error(`旧酒店客房 ${placement.id} 无法装入迁移模板`);
+    }
+    for (const other of placements.slice(index + 1)) {
+      const separated =
+        placement.anchorX + placement.width <= other.anchorX ||
+        other.anchorX + other.width <= placement.anchorX ||
+        placement.anchorY + placement.height <= other.anchorY ||
+        other.anchorY + other.height <= placement.anchorY;
+      if (!separated) throw new Error("旧酒店客房迁移布局重叠");
+    }
+  }
+}
+
 function createLegacyGuestTemplate(state: Readonly<GameState>): ScaleFloorTemplate {
   const dense = createDenseGuestFloorTemplate({ floorId: "floor:4", slotsPerSide: 8 });
   const stableLegacyRooms = state.floor.rooms
@@ -250,6 +307,7 @@ function createLegacyGuestTemplate(state: Readonly<GameState>): ScaleFloorTempla
   const corridorSlots = new Map(
     (state.phase2?.corridorTemplate?.slots ?? []).map((slot) => [slot.id, slot]),
   );
+  let legacyRepackAnchorX = 0;
   const roomPlacements: ScaleRoomPlacement[] = stableLegacyRooms.map(({ room, stableSlotId }, index) => {
     const phase2Placement = phase2Placements.get(room.slotId);
     if (phase2Placement) {
@@ -276,12 +334,15 @@ function createLegacyGuestTemplate(state: Readonly<GameState>): ScaleFloorTempla
       if (dimensions.width > slot.width || dimensions.height > slot.height) {
         throw new Error(`旧酒店客房 ${room.id} 的二期放置尺寸无效`);
       }
+      const anchorX = legacyRepackAnchorX;
+      const anchorY = 0;
+      legacyRepackAnchorX += dimensions.width + 1;
       return {
         id: stableSlotId,
         roomBlueprintId: assertStableId(roomMaster.id),
         variantId: assertStableId(phase2Placement.variantId),
-        anchorX: slot.anchor.x,
-        anchorY: slot.anchor.y,
+        anchorX,
+        anchorY,
         width: dimensions.width,
         height: dimensions.height,
         rotation: phase2Placement.rotation,
@@ -308,6 +369,7 @@ function createLegacyGuestTemplate(state: Readonly<GameState>): ScaleFloorTempla
       mirrored: false,
     };
   });
+  validateLegacyPlacementLayout(roomPlacements, dense.width, dense.height);
   return {
     id: GUEST_TEMPLATE_ID,
     use: "guest",
@@ -407,12 +469,20 @@ export function previewExpansion(
   if (state.phase4.floors.some((floor) => floor.floorNumber === floorNumber)) {
     return { floorNumber, costCents: EXPANSION_COST_CENTS, available: false, reason: "already-purchased" };
   }
-  const available = state.phase4.building.availableExpansionFloorNumbers.includes(floorNumber);
+  const offered = state.phase4.building.availableExpansionFloorNumbers.includes(floorNumber);
+  if (!offered) {
+    return { floorNumber, costCents: EXPANSION_COST_CENTS, available: false, reason: "not-offered" };
+  }
+  const source = firstGuestFloor(state.phase4);
+  if (!source) {
+    return { floorNumber, costCents: EXPANSION_COST_CENTS, available: false, reason: "no-guest-template" };
+  }
+  const available = projectedExpansionRoomCount(state.phase4, source) <= MAXIMUM_ROOM_COUNT;
   return {
     floorNumber,
     costCents: EXPANSION_COST_CENTS,
     available,
-    reason: available ? "available" : "not-offered",
+    reason: available ? "available" : "capacity-limit",
   };
 }
 
@@ -488,10 +558,9 @@ export function applyExpansion(
   if (!state.building.availableExpansionFloorNumbers.includes(floorNumber) || state.floors.some((floor) => floor.floorNumber === floorNumber)) {
     throw new Error("该楼层不可扩建");
   }
-  const source = [...state.floors]
-    .filter(({ use }) => use === "guest")
-    .sort((left, right) => left.floorNumber - right.floorNumber)[0];
+  const source = firstGuestFloor(state);
   if (!source) throw new Error("扩建前必须存在客房模板楼层");
+  assertRoomCount(projectedExpansionRoomCount(state, source));
   return {
     phase4: copyGuestFloor(state, source.id, floorNumber).phase4,
     costCents: EXPANSION_COST_CENTS,

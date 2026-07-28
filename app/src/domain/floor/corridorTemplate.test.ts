@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 
+import { assertStableId } from "../building/buildingTypes";
 import type { CorridorTemplate } from "../design/designTypes";
 import {
   analyzeCorridorTemplate,
@@ -132,6 +133,25 @@ describe("createDenseGuestFloorTemplate", () => {
     expect(() => createDenseGuestFloorTemplate({ floorId: "Floor 28", slotsPerSide: 8 })).toThrow("稳定 ID");
     expect(() => createDenseGuestFloorTemplate({ floorId: "floor:28", slotsPerSide: 5 })).toThrow("每侧槽位");
     expect(() => createDenseGuestFloorTemplate({ floorId: "floor:28", slotsPerSide: 8.5 })).toThrow("每侧槽位");
+  });
+
+  it("rejects legal floor IDs when generated template or slot IDs exceed the stable limit", () => {
+    const maximumLengthFloorId = `f${"a".repeat(95)}`;
+    const slotBoundaryFloorId = `f${"a".repeat(82)}`;
+
+    expect(assertStableId(maximumLengthFloorId)).toBe(maximumLengthFloorId);
+    expect(() => createDenseGuestFloorTemplate({
+      floorId: maximumLengthFloorId,
+      slotsPerSide: 8,
+    })).toThrow("稳定 ID");
+    expect(assertStableId(slotBoundaryFloorId)).toBe(slotBoundaryFloorId);
+    expect(assertStableId(`dense-guest:${slotBoundaryFloorId}`)).toBe(
+      `dense-guest:${slotBoundaryFloorId}`,
+    );
+    expect(() => createDenseGuestFloorTemplate({
+      floorId: slotBoundaryFloorId,
+      slotsPerSide: 8,
+    })).toThrow("稳定 ID");
   });
 });
 

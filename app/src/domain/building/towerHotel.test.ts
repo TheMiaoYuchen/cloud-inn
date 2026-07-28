@@ -93,7 +93,7 @@ describe("tower hotel", () => {
     expect(guestTemplate.roomPlacements.every(({ width, height }) => width * height === 24)).toBe(true);
   });
 
-  it("migrates actual Phase 3 floor placements without changing selected transforms or progress", () => {
+  it("repacks actual Phase 3 placements while preserving selected transforms and progress", () => {
     const legacy = openedLegacyFixture();
     const corridorTemplate = createCorridorTemplate("complete-ring");
     const master = createRoomMaster({
@@ -153,13 +153,10 @@ describe("tower hotel", () => {
 
     for (const placement of legacy.phase2.floorPlacements!) {
       const migrated = guestTemplate.roomPlacements.find(({ id }) => id === placement.slotId)!;
-      const slot = corridorTemplate.slots.find(({ id }) => id === placement.slotId)!;
       expect(migrated).toMatchObject({
         id: placement.slotId,
         roomBlueprintId: master.id,
         variantId: placement.variantId,
-        anchorX: slot.anchor.x,
-        anchorY: slot.anchor.y,
         width: placement.rotation === 0 ? 4 : 6,
         height: placement.rotation === 0 ? 6 : 4,
         rotation: placement.rotation,
@@ -208,18 +205,19 @@ describe("tower hotel", () => {
       legacy,
       createCorridorTemplate("complete-ring"),
     );
-    const variant = legacy.phase2!.roomVariants.find(
+    const twin = legacy.phase2!.roomVariants.find(
       ({ variantKind }) => variantKind === "twin",
     )!;
+    const corner = legacy.phase2!.roomVariants.find(
+      ({ variantKind }) => variantKind === "corner",
+    )!;
     const inputs = [
-      { slotId: "north-west", rotation: 0 as const, mirrored: true },
-      { slotId: "north-east", rotation: 90 as const, mirrored: false },
+      { slotId: "north-west", variantId: corner.id, rotation: 0 as const, mirrored: true },
+      { slotId: "north-east", variantId: corner.id, rotation: 90 as const, mirrored: false },
+      { slotId: "west-north", variantId: twin.id, rotation: 0 as const, mirrored: true },
     ];
     for (const input of inputs) {
-      legacy = await commands.placeRoomVariant(legacy, {
-        ...input,
-        variantId: variant.id,
-      });
+      legacy = await commands.placeRoomVariant(legacy, input);
     }
     legacy = {
       ...legacy,
@@ -235,7 +233,17 @@ describe("tower hotel", () => {
 
     expect(legacy.roomBlueprint!.id).toBe("room-type-1");
     expect(legacy.phase2!.roomMaster!.id).toBe("room-master:independent");
-    expect(variant.masterId).toBe("room-master:independent");
+    expect(twin.masterId).toBe("room-master:independent");
+    expect(corner.masterId).toBe("room-master:independent");
+    expect(corner.cells).toHaveLength(7 * 12);
+    expect(corner.metrics!.areaSquareMeters).toBe(21);
+    expect(inputs.map(({ slotId }) => legacy.phase2!.corridorTemplate!.slots.find(
+      ({ id }) => id === slotId,
+    )!.anchor)).toEqual([
+      { x: 15, y: 2 },
+      { x: 25, y: 6 },
+      { x: 7, y: 23 },
+    ]);
     expect(legacy.floor.rooms.every(
       ({ roomBlueprintId }) => roomBlueprintId === "room-type-1",
     )).toBe(true);
@@ -244,18 +252,42 @@ describe("tower hotel", () => {
     const guestFloor = upgraded.phase4!.floors.find(({ use }) => use === "guest")!;
     const guestTemplate = upgraded.phase4!.floorTemplates[guestFloor.templateId];
 
+    expect(guestTemplate.roomPlacements).toMatchObject([
+      {
+        id: "north-east",
+        variantId: corner.id,
+        anchorX: 0,
+        anchorY: 0,
+        width: 7,
+        height: 3,
+        rotation: 90,
+        mirrored: false,
+      },
+      {
+        id: "north-west",
+        variantId: corner.id,
+        anchorX: 8,
+        anchorY: 0,
+        width: 3,
+        height: 7,
+        rotation: 0,
+        mirrored: true,
+      },
+      {
+        id: "west-north",
+        variantId: twin.id,
+        anchorX: 12,
+        anchorY: 0,
+        width: 4,
+        height: 6,
+        rotation: 0,
+        mirrored: true,
+      },
+    ]);
     for (const input of inputs) {
-      expect(guestTemplate.roomPlacements.find(({ id }) => id === input.slotId)).toMatchObject({
-        roomBlueprintId: "room-master:independent",
-        variantId: variant.id,
-        width: input.rotation === 0 ? 4 : 6,
-        height: input.rotation === 0 ? 6 : 4,
-        rotation: input.rotation,
-        mirrored: input.mirrored,
-      });
       expect(guestFloor.rooms.find(({ localPlacementId }) => localPlacementId === input.slotId)).toMatchObject({
         roomBlueprintId: "room-master:independent",
-        variantId: variant.id,
+        variantId: input.variantId,
       });
     }
     expect(upgraded.cashCents).toBe(cash);
@@ -435,6 +467,68 @@ describe("tower hotel", () => {
     expect(result.phase4.building.availableExpansionFloorNumbers).not.toContain(floorNumber);
     expect(game.phase4).toEqual(snapshot);
     expect(game.cashCents).toBe(123_456_789);
+  });
+
+  it("uses the actual first guest floor room count at the expansion capacity boundary", () => {
+    const capacityGame = (sourceRoomCount: 1 | 2): GameState => {
+      const game = createPhase4AcceptanceState(`expansion-capacity-${sourceRoomCount}`);
+      const phase4 = structuredClone(game.phase4!);
+      const guestFloors = phase4.floors
+        .filter(({ use }) => use === "guest")
+        .sort((left, right) => left.floorNumber - right.floorNumber || left.id.localeCompare(right.id));
+      const source = guestFloors[0];
+      const reservoir = guestFloors[1];
+      const sourceRooms = source.rooms.slice(0, sourceRoomCount);
+      for (const floor of phase4.floors) floor.rooms = [];
+      source.rooms = sourceRooms;
+      reservoir.rooms = Array.from({ length: 239 - sourceRoomCount }, (_, index) => {
+        const localPlacementId = assertStableId(
+          `capacity:${String(index + 1).padStart(3, "0")}`,
+        );
+        return {
+          ...sourceRooms[0],
+          id: assertStableId(`room:${reservoir.id}:${localPlacementId}`),
+          floorId: reservoir.id,
+          localPlacementId,
+        };
+      });
+      return { ...game, phase4 };
+    };
+
+    const exact = capacityGame(1);
+    const exactFloorNumber = exact.phase4!.building.availableExpansionFloorNumbers[0];
+    expect(exact.phase4!.floors.flatMap(({ rooms }) => rooms)).toHaveLength(239);
+    expect(exact.phase4!.floors.find(({ use }) => use === "guest")!.rooms).toHaveLength(1);
+    expect(previewExpansion(exact, exactFloorNumber)).toMatchObject({
+      available: true,
+      reason: "available",
+    });
+    expect(
+      applyExpansion(exact.phase4!, exactFloorNumber).phase4.floors
+        .flatMap(({ rooms }) => rooms),
+    ).toHaveLength(240);
+
+    const over = capacityGame(2);
+    const overFloorNumber = over.phase4!.building.availableExpansionFloorNumbers[0];
+    expect(over.phase4!.floors.flatMap(({ rooms }) => rooms)).toHaveLength(239);
+    expect(over.phase4!.floors.find(({ use }) => use === "guest")!.rooms).toHaveLength(2);
+    expect(previewExpansion(over, overFloorNumber)).toMatchObject({
+      available: false,
+      reason: "capacity-limit",
+    });
+    expect(() => applyExpansion(over.phase4!, overFloorNumber)).toThrow("客房数量");
+  });
+
+  it("previews expansion as unavailable when no guest source floor exists", () => {
+    const game = createPhase4AcceptanceState("expansion-without-guest");
+    game.phase4!.floors = game.phase4!.floors.filter(({ use }) => use !== "guest");
+    const floorNumber = game.phase4!.building.availableExpansionFloorNumbers[0];
+
+    expect(previewExpansion(game, floorNumber)).toMatchObject({
+      available: false,
+      reason: "no-guest-template",
+    });
+    expect(() => applyExpansion(game.phase4!, floorNumber)).toThrow("客房模板楼层");
   });
 
   it("rejects unavailable, duplicate, and invalid floor targets", () => {

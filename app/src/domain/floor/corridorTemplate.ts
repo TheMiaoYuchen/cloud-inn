@@ -142,14 +142,16 @@ export function createDenseGuestFloorTemplate(input: {
     width: number,
     height: number,
   ): CorridorSlot => ({
-    id: `${floorId}:slot:${side}:${String(index + 1).padStart(2, "0")}`,
+    id: assertStableId(
+      `${floorId}:slot:${side}:${String(index + 1).padStart(2, "0")}`,
+    ),
     anchor,
     width,
     height,
   });
 
   return {
-    id: `dense-guest:${floorId}`,
+    id: assertStableId(`dense-guest:${floorId}`),
     name: "高密度中央核心筒环廊",
     width: 64,
     height: 64,
