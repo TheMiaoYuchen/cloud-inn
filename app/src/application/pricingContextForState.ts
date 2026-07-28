@@ -1,4 +1,5 @@
 import type { GameState } from "../domain/game/state";
+import { projectHotelInventory } from "../domain/building/hotelInventory";
 import {
   seasonForGameDay,
   type PricingContext,
@@ -26,7 +27,10 @@ export function pricingContextForState(
   );
   const latest = recent[recent.length - 1];
   const latestAvailableRooms = latest?.availableRooms ?? 0;
-  const demandCapacity = state.floor.rooms.length * recent.length;
+  const authoritativeRoomCount = state.phase4
+    ? projectHotelInventory(state).rooms.length
+    : state.floor.rooms.length;
+  const demandCapacity = authoritativeRoomCount * recent.length;
 
   return {
     season: seasonForGameDay(state.currentDay),

@@ -12,6 +12,7 @@ import {
   matchGuest,
   type RoomMatchFactor,
 } from "./matchGuest";
+import { projectHotelRoomOffers } from "../building/hotelInventory";
 import { projectRoomOffers, type RoomOffer } from "./roomOffer";
 
 function offer(overrides: Partial<RoomOffer> = {}): RoomOffer {
@@ -129,6 +130,7 @@ describe("room offer projection", () => {
 
     const offers = projectRoomOffers(state);
 
+    expect(offers).toEqual(projectHotelRoomOffers(state));
     expect(offers.map(({ id }) => id)).toEqual([
       "offer:room-b:variant-corner",
       "offer:room-a:variant-twin",

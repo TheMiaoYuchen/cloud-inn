@@ -58,6 +58,7 @@ import {
   type RoomOfferUpgradeRequest,
   type RoomRenovationPreview,
 } from "../domain/operations/renovation";
+import { createBuildingCommands } from "./buildingCommands";
 
 export function previewRoomRenovation(
   state: Readonly<GameState>,
@@ -259,6 +260,7 @@ export function createGameCommands(savePort: SavePort) {
   }
 
   return {
+    ...createBuildingCommands(savePort),
     async takeLoan(
       state: GameState,
       request: Readonly<LoanRequest>,
