@@ -465,6 +465,24 @@ describe("shared space editor boundaries", () => {
     expect(undone.future[undone.future.length - 1]?.columns).toBe(399);
   });
 
+  it("bounds imported undo past before reading discarded prefix snapshots", () => {
+    const past = Array.from({ length: SPACE_EDITOR_HISTORY_LIMIT + 2 }, (_, index) =>
+      markedSpaceDraft(index));
+    Object.defineProperty(past, 0, {
+      get: () => { throw new Error("discarded undo past prefix was read"); },
+    });
+
+    const undone = undoSpaceEdit({
+      past,
+      present: markedSpaceDraft(200),
+      future: [],
+    });
+
+    expect(undone.past).toHaveLength(SPACE_EDITOR_HISTORY_LIMIT);
+    expect(undone.past[0].columns).toBe(2);
+    expect(undone.present.columns).toBe(102);
+  });
+
   it("bounds both imported redo directions before cloning retained snapshots", () => {
     const past = Array.from({ length: SPACE_EDITOR_HISTORY_LIMIT + 2 }, (_, index) =>
       markedSpaceDraft(index));

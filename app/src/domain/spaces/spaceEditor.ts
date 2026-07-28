@@ -497,10 +497,11 @@ export function undoSpaceEdit(
 ): SpaceHistory {
   assertHistoryLimit(limit);
   if (history.past.length === 0) return cloneSpaceHistory(history, limit);
-  const previous = history.past[history.past.length - 1];
+  const boundedPast = lastSnapshots(history.past, limit + 1);
+  const previous = boundedPast[boundedPast.length - 1];
   if (!previous) return history;
   return {
-    past: lastSnapshots(history.past.slice(0, -1), limit).map(cloneSpaceDraft),
+    past: boundedPast.slice(0, -1).map(cloneSpaceDraft),
     present: cloneSpaceDraft(previous),
     future: [
       cloneSpaceDraft(history.present),
