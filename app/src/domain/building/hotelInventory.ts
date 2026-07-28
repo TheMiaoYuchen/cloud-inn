@@ -380,8 +380,10 @@ function projectPhase4Facilities(
   const blueprints = uniqueRecordMap(phase4.spaceBlueprints, "公共空间蓝图");
   const publicSpaces = uniqueRecordMap(phase4.publicSpaces, "公共空间");
   const facilities = uniqueRecordMap(phase4.facilities, "设施");
+  const publicSpaceIdsByFloor = new Map<string, Set<string>>();
   for (const floor of floorMap.values()) {
     const listed = new Set<string>();
+    publicSpaceIdsByFloor.set(floor.id, listed);
     for (const publicSpaceId of floor.publicSpaceInstanceIds) {
       if (listed.has(publicSpaceId)) throw new Error(`楼层 ${floor.id} 的公共空间编号重复`);
       listed.add(publicSpaceId);
@@ -395,7 +397,7 @@ function projectPhase4Facilities(
     const floor = floorMap.get(instance.floorId);
     const blueprint = blueprints.get(instance.blueprintId);
     if (!floor || !blueprint) throw new Error(`公共空间 ${instance.id} 引用了未知记录`);
-    if (!floor.publicSpaceInstanceIds.includes(instance.id)) {
+    if (!publicSpaceIdsByFloor.get(floor.id)?.has(instance.id)) {
       throw new Error(`公共空间 ${instance.id} 缺少楼层引用`);
     }
     if (blueprint.type !== instance.type) throw new Error(`公共空间 ${instance.id} 类型不匹配`);
@@ -620,11 +622,13 @@ export function reconcileHotelReferences(
       : { phase4: reconciledPhase4References(state.phase4) }),
   };
   const operations = withPhase4.operations;
+  const offers = projectHotelRoomOffers(operations
+    ? {
+        ...withPhase4,
+        operations: { ...operations, pricePolicies: {}, offerUpgrades: {} },
+      }
+    : withPhase4);
   if (!operations) return withPhase4;
-  const offers = projectHotelRoomOffers({
-    ...withPhase4,
-    operations: { ...operations, pricePolicies: {}, offerUpgrades: {} },
-  });
   const offerIds = new Set(offers.map(({ id }) => id));
   const policiesById = new Map(Object.entries(operations.pricePolicies));
   for (const [key, policy] of policiesById) {
@@ -645,9 +649,10 @@ export function reconcileHotelReferences(
         if (key !== `${upgrade.roomOfferId}:${upgrade.kind}`) {
           throw new Error("已保存的改造键与内容不一致");
         }
-        return offerIds.has(upgrade.roomOfferId)
-          ? [[key, structuredClone(upgrade)] as const]
-          : [];
+        if (!offerIds.has(upgrade.roomOfferId)) {
+          throw new Error(`付费客房改造 ${key} 引用的客房产品不存在`);
+        }
+        return [[key, structuredClone(upgrade)] as const];
       }),
   );
   return {

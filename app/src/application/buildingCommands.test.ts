@@ -51,6 +51,196 @@ async function masterOnlyOperationsCommands(saveId: string) {
 }
 
 describe("atomic building commands", () => {
+  it("validates authoritative inventory without an operations state before copying", async () => {
+    const store = new RecordingSavePort();
+    const commands = createGameCommands(store);
+    const state = createPhase4AcceptanceState("building-copy-invalid-no-operations");
+    state.phase4!.building.availableExpansionFloorNumbers = [17];
+    const guestFloors = state.phase4!.floors.filter(({ use }) => use === "guest");
+    guestFloors[1].rooms[0].roomBlueprintId =
+      "room-blueprint:missing" as typeof guestFloors[1]["rooms"][number]["roomBlueprintId"];
+    const snapshot = structuredClone(state);
+
+    await expect(commands.copyFloor(state, guestFloors[0].id, 17))
+      .rejects.toThrow("设计引用");
+
+    expect(state).toEqual(snapshot);
+    expect(store.commits).toBe(0);
+    expect(await store.load(state.saveId)).toBeNull();
+  });
+
+  it("validates authoritative room area without an operations state before template sync", async () => {
+    const store = new RecordingSavePort();
+    const commands = createGameCommands(store);
+    const state = createPhase4AcceptanceState("building-sync-invalid-area-no-operations");
+    state.phase2!.roomMaster!.metrics.areaSquareMeters = 0;
+    const selectedFloor = state.phase4!.floors.find(({ use }) => use === "guest")!;
+    const snapshot = structuredClone(state);
+
+    await expect(commands.syncFloorTemplate(state, [selectedFloor.id]))
+      .rejects.toThrow("权威面积无效");
+
+    expect(state).toEqual(snapshot);
+    expect(store.commits).toBe(0);
+    expect(await store.load(state.saveId)).toBeNull();
+  });
+
+  it("rejects template sync that would delete a paid renovation and preserves surviving upgrades", async () => {
+    const removedStore = new RecordingSavePort();
+    const removedCommands = createGameCommands(removedStore);
+    const removed = createPhase4AcceptanceState("building-sync-paid-removed");
+    const selectedFloor = removed.phase4!.floors.find(({ use }) => use === "guest")!;
+    const removedOffer = projectHotelInventory(removed).rooms.find(
+      ({ floorId }) => floorId === selectedFloor.id,
+    )!;
+    const paidUpgrade = {
+      roomOfferId: removedOffer.id,
+      upgradeId: "workspace",
+      kind: "workspace" as const,
+      level: 1,
+      remainingClosureDays: 0,
+      committedDay: 2,
+      costCents: 120_000,
+    };
+    removed.operations = createOperationsState("management");
+    removed.operations.offerUpgrades[
+      roomOfferUpgradeKey(removedOffer.id, "workspace")
+    ] = paidUpgrade;
+    const template = removed.phase4!.floorTemplates[selectedFloor.templateId];
+    template.roomPlacements = template.roomPlacements.filter(
+      ({ id }) => id !== removedOffer.localPlacementId,
+    );
+    const removedSnapshot = structuredClone(removed);
+
+    await expect(removedCommands.syncFloorTemplate(removed, [selectedFloor.id]))
+      .rejects.toThrow("付费客房改造");
+    expect(removed).toEqual(removedSnapshot);
+    expect(removedStore.commits).toBe(0);
+    expect(await removedStore.load(removed.saveId)).toBeNull();
+
+    const survivingStore = new RecordingSavePort();
+    const survivingCommands = createGameCommands(survivingStore);
+    const surviving = createPhase4AcceptanceState("building-sync-paid-survives");
+    const survivingFloor = surviving.phase4!.floors.find(({ use }) => use === "guest")!;
+    const survivingOffer = projectHotelInventory(surviving).rooms.find(
+      ({ floorId }) => floorId === survivingFloor.id,
+    )!;
+    const survivingUpgrade = { ...paidUpgrade, roomOfferId: survivingOffer.id };
+    surviving.operations = createOperationsState("management");
+    surviving.operations.offerUpgrades[
+      roomOfferUpgradeKey(survivingOffer.id, "workspace")
+    ] = survivingUpgrade;
+    const survivingTemplate = surviving.phase4!.floorTemplates[survivingFloor.templateId];
+    survivingTemplate.roomPlacements[0] = {
+      ...survivingTemplate.roomPlacements[0],
+      width: 5,
+    };
+
+    const synchronized = await survivingCommands.syncFloorTemplate(
+      surviving,
+      [survivingFloor.id],
+    );
+
+    expect(synchronized.operations!.offerUpgrades[
+      roomOfferUpgradeKey(survivingOffer.id, "workspace")
+    ]).toEqual(survivingUpgrade);
+    expect(survivingStore.commits).toBe(1);
+  });
+
+  it("charges the expansion quote while copying the selected source floor", async () => {
+    const store = new RecordingSavePort();
+    const commands = createGameCommands(store);
+    const state = createPhase4AcceptanceState("building-copy-paid-source");
+    state.phase4!.building.availableExpansionFloorNumbers = [29];
+    const guestFloors = state.phase4!.floors.filter(({ use }) => use === "guest");
+    const firstSource = guestFloors[0];
+    const selectedSource = guestFloors[1];
+    firstSource.rooms[0].committedBuildCostCents = 111;
+    selectedSource.rooms[0].committedBuildCostCents = 222;
+    const preview = previewExpansion(state, 29);
+
+    const copied = await commands.copyFloor(state, selectedSource.id, 29);
+    const target = copied.phase4!.floors.find(({ floorNumber }) => floorNumber === 29)!;
+
+    expect(copied.cashCents).toBe(state.cashCents - preview.costCents);
+    expect(target.rooms[0].committedBuildCostCents).toBe(222);
+    expect(target.rooms.map(({ committedBuildCostCents }) => committedBuildCostCents))
+      .toEqual(selectedSource.rooms.map(({ committedBuildCostCents }) => committedBuildCostCents));
+    expect(target.rooms[0].committedBuildCostCents)
+      .not.toBe(firstSource.rooms[0].committedBuildCostCents);
+    expect(store.commits).toBe(1);
+    expect(await store.load(state.saveId)).toEqual(copied);
+  });
+
+  it("rejects unavailable, duplicate, over-capacity, and unaffordable floor copies before saving", async () => {
+    const expectRejected = async (
+      state: GameState,
+      sourceFloorId: string,
+      floorNumber: number,
+      message: string,
+    ) => {
+      const store = new RecordingSavePort();
+      const commands = createGameCommands(store);
+      const snapshot = structuredClone(state);
+
+      await expect(commands.copyFloor(state, sourceFloorId, floorNumber))
+        .rejects.toThrow(message);
+      expect(state).toEqual(snapshot);
+      expect(store.commits).toBe(0);
+      expect(await store.load(state.saveId)).toBeNull();
+    };
+    const unavailable = createPhase4AcceptanceState("building-copy-not-offered");
+    const unavailableSource = unavailable.phase4!.floors.find(({ use }) => use === "guest")!;
+    await expectRejected(unavailable, unavailableSource.id, 29, "不可扩建");
+
+    const duplicate = createPhase4AcceptanceState("building-copy-duplicate");
+    const duplicateSource = duplicate.phase4!.floors.find(({ use }) => use === "guest")!;
+    await expectRejected(duplicate, duplicateSource.id, 5, "不可扩建");
+
+    const capacity = createPhase4AcceptanceState("building-copy-capacity");
+    const capacityGuests = capacity.phase4!.floors.filter(({ use }) => use === "guest");
+    const reservoir = capacityGuests[capacityGuests.length - 1];
+    reservoir.rooms.push(...Array.from({ length: 111 }, (_, index) => ({
+      ...reservoir.rooms[0],
+      id: `room:${reservoir.id}:capacity:${index + 1}` as typeof reservoir.rooms[0]["id"],
+      localPlacementId: `capacity:${index + 1}` as typeof reservoir.rooms[0]["localPlacementId"],
+    })));
+    await expectRejected(capacity, capacityGuests[0].id, 17, "capacity-limit");
+
+    const poor = createPhase4AcceptanceState("building-copy-cash");
+    const poorSource = poor.phase4!.floors.find(({ use }) => use === "guest")!;
+    poor.cashCents = previewExpansion(poor, 17).costCents - 1;
+    await expectRejected(poor, poorSource.id, 17, "现金不足");
+  });
+
+  it("does not expose copied-floor payment or unlocks when persistence fails", async () => {
+    const store = new InMemorySavePort();
+    const initial = createPhase4AcceptanceState("building-copy-save-failure");
+    initial.phase4!.catalogProgress.unlockedIds = [];
+    const state = { ...initial, revision: 1 };
+    await store.commit(0, state);
+    const sourceSnapshot = structuredClone(state);
+    const storedSnapshot = await store.load(state.saveId);
+    let attempted: GameState | null = null;
+    const commands = createGameCommands({
+      load: (saveId) => store.load(saveId),
+      commit: async (_expectedRevision, next) => {
+        attempted = structuredClone(next);
+        throw new Error("磁盘写入失败");
+      },
+    });
+    const sourceFloor = state.phase4!.floors.find(({ use }) => use === "guest")!;
+    const preview = previewExpansion(state, 17);
+
+    await expect(commands.copyFloor(state, sourceFloor.id, 17))
+      .rejects.toThrow("磁盘写入失败");
+
+    expect(attempted!.cashCents).toBe(state.cashCents - preview.costCents);
+    expect(attempted!.phase4!.catalogProgress.unlockedIds.length).toBeGreaterThan(0);
+    expect(state).toEqual(sourceSnapshot);
+    expect(await store.load(state.saveId)).toEqual(storedSnapshot);
+  });
+
   it("syncs an official no-snapshot floor without mutating unselected physical baselines", async () => {
     const store = new RecordingSavePort();
     const commands = createGameCommands(store);
@@ -238,7 +428,7 @@ describe("atomic building commands", () => {
     const commands = createGameCommands(store);
     const initial = createPhase4AcceptanceState("building-legacy-settlement");
     const source = initial.phase4!.floors.find(({ use }) => use === "guest")!;
-    const expanded = await commands.copyFloor(initial, source.id, 29);
+    const expanded = await commands.copyFloor(initial, source.id, 17);
     const opened: GameState = { ...expanded, phase: "open", operations: undefined };
 
     const settled = await commands.advanceDay(opened);
@@ -388,7 +578,7 @@ describe("atomic building commands", () => {
   it("copies and selectively synchronizes floors through the same command facade", async () => {
     const { state, commands } = await initializedScaleCommands();
     const source = state.phase4!.floors.find(({ use }) => use === "guest")!;
-    const copied = await commands.copyFloor(state, source.id, 34);
+    const copied = await commands.copyFloor(state, source.id, 35);
     const template = copied.phase4!.floorTemplates[source.templateId];
     const edited: GameState = {
       ...copied,
@@ -408,7 +598,7 @@ describe("atomic building commands", () => {
 
     expect(synchronized.phase4!.floors.find(({ id }) => id === source.id)!.rooms)
       .toHaveLength(9);
-    expect(synchronized.phase4!.floors.find(({ id }) => id === "floor:34")!.rooms)
+    expect(synchronized.phase4!.floors.find(({ id }) => id === "floor:35")!.rooms)
       .toHaveLength(10);
     expect(Object.keys(synchronized.operations!.pricePolicies)).toEqual(
       projectHotelRoomOffers(synchronized).map(({ id }) => id),

@@ -190,4 +190,20 @@ describe("authoritative hotel inventory", () => {
 
     expect(() => projectHotelInventory(state)).toThrow("公共空间编号重复");
   });
+
+  it("uses indexed floor public-space references for reverse validation", () => {
+    const state = createPhase4AcceptanceState("inventory-space-reverse-index");
+    const floor = state.phase4!.floors.find(
+      ({ publicSpaceInstanceIds }) => publicSpaceInstanceIds.length > 0,
+    )!;
+    const facilities = projectHotelInventory(state).facilities;
+    floor.publicSpaceInstanceIds = new Proxy(floor.publicSpaceInstanceIds, {
+      get(target, property, receiver) {
+        if (property === "includes") throw new Error("array reverse scan used");
+        return Reflect.get(target, property, receiver);
+      },
+    });
+
+    expect(projectHotelInventory(state).facilities).toEqual(facilities);
+  });
 });

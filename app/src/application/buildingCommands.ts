@@ -255,11 +255,20 @@ export function createBuildingCommands(savePort: SavePort) {
       floorNumber: number,
     ): Promise<GameState> {
       assertRevision(state.revision);
-      assertSafeMoney(state.cashCents);
-      if (!state.phase4) throw new Error("内容规模系统尚未初始化");
-      const copied = copyGuestFloor(state.phase4, sourceFloorId, floorNumber);
+      const currentCashCents = assertSafeMoney(state.cashCents);
+      const phase4 = state.phase4;
+      if (!phase4) throw new Error("内容规模系统尚未初始化");
+      const preview = previewExpansion(state, floorNumber);
+      if (!preview.available) throw new Error(`该楼层不可扩建：${preview.reason}`);
+      if (currentCashCents < preview.costCents) throw new Error("现金不足以购买楼层");
+      const expansion = applyExpansion(phase4, floorNumber);
+      if (expansion.costCents !== preview.costCents) {
+        throw new Error("楼层购买预览已过期");
+      }
+      const copied = copyGuestFloor(phase4, sourceFloorId, floorNumber);
       return persist(state, completeBuildingState({
         ...state,
+        cashCents: assertSafeMoney(currentCashCents - expansion.costCents),
         phase4: copied.phase4,
       }));
     },
