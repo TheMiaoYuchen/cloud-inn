@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import { assertStableId } from "../domain/building/buildingTypes";
 import { createFacilityPolicy } from "../domain/facilities/facilityOperations";
 import type { GameState } from "../domain/game/state";
+import type { PublicSpaceBlueprint } from "../domain/spaces/spaceTypes";
 import { InMemorySavePort } from "../infrastructure/memory/InMemorySavePort";
 import { createPhase4AcceptanceState } from "../testing/phase4Fixtures";
 import {
@@ -43,6 +44,60 @@ function diningPolicy() {
     openingPolicyId: "opening-policy:breakfast-dinner",
     serviceBudgetCents: 180_000,
   });
+}
+
+function validBoostBlueprint(
+  type: "sky-lobby" | "pool" | "gym",
+  id: string,
+): PublicSpaceBlueprint {
+  if (type === "gym") {
+    return {
+      id: assertStableId(id), type, name: "健身房", columns: 10, rows: 8,
+      cells: Array.from({ length: 80 }, (_, index) => ({
+        x: index % 10, y: Math.floor(index / 10), zoneId: assertStableId("zone:fitness"),
+      })),
+      placedItems: Array.from({ length: 4 }, (_, index) => ({
+        id: assertStableId(`boost:gym:item:${index}`),
+        catalogItemId: assertStableId("item:fitness-station"),
+        x: index, y: 1, width: 1, height: 1, rotation: 0,
+      })), walls: [], doors: [], windows: [], committedBuildCostCents: 0,
+    };
+  }
+  if (type === "pool") {
+    const cells = [
+      ...Array.from({ length: 16 }, (_, index) => ({
+        x: 3 + index % 4, y: 3 + Math.floor(index / 4), zoneId: assertStableId("zone:wet"),
+      })),
+      ...Array.from({ length: 6 }, (_, x) => ({ x: x + 2, y: 2, zoneId: assertStableId("zone:deck") })),
+      ...Array.from({ length: 6 }, (_, x) => ({ x: x + 2, y: 7, zoneId: assertStableId("zone:deck") })),
+      ...Array.from({ length: 4 }, (_, y) => ({ x: 2, y: y + 3, zoneId: assertStableId("zone:deck") })),
+      ...Array.from({ length: 4 }, (_, y) => ({ x: 7, y: y + 3, zoneId: assertStableId("zone:deck") })),
+      { x: 0, y: 2, zoneId: assertStableId("zone:wet-route") },
+      { x: 1, y: 2, zoneId: assertStableId("zone:wet-route") },
+    ];
+    return {
+      id: assertStableId(id), type, name: "泳池", columns: 12, rows: 12, cells,
+      placedItems: [{
+        id: assertStableId("boost:pool:item"), catalogItemId: assertStableId("item:pool"),
+        x: 3, y: 3, width: 4, height: 4, rotation: 0,
+      }], walls: [], doors: [{ x: 0, y: 2, side: "west" }], windows: [], committedBuildCostCents: 0,
+    };
+  }
+  const cells = [
+    ...Array.from({ length: 4 }, (_, index) => ({ x: index % 2, y: Math.floor(index / 2), zoneId: assertStableId("zone:arrival") })),
+    ...Array.from({ length: 8 }, (_, index) => ({ x: index % 2, y: 2 + Math.floor(index / 2), zoneId: assertStableId("zone:entrance") })),
+    ...Array.from({ length: 8 }, (_, index) => ({ x: 2 + index % 2, y: 2 + Math.floor(index / 2), zoneId: assertStableId("zone:reception") })),
+    ...Array.from({ length: 20 }, (_, index) => ({ x: 4 + index % 5, y: Math.floor(index / 5), zoneId: assertStableId("zone:waiting") })),
+    ...Array.from({ length: 4 }, (_, index) => ({ x: 2 + index % 2, y: 6 + Math.floor(index / 2), zoneId: assertStableId("zone:luggage") })),
+    ...Array.from({ length: 20 }, (_, index) => ({ x: 4 + index % 5, y: 4 + Math.floor(index / 5), zoneId: assertStableId("zone:elevator-lobby") })),
+  ];
+  return {
+    id: assertStableId(id), type, name: "空中大堂", columns: 12, rows: 12, cells,
+    placedItems: [
+      { id: assertStableId("boost:lobby:desk"), catalogItemId: assertStableId("item:reception-desk"), x: 2, y: 2, width: 1, height: 1, rotation: 0 },
+      ...Array.from({ length: 5 }, (_, index) => ({ id: assertStableId(`boost:lobby:seat:${index}`), catalogItemId: assertStableId("item:lounge-seat"), x: 4 + index, y: 1, width: 1, height: 1, rotation: 0 as const })),
+    ], walls: [], doors: [{ x: 0, y: 2, side: "west" }], windows: [], committedBuildCostCents: 0,
+  };
 }
 
 describe("atomic facility commands", () => {
@@ -110,20 +165,31 @@ describe("atomic facility commands", () => {
     expect(store.commits).toBe(commits);
   });
 
-  it("commits pending permanent unlock reconciliation on an offering no-op", async () => {
+  it("rejects an offering while locked even if currently eligible", async () => {
     const { state, facilityId, commands, store } = activeDiningCommandFixture("facility-noop-reconcile");
     state.phase4!.facilities[facilityId].developedOfferingIds = [
       assertStableId("dish:tea-smoked-duck"),
     ];
     state.phase4!.catalogProgress.unlockedIds = [];
 
-    const next = await commands.developSignatureOffering(
+    await expect(commands.developSignatureOffering(
       state, facilityId, "dish:tea-smoked-duck",
-    );
+    )).rejects.toThrow("尚未解锁");
+    expect(store.commits).toBe(0);
+  });
 
-    expect(next.phase4!.catalogProgress.unlockedIds).toContain("facility:all-day-dining");
-    expect(next.cashCents).toBe(state.cashCents);
-    expect(store.commits).toBe(1);
+  it("does not persist a projected unlock when a later commit fails", async () => {
+    const { state, facilityId } = activeDiningCommandFixture("facility-unlock-failed-commit");
+    state.phase4!.catalogProgress.unlockedIds = [assertStableId("facility:all-day-dining")];
+    const snapshot = structuredClone(state);
+    const commands = createGameCommands({
+      load: async () => null,
+      commit: async () => { throw new Error("磁盘写入失败"); },
+    });
+
+    await expect(commands.configureFacility(state, facilityId, diningPolicy()))
+      .rejects.toThrow("磁盘写入失败");
+    expect(state).toEqual(snapshot);
   });
 
   it("selects only a compatible developed signature and enables only a ready policy", async () => {
@@ -164,6 +230,34 @@ describe("atomic facility commands", () => {
     await expect(commands.setFacilityEnabled(state, facilityId, true))
       .rejects.toThrow("容量");
     expect(store.commits).toBe(0);
+  });
+
+  it.each([
+    ["sky-lobby", "facility:floor:02:sky-lobby"],
+    ["pool", "facility:floor:03:pool"],
+    ["gym", "facility:floor:03:gym"],
+  ] as const)("requires a valid built blueprint before enabling boost %s", async (type, facilityId) => {
+    const state = createPhase4AcceptanceState(`boost-ready-${type}`);
+    const facility = state.phase4!.facilities[facilityId];
+    facility.enabled = false;
+    facility.status = "planned";
+    const instance = state.phase4!.publicSpaces[facility.publicSpaceInstanceId];
+    const blueprintId = assertStableId(`space-blueprint:ready:${type}`);
+    instance.blueprintId = blueprintId;
+    state.phase4!.spaceBlueprints[blueprintId] = {
+      ...validBoostBlueprint(type, blueprintId),
+      placedItems: [],
+    };
+    const commands = createGameCommands(new RecordingPort());
+
+    await expect(commands.setFacilityEnabled(state, facilityId, true))
+      .rejects.toThrow();
+
+    state.phase4!.spaceBlueprints[blueprintId] = validBoostBlueprint(type, blueprintId);
+    const enabled = await commands.setFacilityEnabled(state, facilityId, true);
+    expect(enabled.phase4!.facilities[facilityId]).toMatchObject({
+      enabled: true, status: "operating",
+    });
   });
 
   it("rejects locked, boost, unknown, unsafe-money and revision inputs", async () => {
@@ -212,13 +306,12 @@ describe("atomic facility commands", () => {
     }
   });
 
-  it("reconciles newly eligible facility unlocks in the successful commit", async () => {
+  it("requires a persisted unlock before configuration", async () => {
     const { state, facilityId, commands } = activeDiningCommandFixture("facility-reconcile");
     state.phase4!.catalogProgress.unlockedIds = [];
 
-    const next = await commands.configureFacility(state, facilityId, diningPolicy());
-
-    expect(next.phase4!.catalogProgress.unlockedIds).toContain("facility:all-day-dining");
+    await expect(commands.configureFacility(state, facilityId, diningPolicy()))
+      .rejects.toThrow("尚未解锁");
     expect(state.phase4!.catalogProgress.unlockedIds).toEqual([]);
   });
 

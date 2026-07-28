@@ -22,7 +22,7 @@ describe("light facility operations", () => {
     });
 
     expect(policy).not.toHaveProperty("inventory");
-    expect(validateFacilityPolicy(policy)).toEqual({ ok: true });
+    expect(validateFacilityPolicy("all-day-dining", policy)).toEqual({ ok: true });
   });
 
   it.each(["dining", "bar", "spa", "banquet"] as const)(
@@ -86,5 +86,34 @@ describe("light facility operations", () => {
       serviceBudgetCents: 180_000,
       signatureOfferingId: "drink:cloud-negroni",
     })).toThrow("招牌产品");
+  });
+
+  it("validates capacity and offering compatibility with authoritative type context", () => {
+    const tooSmall = {
+      positioningId: "positioning:international-luxury" as const,
+      priceBandId: "price-band:premium" as const,
+      capacity: 1,
+      openingPolicyId: "opening-policy:breakfast-dinner" as const,
+      serviceBudgetCents: 180_000,
+    };
+    expect(validateFacilityPolicy("all-day-dining", tooSmall)).toEqual({
+      ok: false,
+      reasons: ["设施容量必须在 30-180 之间"],
+    });
+    expect(validateFacilityPolicy("all-day-dining", {
+      ...tooSmall,
+      capacity: 84,
+      signatureOfferingId: "drink:cloud-negroni",
+    })).toEqual({
+      ok: false,
+      reasons: ["招牌产品与设施类型不兼容"],
+    });
+  });
+
+  it("returns a Chinese validation result for malformed runtime policies", () => {
+    expect(validateFacilityPolicy("all-day-dining", null as never)).toEqual({
+      ok: false,
+      reasons: ["设施运营策略结构无效"],
+    });
   });
 });

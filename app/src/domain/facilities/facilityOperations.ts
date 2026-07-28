@@ -4,7 +4,6 @@ import {
   GUEST_SEGMENT_IDS,
   type GuestSegmentId,
 } from "../operations/operationsTypes";
-import { assertSafeMoney } from "../primitives";
 import type {
   FacilityPolicy,
   FacilitySignatureOffering,
@@ -165,9 +164,19 @@ export function operationGroupFor(type: PublicSpaceType): LightOperationGroup | 
   return group && group !== "boost" ? group : null;
 }
 
-function policyReasons(policy: Readonly<FacilityPolicy>): string[] {
+function policyReasons(
+  type: PublicSpaceType,
+  policy: Readonly<FacilityPolicyInput>,
+): string[] {
   const reasons: string[] = [];
-  const choices = FACILITY_OPERATING_CHOICES.filter(({ positioningId }) =>
+  if (typeof policy !== "object" || policy === null || Array.isArray(policy)) {
+    return ["设施运营策略结构无效"];
+  }
+  const definition = FACILITY_CATALOG.find((entry) => entry.type === type);
+  const group = operationGroupFor(type);
+  if (!definition) return ["设施类型未在目录中定义"];
+  if (!group) return ["该设施不支持轻量运营配置"];
+  const choices = projectOperatingChoices(group).filter(({ positioningId }) =>
     positioningId === policy.positioningId);
   if (choices.length === 0) reasons.push("设施定位未在运营目录中定义");
   if (!choices.some(({ priceBandId }) => priceBandId === policy.priceBandId)) {
@@ -176,21 +185,30 @@ function policyReasons(policy: Readonly<FacilityPolicy>): string[] {
   if (!choices.some(({ openingPolicyId }) => openingPolicyId === policy.openingPolicyId)) {
     reasons.push("营业时段与设施定位不兼容");
   }
-  if (!Number.isSafeInteger(policy.capacity) || policy.capacity <= 0) {
-    reasons.push("设施容量必须是正安全整数");
+  if (!Number.isSafeInteger(policy.capacity) ||
+      policy.capacity < definition.defaultCapacity.minimum ||
+      policy.capacity > definition.defaultCapacity.maximum) {
+    reasons.push(`设施容量必须在 ${definition.defaultCapacity.minimum}-${definition.defaultCapacity.maximum} 之间`);
   }
   if (!Number.isSafeInteger(policy.serviceBudgetCents) || policy.serviceBudgetCents < 0) {
     reasons.push("服务预算必须是非负安全整数分");
   }
-  if (policy.signatureOfferingId && !FACILITY_OFFERINGS.some(({ id: offeringId }) =>
-    offeringId === policy.signatureOfferingId)) {
-    reasons.push("招牌产品未在目录中定义");
+  if (policy.signatureOfferingId) {
+    const offering = FACILITY_OFFERINGS.find(({ id: offeringId }) =>
+      offeringId === policy.signatureOfferingId);
+    if (!offering) reasons.push("招牌产品未在目录中定义");
+    else if (!offering.facilityTypes.includes(type)) {
+      reasons.push("招牌产品与设施类型不兼容");
+    }
   }
   return reasons;
 }
 
-export function validateFacilityPolicy(policy: Readonly<FacilityPolicy>): FacilityPolicyValidation {
-  const reasons = policyReasons(policy);
+export function validateFacilityPolicy(
+  type: PublicSpaceType,
+  policy: Readonly<FacilityPolicyInput>,
+): FacilityPolicyValidation {
+  const reasons = policyReasons(type, policy);
   return reasons.length === 0 ? { ok: true } : { ok: false, reasons };
 }
 
@@ -198,25 +216,8 @@ export function createFacilityPolicy(
   type: PublicSpaceType,
   input: Readonly<FacilityPolicyInput>,
 ): FacilityPolicy {
-  const definition = FACILITY_CATALOG.find((entry) => entry.type === type);
-  if (!definition) throw new Error("设施类型未在目录中定义");
-  const group = operationGroupFor(type);
-  if (!group) throw new Error("该设施不支持轻量运营配置");
-  const choice = projectOperatingChoices(group).find(({ positioningId }) =>
-    positioningId === input.positioningId);
-  if (!choice || choice.priceBandId !== input.priceBandId ||
-      choice.openingPolicyId !== input.openingPolicyId) {
-    throw new Error("设施定位、价格带或营业时段不兼容");
-  }
-  if (!Number.isSafeInteger(input.capacity) ||
-      input.capacity < definition.defaultCapacity.minimum ||
-      input.capacity > definition.defaultCapacity.maximum) {
-    throw new Error(`设施容量必须在 ${definition.defaultCapacity.minimum}-${definition.defaultCapacity.maximum} 之间`);
-  }
-  assertSafeMoney(input.serviceBudgetCents);
-  if (input.signatureOfferingId && !projectFacilityOfferings(type).some(
-    ({ id: offeringId }) => offeringId === input.signatureOfferingId,
-  )) throw new Error("招牌产品与设施类型不兼容");
+  const validation = validateFacilityPolicy(type, input);
+  if (!validation.ok) throw new Error(validation.reasons.join("；"));
   const policy: FacilityPolicy = {
     positioningId: id(input.positioningId),
     priceBandId: id(input.priceBandId),
@@ -227,7 +228,5 @@ export function createFacilityPolicy(
       ? { signatureOfferingId: id(input.signatureOfferingId) }
       : {}),
   };
-  const validation = validateFacilityPolicy(policy);
-  if (!validation.ok) throw new Error(validation.reasons.join("；"));
   return policy;
 }

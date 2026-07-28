@@ -15,6 +15,8 @@ import type {
 } from "../domain/facilities/facilityTypes";
 import type { GameState } from "../domain/game/state";
 import { assertSafeMoney } from "../domain/primitives";
+import { validatePublicSpace } from "../domain/spaces/spaceValidation";
+import type { PublicSpaceBlueprint } from "../domain/spaces/spaceTypes";
 import type { SavePort } from "./ports/SavePort";
 
 /** Kept as the default/catalog maximum for callers that need a cost ceiling. */
@@ -92,9 +94,10 @@ export function createFacilityCommands(savePort: SavePort) {
     ): Promise<GameState> {
       assertRevision(state.revision);
       assertSafeMoney(state.cashCents);
+      const currentFacility = facilityFrom(state, facilityId);
+      assertUnlocked(state, currentFacility);
       const candidate = reconciled(state);
       const facility = facilityFrom(candidate, facilityId);
-      assertUnlocked(candidate, facility);
       if (!operationGroupFor(facility.type)) {
         throw new Error("该设施不支持轻量运营配置");
       }
@@ -122,9 +125,10 @@ export function createFacilityCommands(savePort: SavePort) {
     ): Promise<GameState> {
       assertRevision(state.revision);
       const cashCents = assertSafeMoney(state.cashCents);
+      const currentFacility = facilityFrom(state, facilityId);
+      assertUnlocked(state, currentFacility);
       const candidate = reconciled(state);
       const facility = facilityFrom(candidate, facilityId);
-      assertUnlocked(candidate, facility);
       const offering = FACILITY_OFFERINGS.find(({ id }) => id === offeringId);
       if (!offering) throw new Error("招牌产品不存在");
       if (!projectFacilityOfferings(facility.type).some(({ id }) => id === offering.id)) {
@@ -158,9 +162,10 @@ export function createFacilityCommands(savePort: SavePort) {
     ): Promise<GameState> {
       assertRevision(state.revision);
       assertSafeMoney(state.cashCents);
+      const currentFacility = facilityFrom(state, facilityId);
+      assertUnlocked(state, currentFacility);
       const candidate = reconciled(state);
       const facility = facilityFrom(candidate, facilityId);
-      assertUnlocked(candidate, facility);
       const offering = FACILITY_OFFERINGS.find(({ id }) => id === offeringId);
       if (!offering) throw new Error("招牌产品不存在");
       if (!projectFacilityOfferings(facility.type).some(({ id }) => id === offering.id)) {
@@ -191,15 +196,37 @@ export function createFacilityCommands(savePort: SavePort) {
       assertRevision(state.revision);
       assertSafeMoney(state.cashCents);
       if (typeof enabled !== "boolean") throw new Error("设施启用状态无效");
+      const currentFacility = facilityFrom(state, facilityId);
+      assertUnlocked(state, currentFacility);
       const candidate = reconciled(state);
       const facility = facilityFrom(candidate, facilityId);
-      assertUnlocked(candidate, facility);
       if (enabled && operationGroupFor(facility.type)) {
         if (!facility.policy) throw new Error("设施尚未配置运营策略");
         createFacilityPolicy(facility.type, facility.policy);
         if (facility.policy.signatureOfferingId &&
             !facility.developedOfferingIds.includes(facility.policy.signatureOfferingId)) {
           throw new Error("所选招牌产品尚未开发");
+        }
+      } else if (enabled) {
+        const instance = candidate.phase4!.publicSpaces[facility.publicSpaceInstanceId];
+        const blueprint = instance && candidate.phase4!.spaceBlueprints[instance.blueprintId];
+        if (!instance || !blueprint || instance.type !== facility.type ||
+            blueprint.type !== facility.type) {
+          throw new Error("增益设施的公共空间引用无效");
+        }
+        const persisted = blueprint as PublicSpaceBlueprint;
+        const validation = validatePublicSpace({
+          type: blueprint.type,
+          columns: blueprint.columns,
+          rows: blueprint.rows,
+          cells: blueprint.cells,
+          items: blueprint.placedItems,
+          walls: persisted.walls ?? [],
+          doors: persisted.doors ?? [],
+          windows: persisted.windows ?? [],
+        });
+        if (validation.blocking.length > 0) {
+          throw new Error(validation.blocking.map(({ message }) => message).join("；"));
         }
       }
       if (facility.enabled === enabled &&

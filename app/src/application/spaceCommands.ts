@@ -60,9 +60,13 @@ function canonicalBlueprint(input: Readonly<PublicSpaceBlueprint>): PublicSpaceB
     throw new Error("公共空间名称不能为空");
   }
   const sanitized = sanitizeSpaceDraft(draftFor(input));
-  const validation = validatePublicSpace(sanitized.draft);
-  if (validation.blocking.length > 0) {
-    throw new Error(validation.blocking.map(({ message }) => message).join("；"));
+  const validation = validatePublicSpace(sanitized.draft, sanitized);
+  const blocking = [
+    ...sanitized.reasons,
+    ...validation.blocking.map(({ message }) => message),
+  ].filter((message, index, values) => values.indexOf(message) === index);
+  if (blocking.length > 0) {
+    throw new Error(blocking.join("；"));
   }
   return {
     id: blueprintId,
@@ -145,8 +149,19 @@ function resolvePlacement(
   const bySlot = new Map(Object.values(phase4.publicSpaces)
     .filter((instance) => instance.floorId === floor.id)
     .map((instance) => [instance.localPlacementId, instance]));
-  const selected = compatibleSlots.find(({ id }) => !bySlot.has(id)) ??
-    compatibleSlots.find(({ id }) => bySlot.has(id));
+  const sameType = Object.values(phase4.facilities).filter((facility) =>
+    facility.type === type && phase4.publicSpaces[facility.publicSpaceInstanceId]?.floorId === floor.id);
+  if (sameType.length > 1) throw new Error("同一楼层存在多个同类型设施记录");
+  const sameTypeInstance = sameType.length === 1
+    ? phase4.publicSpaces[sameType[0].publicSpaceInstanceId]
+    : undefined;
+  if (sameType.length === 1 && (!sameTypeInstance ||
+      !compatibleSlots.some(({ id }) => id === sameTypeInstance.localPlacementId))) {
+    throw new Error("同类型设施的公共空间槽位引用无效");
+  }
+  const selected = sameTypeInstance
+    ? compatibleSlots.find(({ id }) => id === sameTypeInstance.localPlacementId)
+    : compatibleSlots.find(({ id }) => !bySlot.has(id));
   if (!selected) throw new Error("设施楼层没有可用公共空间槽位");
   return { floorIndex, slotId: selected.id, previous: bySlot.get(selected.id) };
 }
@@ -193,8 +208,7 @@ export function createSpaceCommands(savePort: SavePort) {
       const cashCents = assertSafeMoney(state.cashCents);
       if (!state.phase4) throw new Error("内容规模系统尚未初始化");
       const blueprint = canonicalBlueprint(input);
-      const candidate = reconcileCandidate(state);
-      const current = candidate.phase4!;
+      const current = state.phase4;
       const unlockId = assertStableId(`facility:${blueprint.type}`);
       if (!current.catalogProgress.unlockedIds.includes(unlockId)) {
         throw new Error("该公共空间类型尚未解锁");
@@ -277,7 +291,7 @@ export function createSpaceCommands(savePort: SavePort) {
         facilities,
       };
       return persist(state, reconcileCandidate({
-        ...candidate,
+        ...state,
         cashCents: Number(nextCashBigInt),
         phase4,
       }));

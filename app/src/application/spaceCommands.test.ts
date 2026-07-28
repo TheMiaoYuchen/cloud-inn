@@ -155,17 +155,53 @@ describe("atomic public-space commands", () => {
     }
   });
 
-  it("reconciles a newly eligible type before checking its unlock", async () => {
-    const { state, commands, floor } = scaleCommandFixture("space-newly-eligible");
+  it("requires a persisted unlock before placement and exposes it only after another mutation", async () => {
+    const { state, commands, floor, store } = scaleCommandFixture("space-newly-eligible");
     state.phase4!.catalogProgress.unlockedIds = [];
 
-    const next = await commands.placePublicSpace(state, validDiningBlueprint(), floor.id);
+    await expect(commands.placePublicSpace(state, validDiningBlueprint(), floor.id))
+      .rejects.toThrow("尚未解锁");
+    expect(store.commits).toBe(0);
+
+    const reconciled = await commands.savePublicSpaceBlueprint(
+      state,
+      validDiningBlueprint("space-blueprint:unlock-step"),
+    );
+    expect(reconciled.phase4!.catalogProgress.unlockedIds)
+      .toContain("facility:all-day-dining");
+
+    const next = await commands.placePublicSpace(reconciled, validDiningBlueprint(), floor.id);
 
     expect(next.phase4!.catalogProgress.unlockedIds).toContain("facility:all-day-dining");
     expect(next.phase4!.publicSpaces["public-space:floor:03:space:99"]).toBeDefined();
   });
 
-  it("rejects a duplicate facility type on the same floor", async () => {
+  it.each([
+    ["cells", "空间单元数量超过上限"],
+    ["placedItems", "空间物件数量超过上限"],
+    ["doors", "空间开口数量超过上限"],
+  ] as const)("rejects oversized %s even when the sanitized prefix is valid", async (field, message) => {
+    const { state, commands, store } = scaleCommandFixture(`space-oversized-${field}`);
+    const input = validDiningBlueprint();
+    if (field === "cells") {
+      input.cells = [...input.cells, ...Array.from({ length: 4_097 - input.cells.length }, (_, index) => ({
+        x: index % input.columns,
+        y: Math.floor(index / input.columns) % input.rows,
+        zoneId: assertStableId("zone:seating"),
+      }))];
+    } else if (field === "placedItems") {
+      input.placedItems = [...input.placedItems, ...Array.from({ length: 513 - input.placedItems.length }, (_, index) => ({
+        ...input.placedItems[0], id: assertStableId(`overflow-item:${index}`),
+      }))];
+    } else {
+      input.doors = Array.from({ length: 1_025 }, () => ({ x: 0, y: 0, side: "north" as const }));
+    }
+
+    await expect(commands.savePublicSpaceBlueprint(state, input)).rejects.toThrow(message);
+    expect(store.commits).toBe(0);
+  });
+
+  it("replaces the existing same-type slot before selecting an empty compatible slot", async () => {
     const { state, commands, store } = scaleCommandFixture("space-duplicate-type");
     const floor = state.phase4!.floors.find(({ id }) => id === "floor:03")!;
     const template = state.phase4!.floorTemplates[floor.templateId];
@@ -188,9 +224,22 @@ describe("atomic public-space commands", () => {
     };
     floor.publicSpaceInstanceIds.push(instanceId);
 
-    await expect(commands.placePublicSpace(state, validDiningBlueprint(), floor.id))
-      .rejects.toThrow("同类型");
-    expect(store.commits).toBe(0);
+    const previous = state.phase4!.publicSpaces[instanceId];
+    const facility = state.phase4!.facilities["facility:floor:03:all-day-dining"];
+    facility.developedOfferingIds = [assertStableId("dish:tea-smoked-duck")];
+    const next = await commands.placePublicSpace(state, validDiningBlueprint(), floor.id);
+
+    expect(next.phase4!.publicSpaces[instanceId].blueprintId)
+      .toBe("space-blueprint:new-dining");
+    expect(next.phase4!.publicSpaces["public-space:floor:03:space:99"])
+      .toBeUndefined();
+    expect(next.phase4!.facilities[facility.id].developedOfferingIds)
+      .toEqual(["dish:tea-smoked-duck"]);
+    expect(next.cashCents).toBe(
+      state.cashCents + previous.committedBuildCostCents -
+        next.phase4!.publicSpaces[instanceId].committedBuildCostCents,
+    );
+    expect(store.commits).toBe(1);
   });
 
   it("refunds only committed construction value and migrates compatible facility state", async () => {
@@ -213,23 +262,23 @@ describe("atomic public-space commands", () => {
     expect(next.phase4!.spaceBlueprints["space-blueprint:first"]).toBeUndefined();
   });
 
-  it("removes incompatible facility state and preserves a shared old blueprint", async () => {
+  it("places a different type only in an empty compatible slot", async () => {
     const { state, commands, floor } = scaleCommandFixture("space-replace-incompatible");
     const first = await commands.placePublicSpace(state, validDiningBlueprint("space-blueprint:shared"), floor.id);
     const instance = first.phase4!.publicSpaces["public-space:floor:03:space:99"];
-    first.phase4!.publicSpaces["public-space:floor:04:shared-copy"] = {
-      ...instance,
-      id: assertStableId("public-space:floor:04:shared-copy"),
-      floorId: assertStableId("floor:04"),
-      localPlacementId: assertStableId("shared-copy"),
-    };
+    const template = first.phase4!.floorTemplates[floor.templateId];
+    template.publicSpaceSlots.push({
+      id: assertStableId("space:98"),
+      permittedTypes: ["bar"],
+    });
     const bar = { ...validBarBlueprint(), id: assertStableId("space-blueprint:new-bar") };
 
     const next = await commands.placePublicSpace(first, bar, floor.id);
 
-    expect(next.phase4!.facilities["facility:floor:03:all-day-dining"]).toBeUndefined();
+    expect(next.phase4!.facilities["facility:floor:03:all-day-dining"]).toBeDefined();
     expect(next.phase4!.facilities["facility:floor:03:bar"]).toBeDefined();
-    expect(next.phase4!.spaceBlueprints["space-blueprint:shared"]).toBeDefined();
+    expect(next.phase4!.publicSpaces[instance.id].type).toBe("all-day-dining");
+    expect(next.phase4!.publicSpaces["public-space:floor:03:space:98"].type).toBe("bar");
   });
 
   it("does not charge, mutate, or expose reconciliation when persistence fails", async () => {

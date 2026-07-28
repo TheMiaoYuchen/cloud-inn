@@ -10,6 +10,7 @@ import {
   collectBoundedSpaceOpenings,
   deterministicSpaceItemKey,
   sanitizeSpaceDraft,
+  type SanitizedSpaceDraft,
   validateSanitizedSpaceConnectivity,
   validateSanitizedSpaceDraft,
 } from "./spaceEditor";
@@ -337,8 +338,11 @@ function validateStrategy(
   }
 }
 
-export function validatePublicSpace(input: SpaceDraft): PublicSpaceValidation {
-  const sanitized = sanitizeSpaceDraft(input);
+export function validatePublicSpace(
+  input: SpaceDraft,
+  preSanitized?: SanitizedSpaceDraft,
+): PublicSpaceValidation {
+  const sanitized = preSanitized ?? sanitizeSpaceDraft(input);
   const draft = sanitized.draft;
   const blocking: PlanningIssue[] = [];
   const advisory: PlanningIssue[] = [];
