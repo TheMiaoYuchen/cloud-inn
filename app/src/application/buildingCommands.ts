@@ -1,4 +1,5 @@
 import {
+  projectHotelInventory,
   projectHotelRoomOffers,
   reconcileHotelReferences,
 } from "../domain/building/hotelInventory";
@@ -26,8 +27,12 @@ import { pricingContextForState } from "./pricingContextForState";
 import type { SavePort } from "./ports/SavePort";
 
 function assertRevision(revision: number): void {
-  if (!Number.isSafeInteger(revision) || revision < 0) {
-    throw new Error("存档修订号必须是非负安全整数");
+  if (
+    !Number.isSafeInteger(revision) ||
+    revision < 0 ||
+    revision >= Number.MAX_SAFE_INTEGER
+  ) {
+    throw new Error("存档修订号必须可安全递增");
   }
 }
 
@@ -52,7 +57,10 @@ function defaultPolicy(
   };
 }
 
-function reconcilePricePolicies(state: GameState): GameState {
+function reconcilePricePolicies(
+  state: GameState,
+  preserveExistingAutomaticRates = false,
+): GameState {
   const operations = state.operations;
   if (!operations) return state;
   const offers = projectHotelRoomOffers(state);
@@ -69,7 +77,7 @@ function reconcilePricePolicies(state: GameState): GameState {
     ) {
       const policy = { ...(existing as PricePolicy), roomOfferId: offer.id };
       validatePricePolicy(policy);
-      pricePolicies[offer.id] = policy.automaticPricing
+      pricePolicies[offer.id] = policy.automaticPricing && !preserveExistingAutomaticRates
         ? { ...policy, nightlyRateCents: effectiveRate(policy, context) }
         : policy;
     } else {
@@ -86,15 +94,102 @@ function reconcilePricePolicies(state: GameState): GameState {
   };
 }
 
-function completeBuildingState(candidate: Readonly<GameState>): GameState {
+function completeBuildingState(
+  candidate: Readonly<GameState>,
+  preserveExistingAutomaticRates = false,
+): GameState {
   let next = reconcileHotelReferences(candidate);
-  next = reconcilePricePolicies(next);
+  next = reconcilePricePolicies(next, preserveExistingAutomaticRates);
   if (!next.phase4) throw new Error("内容规模系统尚未初始化");
   const phase4 = reconcileCatalogProgress(
     next.phase4,
     projectContentUnlocks(next),
   );
   return { ...next, phase4 };
+}
+
+function migratedOfferIdMap(
+  previous: Readonly<GameState>,
+  upgraded: Readonly<GameState>,
+): Map<string, string> {
+  const legacyRoomsById = new Map(
+    previous.floor.rooms.map((room) => [room.id, room]),
+  );
+  const legacyInventory = projectHotelInventory(previous).rooms;
+  const targetInventory = projectHotelInventory({
+    ...upgraded,
+    operations: undefined,
+  }).rooms;
+  const targetsByIdentity = new Map<string, typeof targetInventory>();
+  for (const target of targetInventory) {
+    const identity = target.variantId ?? target.roomBlueprintId;
+    const key = `${target.localPlacementId}\u0000${identity}`;
+    const candidates = targetsByIdentity.get(key) ?? [];
+    candidates.push(target);
+    targetsByIdentity.set(key, candidates);
+  }
+  const result = new Map<string, string>();
+  for (const legacy of legacyInventory) {
+    const legacyRoom = legacyRoomsById.get(legacy.sourceRoomId);
+    if (!legacyRoom || legacyRoom.slotId !== legacy.localPlacementId) {
+      throw new Error(`旧客房产品 ${legacy.id} 无法解析物理槽位`);
+    }
+    const identity = legacy.variantId ?? legacy.roomBlueprintId;
+    const candidates = targetsByIdentity.get(
+      `${legacyRoom.slotId}\u0000${identity}`,
+    ) ?? [];
+    if (candidates.length !== 1) {
+      throw new Error(`旧客房产品 ${legacy.id} 无法唯一映射到新客房产品`);
+    }
+    result.set(legacy.id, candidates[0].id);
+  }
+  return result;
+}
+
+function migrateLegacyOperationsReferences(
+  previous: Readonly<GameState>,
+  upgraded: GameState,
+): GameState {
+  const operations = previous.operations;
+  if (!operations || previous.phase4 || !upgraded.phase4) return upgraded;
+  const offerIdMap = migratedOfferIdMap(previous, upgraded);
+  const pricePolicies: OperationsState["pricePolicies"] = {};
+  for (const [key, policy] of Object.entries(operations.pricePolicies)) {
+    const mappedId = offerIdMap.get(key);
+    if (!mappedId) {
+      pricePolicies[key] = structuredClone(policy);
+      continue;
+    }
+    if (policy.roomOfferId !== key) {
+      throw new Error("旧房价策略键与客房产品不匹配");
+    }
+    if (pricePolicies[mappedId]) throw new Error("旧房价策略映射冲突");
+    pricePolicies[mappedId] = { ...structuredClone(policy), roomOfferId: mappedId };
+  }
+  const offerUpgrades: OperationsState["offerUpgrades"] = {};
+  for (const [key, upgrade] of Object.entries(operations.offerUpgrades)) {
+    if (upgrade.kind === undefined) {
+      offerUpgrades[key] = structuredClone(upgrade);
+      continue;
+    }
+    const mappedId = offerIdMap.get(upgrade.roomOfferId);
+    if (!mappedId) {
+      throw new Error(`付费客房改造 ${key} 无法映射到新客房产品`);
+    }
+    if (key !== `${upgrade.roomOfferId}:${upgrade.kind}`) {
+      throw new Error("旧客房改造键与内容不一致");
+    }
+    const mappedKey = `${mappedId}:${upgrade.kind}`;
+    if (offerUpgrades[mappedKey]) throw new Error("旧客房改造映射冲突");
+    offerUpgrades[mappedKey] = {
+      ...structuredClone(upgrade),
+      roomOfferId: mappedId,
+    };
+  }
+  return {
+    ...upgraded,
+    operations: { ...operations, pricePolicies, offerUpgrades },
+  };
 }
 
 export function createBuildingCommands(savePort: SavePort) {
@@ -113,9 +208,17 @@ export function createBuildingCommands(savePort: SavePort) {
 
   return {
     async initializeContentScale(state: GameState): Promise<GameState> {
+      if (state.phase4) return state;
       assertRevision(state.revision);
       assertSafeMoney(state.cashCents);
-      return persist(state, completeBuildingState(upgradeLegacyToPhase4(state)));
+      const upgraded = upgradeLegacyToPhase4(state);
+      return persist(
+        state,
+        completeBuildingState(
+          migrateLegacyOperationsReferences(state, upgraded),
+          true,
+        ),
+      );
     },
 
     async purchaseFloor(

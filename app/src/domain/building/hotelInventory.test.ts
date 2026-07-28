@@ -4,7 +4,6 @@ import { pricingContextForState } from "../../application/pricingContextForState
 import { createPhase4AcceptanceState } from "../../testing/phase4Fixtures";
 import { createOperationsState } from "../operations/createOperationsState";
 import type { OperationsDailyReport } from "../operations/operationsTypes";
-import { applyTemplateSync, copyGuestFloor } from "./towerHotel";
 import {
   projectHotelInventory,
   projectHotelRoomOffers,
@@ -81,31 +80,26 @@ describe("authoritative hotel inventory", () => {
     expect(pricingContextForState(state).remainingInventoryBps).toBe(5_000);
   });
 
-  it("uses each floor's applied placement snapshot until that floor is selected for sync", () => {
-    const game = createPhase4AcceptanceState("inventory-snapshot");
-    const phase4 = game.phase4!;
-    const source = phase4.floors.find(({ use }) => use === "guest")!;
-    const copied = copyGuestFloor(phase4, source.id, 29).phase4;
-    const template = copied.floorTemplates[source.templateId];
-    const changed = {
-      ...copied,
-      floorTemplates: {
-        ...copied.floorTemplates,
-        [template.id]: {
-          ...template,
-          roomPlacements: template.roomPlacements.map((placement, index) =>
-            index === 0 ? { ...placement, width: 5 } : placement,
-          ),
-        },
-      },
+  it("does not let unsynchronized canonical template edits mutate physical offers", () => {
+    const state = createPhase4AcceptanceState("inventory-canonical-edit");
+    const guestFloor = state.phase4!.floors.find(({ use }) => use === "guest")!;
+    expect(state.phase4!.floorTemplates[`template-snapshot:${guestFloor.id}`])
+      .toBeUndefined();
+    const before = projectHotelRoomOffers(state);
+    const changed = structuredClone(state);
+    const template = changed.phase4!.floorTemplates[guestFloor.templateId];
+    template.roomPlacements[0] = {
+      ...template.roomPlacements[0],
+      id: "placement:replacement" as typeof template.roomPlacements[0]["id"],
+      roomBlueprintId: "room-blueprint:canonical-draft" as typeof template.roomPlacements[0]["roomBlueprintId"],
+      width: 9,
+      height: 9,
     };
-    const selected = applyTemplateSync(changed, [source.id]);
-    const projected = projectHotelInventory({ ...game, phase4: selected });
-    const sourceRoom = projected.rooms.find(({ floorId }) => floorId === source.id)!;
-    const copiedRoom = projected.rooms.find(({ floorId }) => floorId === "floor:29")!;
 
-    expect(sourceRoom.areaSquareMeters).toBe(30);
-    expect(copiedRoom.areaSquareMeters).toBe(24);
+    const after = projectHotelRoomOffers(changed);
+
+    expect(after).toEqual(before);
+    expect(after[0].areaSquareMeters).toBe(24);
   });
 
   it("rejects colliding physical IDs and inconsistent design references", () => {
@@ -125,7 +119,7 @@ describe("authoritative hotel inventory", () => {
     const room = invalid.phase4!.floors.find(({ use }) => use === "guest")!.rooms[0];
     room.variantId = "variant:missing" as typeof room.variantId;
 
-    expect(() => projectHotelRoomOffers(invalid)).toThrow("设计引用");
+    expect(() => projectHotelRoomOffers(invalid)).toThrow("客房变体");
   });
 
   it("rejects duplicate public-space references on one floor", () => {

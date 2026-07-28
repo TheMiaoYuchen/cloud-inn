@@ -323,14 +323,18 @@ function appliedPlacementMaps(
   phase4: Readonly<ContentScaleState>,
   floors: readonly Readonly<HotelFloor>[],
   templates: ReadonlyMap<string, ScaleFloorTemplate>,
-): Map<string, Map<string, ScaleRoomPlacement>> {
-  const byFloor = new Map<string, Map<string, ScaleRoomPlacement>>();
+): Map<string, Map<string, ScaleRoomPlacement> | null> {
+  const byFloor = new Map<string, Map<string, ScaleRoomPlacement> | null>();
   for (const floor of floors) {
     const canonical = templates.get(floor.templateId);
     if (!canonical) throw new Error(`楼层 ${floor.id} 引用了未知模板`);
     if (canonical.use !== floor.use) throw new Error(`楼层 ${floor.id} 的用途与模板不匹配`);
     const snapshotId = `template-snapshot:${floor.id}`;
-    const applied = phase4.floorTemplates[snapshotId] ?? canonical;
+    const applied = phase4.floorTemplates[snapshotId];
+    if (!applied) {
+      byFloor.set(floor.id, null);
+      continue;
+    }
     if (applied.use !== floor.use) {
       throw new Error(`楼层 ${floor.id} 的快照用途不匹配`);
     }
@@ -415,34 +419,22 @@ function projectPhase4Inventory(state: Readonly<GameState>): HotelInventory {
   for (const floor of floors) {
     if (!floor.purchased) continue;
     const placements = placementsByFloor.get(floor.id)!;
+    if (placements && placements.size !== floor.rooms.length) {
+      throw new Error(`楼层 ${floor.id} 的快照客房集合不一致`);
+    }
     for (const room of [...floor.rooms].sort((left, right) =>
       compareStableIds(left.id, right.id))) {
       if (roomIds.has(room.id)) throw new Error(`客房编号冲突：${room.id}`);
       roomIds.add(room.id);
       if (room.floorId !== floor.id) throw new Error(`客房 ${room.id} 的楼层引用不一致`);
-      const placement = placements.get(room.localPlacementId);
-      if (!placement) throw new Error(`客房 ${room.id} 引用了未知模板放置`);
-      if (
+      const placement = placements?.get(room.localPlacementId);
+      if (placements && !placement) throw new Error(`客房 ${room.id} 引用了未知模板放置`);
+      if (placement && (
         placement.roomBlueprintId !== room.roomBlueprintId ||
         placement.variantId !== room.variantId
-      ) {
-        throw new Error(`客房 ${room.id} 的设计引用与楼层快照不一致`);
-      }
+      )) throw new Error(`客房 ${room.id} 的设计引用与楼层快照不一致`);
       const design = designs.get(room.roomBlueprintId);
       if (!design) throw new Error(`客房 ${room.id} 引用了未知客房设计`);
-      if (
-        !Number.isSafeInteger(placement.width) ||
-        !Number.isSafeInteger(placement.height) ||
-        placement.width <= 0 ||
-        placement.height <= 0
-      ) {
-        throw new Error(`客房 ${room.id} 的真实面积无效`);
-      }
-      const areaSquareMeters =
-        placement.width * placement.height * phase4.floorTemplates[floor.templateId].cellAreaSquareMeters;
-      if (!Number.isSafeInteger(areaSquareMeters) || areaSquareMeters <= 0) {
-        throw new Error(`客房 ${room.id} 的真实面积无效`);
-      }
       let offer: RoomOffer;
       if (room.variantId !== undefined) {
         const variant = variants.get(room.variantId);
@@ -450,9 +442,23 @@ function projectPhase4Inventory(state: Readonly<GameState>): HotelInventory {
         if (variant.masterId !== room.roomBlueprintId) {
           throw new Error(`客房 ${room.id} 的母版与变体引用不一致`);
         }
-        offer = variantOffer(state, room.id, variant, areaSquareMeters);
+        if (!variant.metrics) throw new Error(`客房 ${room.id} 的变体缺少权威面积`);
+        offer = variantOffer(
+          state,
+          room.id,
+          variant,
+          variant.metrics.areaSquareMeters,
+        );
       } else {
-        offer = designOffer(state, room.id, design, areaSquareMeters);
+        offer = designOffer(
+          state,
+          room.id,
+          design,
+          design.metrics.areaSquareMeters,
+        );
+      }
+      if (!Number.isSafeInteger(offer.areaSquareMeters) || offer.areaSquareMeters <= 0) {
+        throw new Error(`客房 ${room.id} 的权威面积无效`);
       }
       rooms.push(roomWithReferences(
         offer,

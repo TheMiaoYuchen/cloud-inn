@@ -3,7 +3,12 @@ import { describe, expect, it } from "vitest";
 import { projectHotelRoomOffers } from "../domain/building/hotelInventory";
 import { previewExpansion } from "../domain/building/towerHotel";
 import { createOperationsState } from "../domain/operations/createOperationsState";
-import type { GameState } from "../domain/game/state";
+import { createNewGame, type GameState } from "../domain/game/state";
+import { createRectangle } from "../domain/room/grid";
+import { CONTEMPORARY_ORIENTAL } from "../domain/design/stylePresets";
+import { createCorridorTemplate } from "../domain/floor/corridorTemplate";
+import type { PricePolicy } from "../domain/operations/pricing";
+import { roomOfferUpgradeKey } from "../domain/operations/renovation";
 import { InMemorySavePort } from "../infrastructure/memory/InMemorySavePort";
 import { createPhase4AcceptanceState } from "../testing/phase4Fixtures";
 import { createGameCommands } from "./gameCommands";
@@ -34,6 +39,166 @@ async function initializedScaleCommands() {
 }
 
 describe("atomic building commands", () => {
+  it("rejects revision overflow before any building command persistence", async () => {
+    const expectOverflowRejected = async (
+      state: GameState,
+      invoke: (commands: ReturnType<typeof createGameCommands>, state: GameState) => Promise<GameState>,
+    ) => {
+      const store = new RecordingSavePort();
+      const commands = createGameCommands(store);
+
+      await expect(invoke(commands, {
+        ...state,
+        revision: Number.MAX_SAFE_INTEGER,
+      })).rejects.toThrow("修订号");
+      expect(store.commits).toBe(0);
+    };
+    const phase4 = createPhase4AcceptanceState("building-revision-overflow");
+    const source = phase4.phase4!.floors.find(({ use }) => use === "guest")!;
+
+    await expectOverflowRejected(
+      createNewGame("building-revision-initialize"),
+      (commands, state) => commands.initializeContentScale(state),
+    );
+    await expectOverflowRejected(
+      phase4,
+      (commands, state) => commands.purchaseFloor(state, 17, "dense-ring"),
+    );
+    await expectOverflowRejected(
+      phase4,
+      (commands, state) => commands.copyFloor(state, source.id, 29),
+    );
+    await expectOverflowRejected(
+      phase4,
+      (commands, state) => commands.syncFloorTemplate(state, [source.id]),
+    );
+  });
+
+  it("returns an existing content-scale state by identity without persisting", async () => {
+    const store = new RecordingSavePort();
+    const commands = createGameCommands(store);
+    const state = createPhase4AcceptanceState("building-initialize-idempotent");
+    const revision = state.revision;
+
+    const result = await commands.initializeContentScale(state);
+
+    expect(result).toBe(state);
+    expect(result.revision).toBe(revision);
+    expect(store.commits).toBe(0);
+    expect(await store.load(state.saveId)).toBeNull();
+  });
+
+  it("opens a master-only Phase 4 hotel with authoritative physical rooms", async () => {
+    const store = new InMemorySavePort();
+    const commands = createGameCommands(store);
+    const state = createPhase4AcceptanceState("building-master-only-open");
+    state.phase = "ready";
+
+    const opened = await commands.openHotel(state);
+
+    expect(opened.phase).toBe("open");
+    expect(opened.roomBlueprint).toBeNull();
+    expect(projectHotelRoomOffers(opened)).toHaveLength(120);
+  });
+
+  it("settles the expanded authoritative inventory without Phase 3 operations", async () => {
+    const store = new InMemorySavePort();
+    const commands = createGameCommands(store);
+    const initial = createPhase4AcceptanceState("building-legacy-settlement");
+    const source = initial.phase4!.floors.find(({ use }) => use === "guest")!;
+    const expanded = await commands.copyFloor(initial, source.id, 29);
+    const opened: GameState = { ...expanded, phase: "open", operations: undefined };
+
+    const settled = await commands.advanceDay(opened);
+
+    expect(projectHotelRoomOffers(opened)).toHaveLength(130);
+    expect(settled.latestReport?.availableRooms).toBe(130);
+    expect(settled.latestReport?.soldRooms).toBeGreaterThan(0);
+  });
+
+  it("maps Phase 3 custom pricing and completed paid renovations to upgraded physical offers", async () => {
+    const store = new InMemorySavePort();
+    const commands = createGameCommands(store);
+    const cells = [
+      ...createRectangle(0, 0, 8, 9, "bedroom"),
+      ...createRectangle(0, 9, 8, 3, "bathroom"),
+    ];
+    let state = await commands.saveRoomSeries(createNewGame("building-migrate-paid"), {
+      id: "room-master:migrate-paid",
+      name: "迁移付费内容客房",
+      cells,
+      gene: CONTEMPORARY_ORIENTAL.gene,
+    });
+    state = await commands.saveRoomBlueprint(state, "迁移付费内容客房", cells);
+    state = await commands.chooseCorridorTemplate(
+      state,
+      createCorridorTemplate("complete-ring"),
+    );
+    const variantId = state.phase2!.roomVariants.find(
+      ({ variantKind }) => variantKind === "king",
+    )!.id;
+    state = await commands.placeRoomVariant(state, {
+      slotId: "north-west",
+      variantId,
+      rotation: 0,
+      mirrored: false,
+    });
+    state = await commands.initializeOperations(state, "management");
+    const oldOfferId = projectHotelRoomOffers(state)[0].id;
+    const customPolicy: PricePolicy = {
+      roomOfferId: oldOfferId,
+      baseRateCents: 123_400,
+      minRateCents: 111_100,
+      maxRateCents: 222_200,
+      automaticPricing: true,
+      nightlyRateCents: 144_400,
+    };
+    const paidUpgrade = {
+      roomOfferId: oldOfferId,
+      upgradeId: "workspace",
+      kind: "workspace" as const,
+      level: 1,
+      remainingClosureDays: 0,
+      committedDay: 3,
+      costCents: 120_000,
+    };
+    const legacyUpgrade = {
+      roomOfferId: "legacy-deluxe",
+      upgradeId: "club-access",
+      level: 2,
+    };
+    state = {
+      ...state,
+      operations: {
+        ...state.operations!,
+        pricePolicies: { [oldOfferId]: customPolicy },
+        offerUpgrades: {
+          [roomOfferUpgradeKey(oldOfferId, "workspace")]: paidUpgrade,
+          "legacy-deluxe": legacyUpgrade,
+        },
+      },
+    };
+
+    const upgraded = await commands.initializeContentScale(state);
+    const newOfferId = projectHotelRoomOffers(upgraded)[0].id;
+
+    expect(newOfferId).not.toBe(oldOfferId);
+    expect(upgraded.operations!.pricePolicies[newOfferId]).toEqual({
+      ...customPolicy,
+      roomOfferId: newOfferId,
+    });
+    expect(upgraded.operations!.offerUpgrades[
+      roomOfferUpgradeKey(newOfferId, "workspace")
+    ]).toEqual({ ...paidUpgrade, roomOfferId: newOfferId });
+    expect(upgraded.operations!.offerUpgrades["legacy-deluxe"]).toEqual(
+      legacyUpgrade,
+    );
+    expect(upgraded.operations!.pricePolicies[oldOfferId]).toBeUndefined();
+    expect(upgraded.operations!.offerUpgrades[
+      roomOfferUpgradeKey(oldOfferId, "workspace")
+    ]).toBeUndefined();
+  });
+
   it("atomically buys and populates one floor while reconciling pricing", async () => {
     const { state, commands, store } = await initializedScaleCommands();
     const preview = previewExpansion(state, 35);
@@ -56,7 +221,9 @@ describe("atomic building commands", () => {
     initial.phase4!.catalogProgress.unlockedIds = [];
     initial.operations = createOperationsState("management");
     const baselineCommands = createGameCommands(store);
-    const state = await baselineCommands.initializeContentScale(initial);
+    const initialized = await baselineCommands.initializeContentScale(initial);
+    const state = { ...initialized, revision: initialized.revision + 1 };
+    await store.commit(initialized.revision, state);
     const source = {
       ...state,
       phase4: {

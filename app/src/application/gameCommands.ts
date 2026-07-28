@@ -59,6 +59,7 @@ import {
   type RoomRenovationPreview,
 } from "../domain/operations/renovation";
 import { createBuildingCommands } from "./buildingCommands";
+import { projectHotelInventory } from "../domain/building/hotelInventory";
 
 export function previewRoomRenovation(
   state: Readonly<GameState>,
@@ -755,9 +756,14 @@ export function createGameCommands(savePort: SavePort) {
     },
 
     async openHotel(state: GameState): Promise<GameState> {
-      if (state.floor.rooms.length === 0) {
+      const roomDesign = state.roomBlueprint ?? state.phase2?.roomMaster;
+      const physicalRoomCount = state.phase4
+        ? projectHotelInventory(state).rooms.length
+        : state.floor.rooms.length;
+      if (physicalRoomCount === 0) {
         throw new Error("至少建造一间客房才能开业");
       }
+      if (!roomDesign) throw new Error("请先保存房型");
       if (state.phase !== "ready") {
         throw new Error("当前不能开业");
       }
@@ -766,7 +772,8 @@ export function createGameCommands(savePort: SavePort) {
     },
 
     async advanceDay(state: GameState, nowMs?: number): Promise<GameState> {
-      if (state.phase !== "open" || !state.roomBlueprint) {
+      const roomDesign = state.roomBlueprint ?? state.phase2?.roomMaster;
+      if (state.phase !== "open" || !roomDesign) {
         throw new Error("酒店尚未开业");
       }
 
@@ -778,10 +785,12 @@ export function createGameCommands(savePort: SavePort) {
       const report = settleDay({
         day: state.currentDay + 1,
         cashCents: state.cashCents,
-        availableRooms: state.floor.rooms.length,
+        availableRooms: state.phase4
+          ? projectHotelInventory(state).rooms.length
+          : state.floor.rooms.length,
         rateCents: state.rateCents,
-        suggestedRateCents: state.roomBlueprint.metrics.suggestedRateCents,
-        areaSquareMeters: state.roomBlueprint.metrics.areaSquareMeters,
+        suggestedRateCents: roomDesign.metrics.suggestedRateCents,
+        areaSquareMeters: roomDesign.metrics.areaSquareMeters,
       });
       return persist(state, {
         ...state,
