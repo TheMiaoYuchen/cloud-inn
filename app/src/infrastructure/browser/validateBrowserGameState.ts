@@ -159,7 +159,24 @@ function validateNeed(raw: unknown, currentDay: number): void {
 type DailyTotals = {
   day: number; revenue: number; operating: number; finance: number; net: number;
   cash: number; reputation: number; available: number; sold: number; occupancy: number;
+  categoryVersion: "legacy" | "v2";
+  roomRevenue: number; publicSpaceRevenue: number;
+  departmentCost: number; facilityOperatingCost: number;
 };
+
+const REPORT_V2_CATEGORY_FIELDS = [
+  "roomRevenueCents",
+  "publicSpaceRevenueCents",
+  "departmentCostCents",
+  "facilityOperatingCostCents",
+] as const;
+
+function reportCategoryVersion(report: JsonObject, label: string): "legacy" | "v2" {
+  const count = REPORT_V2_CATEGORY_FIELDS.filter((field) => field in report).length;
+  if (count === 0) return "legacy";
+  if (count === REPORT_V2_CATEGORY_FIELDS.length) return "v2";
+  operationsError(`${label}必须完整包含四项收入与成本分类`);
+}
 
 function validateDailyReport(raw: unknown, currentDay: number): DailyTotals {
   const report = operationsObject(raw, "经营日报");
@@ -188,11 +205,27 @@ function validateDailyReport(raw: unknown, currentDay: number): DailyTotals {
   const net = signedInteger(report.netIncomeCents, "日报净收益");
   const cash = integer(report.endingCashCents, "日报期末现金");
   const reputation = bps(report.reputationBps, "日报声誉");
-  if (safeSum(segmentRevenue, "客群收入") !== revenue || safeSum([revenue, -operating, -finance], "日报净收益") !== net) {
+  const categoryVersion = reportCategoryVersion(report, "新版日报");
+  const roomRevenue = categoryVersion === "v2"
+    ? integer(report.roomRevenueCents, "客房收入")
+    : revenue;
+  const publicSpaceRevenue = categoryVersion === "v2"
+    ? integer(report.publicSpaceRevenueCents, "公共空间收入")
+    : 0;
+  const departmentCost = categoryVersion === "v2"
+    ? integer(report.departmentCostCents, "部门成本")
+    : operating;
+  const facilityOperatingCost = categoryVersion === "v2"
+    ? integer(report.facilityOperatingCostCents, "设施经营成本")
+    : 0;
+  if (
+    safeSum(segmentRevenue, "客群收入") !== roomRevenue
+    || safeSum([roomRevenue, publicSpaceRevenue], "日报收入分类") !== revenue
+    || safeSum([departmentCost, facilityOperatingCost], "日报成本分类") !== operating
+    || safeSum([revenue, -operating, -finance], "日报净收益") !== net
+  ) {
     operationsError("日报汇总与客群明细不一致");
   }
-  if (report.roomRevenueCents !== undefined && integer(report.roomRevenueCents, "客房收入") !== revenue) operationsError("客房收入不一致");
-  if (report.departmentCostCents !== undefined && integer(report.departmentCostCents, "部门成本") !== operating) operationsError("部门成本不一致");
   if (report.loanInterestCents !== undefined && integer(report.loanInterestCents, "贷款利息") !== finance) operationsError("贷款利息不一致");
   optionalInteger(report, "cashShortfallCents", "现金缺口");
   const available = optionalInteger(report, "availableRooms", "可售客房") ?? 0;
@@ -225,7 +258,10 @@ function validateDailyReport(raw: unknown, currentDay: number): DailyTotals {
     integer(booking.rateCents, "预订房价");
   }
   for (const item of operationsArray(report.discoveredNeeds ?? [], "日报市场需求")) validateNeed(item, currentDay);
-  return { day, revenue, operating, finance, net, cash, reputation, available, sold, occupancy };
+  return {
+    day, revenue, operating, finance, net, cash, reputation, available, sold, occupancy,
+    categoryVersion, roomRevenue, publicSpaceRevenue, departmentCost, facilityOperatingCost,
+  };
 }
 
 function expectedTotals(reports: readonly DailyTotals[]) {
@@ -238,6 +274,10 @@ function expectedTotals(reports: readonly DailyTotals[]) {
     sold: safeSum(reports.map((r) => r.sold), "报告售出客房"),
     occupancy: Math.trunc(safeSum(reports.map((r) => r.occupancy), "报告入住率") / reports.length),
     reputation: Math.trunc(safeSum(reports.map((r) => r.reputation), "报告声誉") / reports.length),
+    roomRevenue: safeSum(reports.map((r) => r.roomRevenue), "报告客房收入"),
+    publicSpaceRevenue: safeSum(reports.map((r) => r.publicSpaceRevenue), "报告公共空间收入"),
+    departmentCost: safeSum(reports.map((r) => r.departmentCost), "报告部门成本"),
+    facilityOperatingCost: safeSum(reports.map((r) => r.facilityOperatingCost), "报告设施经营成本"),
   };
 }
 
@@ -248,9 +288,21 @@ function validateAggregate(raw: unknown, reports: readonly DailyTotals[], kind: 
   const numberKey = kind === "weekly" ? "week" : "month";
   if (aggregate[numberKey] !== number || aggregate.startDay !== start || aggregate.endDay !== end) operationsError("周期报告窗口无效");
   const totals = expectedTotals(reports);
+  const versions = new Set(reports.map(({ categoryVersion }) => categoryVersion));
+  if (versions.size !== 1) operationsError("周期报告不能混合日报版本");
+  const categoryVersion = reports[0].categoryVersion;
+  if (reportCategoryVersion(aggregate, "新版周期报告") !== categoryVersion) {
+    operationsError("周期报告与日报版本不一致");
+  }
   if (aggregate.revenueCents !== totals.revenue || aggregate.netIncomeCents !== totals.net) operationsError("周期报告汇总不一致");
   if (aggregate.operatingCostCents !== undefined && aggregate.operatingCostCents !== totals.operating) operationsError("周期经营成本不一致");
   if (aggregate.financeCostCents !== undefined && aggregate.financeCostCents !== totals.finance) operationsError("周期财务成本不一致");
+  if (categoryVersion === "v2" && (
+    aggregate.roomRevenueCents !== totals.roomRevenue
+    || aggregate.publicSpaceRevenueCents !== totals.publicSpaceRevenue
+    || aggregate.departmentCostCents !== totals.departmentCost
+    || aggregate.facilityOperatingCostCents !== totals.facilityOperatingCost
+  )) operationsError("周期收入与成本分类不一致");
   if (aggregate.availableRooms !== undefined && aggregate.availableRooms !== totals.available) operationsError("周期可售客房不一致");
   if (aggregate.soldRooms !== undefined && aggregate.soldRooms !== totals.sold) operationsError("周期售出客房不一致");
   const occupancy = kind === "weekly" ? aggregate.averageOccupancyBps : aggregate.averageOccupancyBps;

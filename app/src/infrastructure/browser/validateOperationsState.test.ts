@@ -27,8 +27,6 @@ function daily(day: number): OperationsDailyReport {
     availableRooms: 2,
     soldRooms: 1,
     occupancyBps: 5_000,
-    departmentCostCents: 100,
-    roomRevenueCents: 1_000,
     loanInterestCents: 10,
     cashShortfallCents: 0,
     lostBookings: [{ segmentId: "couple", code: "price", count: 1, explanation: "rate" }],
@@ -149,6 +147,41 @@ describe("browser operations persistence validation", () => {
     expect(state).toEqual(snapshot);
     expect(loaded).not.toBe(state);
   });
+
+  it.each(Array.from({ length: 14 }, (_, index) => index + 1))(
+    "rejects partial report-v2 category presence mask %s",
+    (mask) => {
+      const report = daily(1);
+      const categoryValues = {
+        roomRevenueCents: 1_000,
+        publicSpaceRevenueCents: 0,
+        departmentCostCents: 100,
+        facilityOperatingCostCents: 0,
+      } as const;
+      const keys = Object.keys(categoryValues) as Array<keyof typeof categoryValues>;
+      Object.assign(report, Object.fromEntries(
+        keys.flatMap((key, index) => mask & (1 << index) ? [[key, categoryValues[key]]] : []),
+      ));
+      const operations = createOperationsState();
+      operations.dailyReports = [report];
+      operations.reputationBps = report.reputationBps;
+      operations.maximumReputationBps = report.reputationBps;
+      const legacy = legacyReport(report);
+      const state: GameState = {
+        ...createNewGame(`partial-v2-${mask}`),
+        revision: 1,
+        currentDay: 1,
+        cashCents: report.endingCashCents,
+        reports: [legacy],
+        latestReport: legacy,
+        operations,
+      };
+
+      expect(() => validateBrowserGameState(state, state.saveId)).toThrow(
+        "必须完整包含四项收入与成本分类",
+      );
+    },
+  );
 
   it("accepts a fresh operations envelope lazily initialized on legacy day 30", () => {
     const legacy = createNewGame("legacy-day-30");

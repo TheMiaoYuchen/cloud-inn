@@ -9,6 +9,23 @@ import type {
 
 const MAX_SAFE_BIGINT = BigInt(Number.MAX_SAFE_INTEGER);
 const MIN_SAFE_BIGINT = -MAX_SAFE_BIGINT;
+const REPORT_V2_CATEGORY_FIELDS = [
+  "roomRevenueCents",
+  "publicSpaceRevenueCents",
+  "departmentCostCents",
+  "facilityOperatingCostCents",
+] as const;
+
+function reportCategoryVersion(
+  report: Readonly<OperationsDailyReport>,
+): "legacy" | "v2" {
+  const count = REPORT_V2_CATEGORY_FIELDS.filter(
+    (field) => report[field] !== undefined,
+  ).length;
+  if (count === 0) return "legacy";
+  if (count === REPORT_V2_CATEGORY_FIELDS.length) return "v2";
+  throw new Error("新版日报必须完整包含四项收入与成本分类");
+}
 
 function safeInteger(value: number, label: string, allowNegative = false): number {
   if (!Number.isSafeInteger(value) || (!allowNegative && value < 0)) {
@@ -44,18 +61,8 @@ function validateReports(
     if (index > 0 && report.day !== reports[index - 1].day + 1) {
       throw new Error("日报日期必须连续且严格递增");
     }
-    const hasPublicRevenue = report.publicSpaceRevenueCents !== undefined;
-    const hasFacilityCost = report.facilityOperatingCostCents !== undefined;
-    const isPhase4 = hasPublicRevenue || hasFacilityCost;
+    const isPhase4 = reportCategoryVersion(report) === "v2";
     if (isPhase4) phase4ReportCount += 1;
-    if (isPhase4 && (
-      report.roomRevenueCents === undefined
-      || !hasPublicRevenue
-      || report.departmentCostCents === undefined
-      || !hasFacilityCost
-    )) {
-      throw new Error("新版日报必须完整包含收入与成本分类");
-    }
     if (isPhase4) {
       const roomRevenueCents = safeInteger(report.roomRevenueCents!, "客房收入");
       const publicSpaceRevenueCents = safeInteger(report.publicSpaceRevenueCents!, "公共空间收入");
@@ -120,12 +127,7 @@ function topCodes(reports: ReadonlyArray<Readonly<OperationsDailyReport>>) {
 function commonTotals(reports: ReadonlyArray<Readonly<OperationsDailyReport>>) {
   const availableRooms = safeSum(reports.map((report) => report.availableRooms ?? 0), "可售客房总数");
   const soldRooms = safeSum(reports.map((report) => report.soldRooms ?? 0), "售出客房总数");
-  const phase4 = reports.every((report) =>
-    report.roomRevenueCents !== undefined
-      && report.publicSpaceRevenueCents !== undefined
-      && report.departmentCostCents !== undefined
-      && report.facilityOperatingCostCents !== undefined,
-  );
+  const phase4 = reports.every((report) => reportCategoryVersion(report) === "v2");
   return {
     revenueCents: safeSum(reports.map(({ revenueCents }) => revenueCents), "收入"),
     operatingCostCents: safeSum(reports.map(({ operatingCostCents }) => operatingCostCents), "经营成本"),

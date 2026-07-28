@@ -61,12 +61,8 @@ describe("operations reporting", () => {
     });
   });
 
-  it("keeps Phase 3 room and department detail compatible without Phase 4 categories", () => {
-    const reports = Array.from({ length: 7 }, (_, index) => ({
-      ...daily(index + 1),
-      roomRevenueCents: (index + 1) * 1_000,
-      departmentCostCents: (index + 1) * 100,
-    }));
+  it("keeps Phase 3 reports compatible when all report-v2 categories are absent", () => {
+    const reports = Array.from({ length: 7 }, (_, index) => daily(index + 1));
 
     expect(aggregateWeeklyReport(reports)).toMatchObject({
       revenueCents: 28_000,
@@ -74,7 +70,29 @@ describe("operations reporting", () => {
     });
   });
 
-  it("rejects partial or arithmetically inconsistent report-v2 categories", () => {
+  it.each(Array.from({ length: 14 }, (_, index) => index + 1))(
+    "rejects partial report-v2 category presence mask %s",
+    (mask) => {
+      const categoryValues = {
+        roomRevenueCents: 400,
+        publicSpaceRevenueCents: 600,
+        departmentCostCents: 40,
+        facilityOperatingCostCents: 60,
+      } as const;
+      const keys = Object.keys(categoryValues) as Array<keyof typeof categoryValues>;
+      const partial = Object.fromEntries(
+        keys.flatMap((key, index) => mask & (1 << index) ? [[key, categoryValues[key]]] : []),
+      );
+      const reports = Array.from({ length: 7 }, (_, index) => ({
+        ...daily(index + 1),
+        ...partial,
+      }));
+
+      expect(() => aggregateWeeklyReport(reports)).toThrow("完整包含");
+    },
+  );
+
+  it("rejects arithmetically inconsistent complete report-v2 categories", () => {
     const reports = Array.from({ length: 7 }, (_, index) => ({
       ...daily(index + 1),
       roomRevenueCents: 400,
@@ -84,11 +102,6 @@ describe("operations reporting", () => {
     }));
 
     expect(() => aggregateWeeklyReport(reports)).toThrow("收入分类");
-    expect(() => aggregateWeeklyReport(reports.map((report) => ({
-      ...report,
-      revenueCents: 1_000,
-      publicSpaceRevenueCents: undefined,
-    })))).toThrow("完整包含");
   });
 
   it("rejects a reporting window that mixes old and report-v2 daily contracts", () => {

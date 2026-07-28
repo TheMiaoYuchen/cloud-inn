@@ -184,7 +184,8 @@ describe("settleOperationsDay", () => {
     const { report } = settleOperationsDay(input);
 
     expect(report.soldRooms).toBe(0);
-    expect(report.departmentCostCents).toBe(600);
+    expect(report.operatingCostCents).toBe(600);
+    expect(report).not.toHaveProperty("departmentCostCents");
     expect(report.lostBookings).toContainEqual({
       segmentId: "business",
       code: "service",
@@ -484,10 +485,11 @@ describe("settleOperationsDay", () => {
       availableRooms: 0,
       soldRooms: 0,
       occupancyBps: 0,
-      roomRevenueCents: 0,
       loanInterestCents: 10_000,
     });
-    expect(report.departmentCostCents).toBeGreaterThan(0);
+    expect(report.operatingCostCents).toBeGreaterThan(0);
+    expect(report).not.toHaveProperty("roomRevenueCents");
+    expect(report).not.toHaveProperty("departmentCostCents");
     expect(report.lostBookings?.every(({ code }) => code === "no-inventory")).toBe(true);
   });
 
