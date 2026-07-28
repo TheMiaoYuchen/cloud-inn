@@ -21,20 +21,32 @@ const ITEM_IDS = new Set([
 ]);
 const FACILITY_IDS = new Set(PUBLIC_SPACE_TYPES.map((type) => `facility:${type}`));
 const MARKET_IDS = new Set(SEGMENTS.map((segment) => `market:${segment}`));
-const POLICY_IDS = new Set([
-  ["positioning:international-luxury", "price-band:premium", "opening-policy:breakfast-dinner"],
-  ["positioning:local-contemporary", "price-band:upper-midscale", "opening-policy:all-day"],
-  ["positioning:destination-dining", "price-band:luxury", "opening-policy:dinner-only"],
-  ["positioning:craft-cocktail", "price-band:premium", "opening-policy:evening"],
-  ["positioning:social-lounge", "price-band:upper-midscale", "opening-policy:afternoon-late"],
-  ["positioning:skyline-luxury", "price-band:luxury", "opening-policy:sunset-late"],
-  ["positioning:restorative-wellness", "price-band:premium", "opening-policy:appointment-daily"],
-  ["positioning:clinical-wellness", "price-band:luxury", "opening-policy:appointment-extended"],
-  ["positioning:express-wellness", "price-band:upper-midscale", "opening-policy:daytime"],
-  ["positioning:corporate-events", "price-band:premium", "opening-policy:booked-events"],
-  ["positioning:celebration-luxury", "price-band:luxury", "opening-policy:booked-events"],
-  ["positioning:flexible-events", "price-band:upper-midscale", "opening-policy:day-evening"],
-].map((parts) => parts.join("|")));
+const POLICY_GROUPS: Readonly<Record<string, readonly string[]>> = {
+  dining: [
+    "positioning:international-luxury|price-band:premium|opening-policy:breakfast-dinner",
+    "positioning:local-contemporary|price-band:upper-midscale|opening-policy:all-day",
+    "positioning:destination-dining|price-band:luxury|opening-policy:dinner-only",
+  ],
+  bar: [
+    "positioning:craft-cocktail|price-band:premium|opening-policy:evening",
+    "positioning:social-lounge|price-band:upper-midscale|opening-policy:afternoon-late",
+    "positioning:skyline-luxury|price-band:luxury|opening-policy:sunset-late",
+  ],
+  spa: [
+    "positioning:restorative-wellness|price-band:premium|opening-policy:appointment-daily",
+    "positioning:clinical-wellness|price-band:luxury|opening-policy:appointment-extended",
+    "positioning:express-wellness|price-band:upper-midscale|opening-policy:daytime",
+  ],
+  banquet: [
+    "positioning:corporate-events|price-band:premium|opening-policy:booked-events",
+    "positioning:celebration-luxury|price-band:luxury|opening-policy:booked-events",
+    "positioning:flexible-events|price-band:upper-midscale|opening-policy:day-evening",
+  ],
+};
+const FACILITY_POLICY_GROUP: Partial<Record<(typeof PUBLIC_SPACE_TYPES)[number], keyof typeof POLICY_GROUPS>> = {
+  "all-day-dining": "dining", "chinese-restaurant": "dining", bar: "bar", spa: "spa",
+  ballroom: "banquet", "meeting-room": "banquet",
+};
 const MENU_TYPES: Readonly<Record<string, readonly string[]>> = {
   "menu:all-day-balanced": ["all-day-dining"], "menu:all-day-seasonal": ["all-day-dining"],
   "menu:all-day-chef-led": ["all-day-dining"], "menu:chinese-regional": ["chinese-restaurant"],
@@ -51,9 +63,8 @@ const OFFERING_TYPES: Readonly<Record<string, readonly string[]>> = {
   "service:cultural-gala": ["ballroom", "meeting-room"],
 };
 const CREDENTIAL_KEY = /^(?:password|passwd|secret|api[_-]?key|access[_-]?token|refresh[_-]?token|auth[_-]?token|private[_-]?key|client[_-]?secret|credentials?)$/i;
-const CREDENTIAL_VALUE = /(?:-----BEGIN [A-Z ]*PRIVATE KEY-----|\b(?:api[_-]?key|access[_-]?token|refresh[_-]?token|client[_-]?secret)\s*[:=]|\bBearer\s+[A-Za-z0-9._~-]{16,})/i;
-const DATA_BASE64 = /^data:[^;,]{1,128};base64,[A-Za-z0-9+/=\s]{16,}$/i;
-const RAW_BASE64 = /^(?:[A-Za-z0-9+/]{4}){32,}(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/;
+const CREDENTIAL_VALUE = /(?:-----BEGIN [A-Z ]*PRIVATE KEY-----|\b(?:api[_-]?key|access[_-]?token|refresh[_-]?token|auth[_-]?token|private[_-]?key|client[_-]?secret|password|secret|credentials?)\s*[:=]|\bBearer\s+[A-Za-z0-9._~-]{16,})/i;
+const STRICT_BASE64 = /^[A-Za-z0-9+/]+={0,2}$/;
 const MAX_JSON_BYTES = 8 * 1024 * 1024;
 
 function phase4Error(detail: string): never {
@@ -71,7 +82,7 @@ function array(value: unknown, label: string): unknown[] {
 }
 
 function boundedString(value: unknown, label: string, maximum = 4_096): string {
-  if (typeof value !== "string" || value.length === 0 || value.length > maximum || value.trim() !== value) {
+  if (typeof value !== "string" || value.length === 0 || Array.from(value).length > maximum || value.trim() !== value) {
     phase4Error(`${label}文本无效`);
   }
   return value;
@@ -105,6 +116,13 @@ function uniqueIds(values: unknown, label: string, allowed?: ReadonlySet<string>
   return result;
 }
 
+function isStrictBase64(value: string): boolean {
+  const payload = value.startsWith("data:") && value.includes(";base64,")
+    ? value.slice(value.indexOf(",") + 1)
+    : value;
+  return payload.length >= 128 && payload.length % 4 === 0 && STRICT_BASE64.test(payload);
+}
+
 function validateTree(value: unknown): void {
   let bytes = 0;
   const pending: Array<{ value: unknown; depth: number }> = [{ value, depth: 0 }];
@@ -112,9 +130,9 @@ function validateTree(value: unknown): void {
     const current = pending.pop()!;
     if (current.depth > 32) phase4Error("JSON嵌套过深");
     if (typeof current.value === "string") {
-      if (current.value.length > 4_096) phase4Error("文本超过长度限制");
+      if (Array.from(current.value).length > 4_096) phase4Error("文本超过长度限制");
       if (CREDENTIAL_VALUE.test(current.value)) phase4Error("禁止持久化凭据");
-      if (DATA_BASE64.test(current.value) || RAW_BASE64.test(current.value.replace(/\s/g, ""))) {
+      if (isStrictBase64(current.value)) {
         phase4Error("禁止持久化Base64数据");
       }
       bytes += new TextEncoder().encode(current.value).length + 2;
@@ -124,7 +142,7 @@ function validateTree(value: unknown): void {
     } else if (typeof current.value === "object" && current.value !== null) {
       bytes += 2;
       for (const [key, child] of Object.entries(current.value)) {
-        if (key.length > 128) phase4Error("字段名超过长度限制");
+        if (Array.from(key).length > 128) phase4Error("字段名超过长度限制");
         if (CREDENTIAL_KEY.test(key)) phase4Error("禁止持久化凭据");
         bytes += key.length + 3;
         pending.push({ value: child, depth: current.depth + 1 });
@@ -233,6 +251,10 @@ export function validatePhase4State(value: unknown, gameValue?: unknown): void {
       integer(placement.anchorY, "客房纵坐标", 0, Number(template.rows) - 1);
       integer(placement.width, "客房宽度", 1, Number(template.columns));
       integer(placement.height, "客房高度", 1, Number(template.rows));
+      if (
+        Number(placement.anchorX) + Number(placement.width) > Number(template.columns)
+        || Number(placement.anchorY) + Number(placement.height) > Number(template.rows)
+      ) phase4Error("客房放置超出楼层模板");
       if (![0, 90, 180, 270].includes(Number(placement.rotation)) || typeof placement.mirrored !== "boolean") {
         phase4Error("客房放置几何无效");
       }
@@ -376,7 +398,8 @@ export function validatePhase4State(value: unknown, gameValue?: unknown): void {
     if (facility.policy !== null) {
       const policy = object(facility.policy, "设施策略");
       const combination = [policy.positioningId, policy.priceBandId, policy.openingPolicyId].map((id) => stableId(id, "设施策略编号")).join("|");
-      if (!POLICY_IDS.has(combination)) phase4Error("目录引用无效");
+      const group = FACILITY_POLICY_GROUP[type as keyof typeof FACILITY_POLICY_GROUP];
+      if (!group || !POLICY_GROUPS[group].includes(combination)) phase4Error("目录引用无效");
       integer(policy.capacity, "设施容量", 1, 10_000);
       integer(policy.serviceBudgetCents, "设施服务预算");
       if (policy.signatureOfferingId !== undefined) {

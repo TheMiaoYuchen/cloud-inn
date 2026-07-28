@@ -730,8 +730,8 @@ fn validate_game(g: &Value) -> Result<Fields, String> {
         Some(Value::Null) | None => None,
         Some(value) => {
             validate_operations(value, current_day, cash_cents).map_err(|error| {
-                if g.get("phase4").is_some() {
-                    phase4_error("经营报告算术不一致")
+                if g.get("phase4").is_some() && error == "经营报告算术不一致" {
+                    phase4_error(&error)
                 } else {
                     error
                 }
@@ -1041,18 +1041,75 @@ fn phase4_is_credential_key(key: &str) -> bool {
 }
 
 fn phase4_is_base64(value: &str) -> bool {
+    let payload = if value.starts_with("data:") && value.contains(";base64,") {
+        value
+            .split_once(',')
+            .map(|(_, payload)| payload)
+            .unwrap_or("")
+    } else {
+        value
+    };
+    let bytes = payload.as_bytes();
+    if bytes.len() < 128 || bytes.len() % 4 != 0 {
+        return false;
+    }
+    let padding = bytes.iter().rev().take_while(|byte| **byte == b'=').count();
+    padding <= 2
+        && bytes[..bytes.len() - padding]
+            .iter()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'+' | b'/'))
+        && bytes[bytes.len() - padding..]
+            .iter()
+            .all(|byte| *byte == b'=')
+}
+
+fn phase4_contains_credential(value: &str) -> bool {
     let lower = value.to_ascii_lowercase();
-    if lower.starts_with("data:") && lower.contains(";base64,") {
+    if lower.contains("-----begin ") && lower.contains("private key-----") {
         return true;
     }
-    let compact = value
-        .bytes()
-        .filter(|byte| !byte.is_ascii_whitespace())
-        .collect::<Vec<_>>();
-    compact.len() >= 128
-        && compact
-            .iter()
-            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'+' | b'/' | b'='))
+    if lower.match_indices("bearer ").any(|(index, _)| {
+        let token = &value[index + "bearer ".len()..];
+        token
+            .chars()
+            .take_while(|character| {
+                character.is_ascii_alphanumeric() || matches!(character, '.' | '_' | '~' | '-')
+            })
+            .count()
+            >= 16
+    }) {
+        return true;
+    }
+    [
+        "api_key",
+        "api-key",
+        "access_token",
+        "access-token",
+        "refresh_token",
+        "refresh-token",
+        "auth_token",
+        "auth-token",
+        "private_key",
+        "private-key",
+        "client_secret",
+        "client-secret",
+        "password",
+        "secret",
+        "credential",
+        "credentials",
+    ]
+    .iter()
+    .any(|term| {
+        lower.match_indices(term).any(|(index, _)| {
+            let has_boundary = index == 0
+                || (!lower.as_bytes()[index - 1].is_ascii_alphanumeric()
+                    && lower.as_bytes()[index - 1] != b'_');
+            has_boundary
+                && lower[index + term.len()..]
+                    .trim_start()
+                    .starts_with([':', '='])
+        })
+    })
 }
 
 fn validate_phase4_tree(value: &Value, depth: usize) -> Result<(), String> {
@@ -1061,13 +1118,10 @@ fn validate_phase4_tree(value: &Value, depth: usize) -> Result<(), String> {
     }
     match value {
         Value::String(text) => {
-            if text.len() > 4_096 {
+            if text.chars().count() > 4_096 {
                 return Err(phase4_error("文本超过长度限制"));
             }
-            let lower = text.to_ascii_lowercase();
-            if lower.contains("-----begin private key-----")
-                || lower.contains("bearer ") && text.len() >= 24
-            {
+            if phase4_contains_credential(text) {
                 return Err(phase4_error("禁止持久化凭据"));
             }
             if phase4_is_base64(text) {
@@ -1081,7 +1135,7 @@ fn validate_phase4_tree(value: &Value, depth: usize) -> Result<(), String> {
         }
         Value::Object(object) => {
             for (key, child) in object {
-                if key.len() > 128 {
+                if key.chars().count() > 128 {
                     return Err(phase4_error("字段名超过长度限制"));
                 }
                 if phase4_is_credential_key(key) {
@@ -1158,6 +1212,121 @@ fn phase4_item(value: &Value) -> Result<&str, String> {
     )
 }
 
+fn phase4_policy_group(facility_type: &str) -> Option<&'static str> {
+    match facility_type {
+        "all-day-dining" | "chinese-restaurant" => Some("dining"),
+        "bar" => Some("bar"),
+        "spa" => Some("spa"),
+        "ballroom" | "meeting-room" => Some("banquet"),
+        _ => None,
+    }
+}
+
+fn phase4_policy_allowed(group: &str, positioning: &str, price: &str, opening: &str) -> bool {
+    matches!(
+        (group, positioning, price, opening),
+        (
+            "dining",
+            "positioning:international-luxury",
+            "price-band:premium",
+            "opening-policy:breakfast-dinner"
+        ) | (
+            "dining",
+            "positioning:local-contemporary",
+            "price-band:upper-midscale",
+            "opening-policy:all-day"
+        ) | (
+            "dining",
+            "positioning:destination-dining",
+            "price-band:luxury",
+            "opening-policy:dinner-only"
+        ) | (
+            "bar",
+            "positioning:craft-cocktail",
+            "price-band:premium",
+            "opening-policy:evening"
+        ) | (
+            "bar",
+            "positioning:social-lounge",
+            "price-band:upper-midscale",
+            "opening-policy:afternoon-late"
+        ) | (
+            "bar",
+            "positioning:skyline-luxury",
+            "price-band:luxury",
+            "opening-policy:sunset-late"
+        ) | (
+            "spa",
+            "positioning:restorative-wellness",
+            "price-band:premium",
+            "opening-policy:appointment-daily"
+        ) | (
+            "spa",
+            "positioning:clinical-wellness",
+            "price-band:luxury",
+            "opening-policy:appointment-extended"
+        ) | (
+            "spa",
+            "positioning:express-wellness",
+            "price-band:upper-midscale",
+            "opening-policy:daytime"
+        ) | (
+            "banquet",
+            "positioning:corporate-events",
+            "price-band:premium",
+            "opening-policy:booked-events"
+        ) | (
+            "banquet",
+            "positioning:celebration-luxury",
+            "price-band:luxury",
+            "opening-policy:booked-events"
+        ) | (
+            "banquet",
+            "positioning:flexible-events",
+            "price-band:upper-midscale",
+            "opening-policy:day-evening"
+        )
+    )
+}
+
+fn phase4_offering_allowed(facility_type: &str, offering: &str) -> bool {
+    matches!(
+        (facility_type, offering),
+        (
+            "all-day-dining",
+            "dish:tea-smoked-duck" | "dish:cloud-breakfast" | "dish:harbor-seafood"
+        ) | (
+            "chinese-restaurant",
+            "dish:tea-smoked-duck" | "dish:crystal-shrimp" | "dish:mountain-broth"
+        ) | (
+            "bar",
+            "drink:cloud-negroni" | "drink:tea-spritz" | "drink:night-orchard"
+        ) | (
+            "spa",
+            "service:cloud-restoration" | "service:express-recovery" | "service:couples-ritual"
+        ) | (
+            "ballroom" | "meeting-room",
+            "service:cloud-wedding" | "service:executive-summit" | "service:cultural-gala"
+        )
+    )
+}
+
+fn phase4_menu_allowed(facility_type: &str, menu: &str) -> bool {
+    matches!(
+        (facility_type, menu),
+        (
+            "all-day-dining",
+            "menu:all-day-balanced" | "menu:all-day-seasonal" | "menu:all-day-chef-led"
+        ) | (
+            "chinese-restaurant",
+            "menu:chinese-regional" | "menu:chinese-banquet" | "menu:chinese-modern"
+        ) | (
+            "bar",
+            "menu:bar-classics" | "menu:bar-seasonal" | "menu:bar-zero-proof"
+        )
+    )
+}
+
 fn phase4_unique_catalog_ids(value: &Value, allowed: &HashSet<String>) -> Result<(), String> {
     let mut ids = HashSet::new();
     for raw in phase4_array(value, "目录进度")? {
@@ -1173,10 +1342,16 @@ fn phase4_unique_catalog_ids(value: &Value, allowed: &HashSet<String>) -> Result
 }
 
 fn phase4_int(value: &Value, label: &str, minimum: i64, maximum: i64) -> Result<i64, String> {
-    value
-        .as_i64()
-        .filter(|number| (*number >= minimum) && (*number <= maximum))
-        .ok_or_else(|| phase4_error(&format!("{label}必须是安全整数")))
+    let number = value
+        .as_f64()
+        .filter(|number| number.is_finite() && number.fract() == 0.0)
+        .filter(|number| {
+            *number >= minimum as f64
+                && *number <= maximum as f64
+                && number.abs() <= JS_MAX_SAFE_INTEGER as f64
+        })
+        .ok_or_else(|| phase4_error(&format!("{label}必须是安全整数")))?;
+    Ok(number as i64)
 }
 
 fn phase4_bool(value: &Value, label: &str) -> Result<bool, String> {
@@ -1218,6 +1393,13 @@ fn validate_phase4(value: &Value, game: &Value) -> Result<(), String> {
     }
     validate_phase4_tree(value, 0)?;
     let phase4 = phase4_object(value, "状态")?;
+    let current_day = phase4_int(
+        game.get("currentDay")
+            .ok_or_else(|| phase4_error("当前营业日结构无效"))?,
+        "当前营业日",
+        0,
+        30,
+    )?;
     if phase4.get("rulesetVersion").and_then(Value::as_str) != Some("content-scale-v1") {
         return Err(phase4_error("规则版本无效"));
     }
@@ -1253,6 +1435,9 @@ fn validate_phase4(value: &Value, game: &Value) -> Result<(), String> {
         phase4_field(phase4, "floorTemplates", "楼层模板")?,
         "楼层模板",
     )?;
+    if templates.len() > 64 {
+        return Err(phase4_error("楼层模板最多保留64项"));
+    }
     let mut design_ids = HashSet::new();
     if let Some(master) = game
         .get("phase2")
@@ -1294,6 +1479,22 @@ fn validate_phase4(value: &Value, game: &Value) -> Result<(), String> {
             "楼层用途",
         )?;
         template_uses.insert(template_id.as_str(), use_id);
+        let columns = phase4_int(
+            phase4_field(template, "columns", "楼层模板列数")?,
+            "楼层模板列数",
+            1,
+            512,
+        )?;
+        let rows = phase4_int(
+            phase4_field(template, "rows", "楼层模板行数")?,
+            "楼层模板行数",
+            1,
+            512,
+        )?;
+        if phase4_field(template, "cellAreaSquareMeters", "楼层模板单元面积")?.as_f64() != Some(1.0)
+        {
+            return Err(phase4_error("楼层模板单元面积无效"));
+        }
         let mut placements = HashMap::new();
         for raw_placement in phase4_array(
             phase4_field(template, "roomPlacements", "客房放置")?,
@@ -1318,6 +1519,43 @@ fn validate_phase4(value: &Value, game: &Value) -> Result<(), String> {
             if variant_id.is_some_and(|id| variants.get(id).copied() != Some(master_id)) {
                 return Err(phase4_error("客房变体引用无效"));
             }
+            let anchor_x = phase4_int(
+                phase4_field(placement, "anchorX", "客房横坐标")?,
+                "客房横坐标",
+                0,
+                columns - 1,
+            )?;
+            let anchor_y = phase4_int(
+                phase4_field(placement, "anchorY", "客房纵坐标")?,
+                "客房纵坐标",
+                0,
+                rows - 1,
+            )?;
+            let width = phase4_int(
+                phase4_field(placement, "width", "客房宽度")?,
+                "客房宽度",
+                1,
+                columns,
+            )?;
+            let height = phase4_int(
+                phase4_field(placement, "height", "客房高度")?,
+                "客房高度",
+                1,
+                rows,
+            )?;
+            if anchor_x + width > columns || anchor_y + height > rows {
+                return Err(phase4_error("客房放置超出楼层模板"));
+            }
+            let rotation = phase4_int(
+                phase4_field(placement, "rotation", "客房旋转")?,
+                "客房旋转",
+                0,
+                270,
+            )?;
+            if ![0, 90, 180, 270].contains(&rotation) {
+                return Err(phase4_error("客房放置几何无效"));
+            }
+            phase4_bool(phase4_field(placement, "mirrored", "客房镜像")?, "客房镜像")?;
             if placements.insert(id, (master_id, variant_id)).is_some() {
                 return Err(phase4_error("客房放置编号重复"));
             }
@@ -1554,6 +1792,12 @@ fn validate_phase4(value: &Value, game: &Value) -> Result<(), String> {
             phase4_field(blueprint, "type", "公共空间类型")?,
             "公共空间类型",
         )?;
+        let name = phase4_field(blueprint, "name", "公共空间名称")?
+            .as_str()
+            .filter(|name| !name.trim().is_empty() && name.trim() == *name)
+            .filter(|name| name.chars().count() <= 256)
+            .ok_or_else(|| phase4_error("公共空间名称文本无效"))?;
+        let _ = name;
         let cells = phase4_array(
             phase4_field(blueprint, "cells", "公共空间蓝图格子")?,
             "公共空间蓝图格子",
@@ -1720,10 +1964,29 @@ fn validate_phase4(value: &Value, game: &Value) -> Result<(), String> {
             phase4_field(facility, "developedOfferingIds", "已开发产品")?,
             "已开发产品",
         )?;
+        if developed
+            .iter()
+            .any(|offering| !phase4_offering_allowed(type_id, offering))
+        {
+            return Err(phase4_error("目录引用无效"));
+        }
         if let Some(policy) = facility.get("policy").filter(|value| !value.is_null()) {
             let policy = phase4_object(policy, "设施策略")?;
-            for key in ["positioningId", "priceBandId", "openingPolicyId"] {
-                phase4_stable_id(phase4_field(policy, key, "设施策略编号")?, "设施策略编号")?;
+            let positioning = phase4_stable_id(
+                phase4_field(policy, "positioningId", "设施策略编号")?,
+                "设施策略编号",
+            )?;
+            let price = phase4_stable_id(
+                phase4_field(policy, "priceBandId", "设施策略编号")?,
+                "设施策略编号",
+            )?;
+            let opening = phase4_stable_id(
+                phase4_field(policy, "openingPolicyId", "设施策略编号")?,
+                "设施策略编号",
+            )?;
+            let group = phase4_policy_group(type_id).ok_or_else(|| phase4_error("目录引用无效"))?;
+            if !phase4_policy_allowed(group, positioning, price, opening) {
+                return Err(phase4_error("目录引用无效"));
             }
             phase4_int(
                 phase4_field(policy, "capacity", "设施容量")?,
@@ -1734,7 +1997,7 @@ fn validate_phase4(value: &Value, game: &Value) -> Result<(), String> {
             validate_phase4_money(phase4_field(policy, "serviceBudgetCents", "设施服务预算")?)?;
             if let Some(offering) = policy.get("signatureOfferingId") {
                 let offering = phase4_stable_id(offering, "招牌产品编号")?;
-                if !developed.contains(&offering) {
+                if !phase4_offering_allowed(type_id, offering) || !developed.contains(&offering) {
                     return Err(phase4_error("目录引用无效"));
                 }
             }
@@ -1744,10 +2007,13 @@ fn validate_phase4(value: &Value, game: &Value) -> Result<(), String> {
             .filter(|value| !value.is_null())
         {
             let menu = phase4_object(menu, "菜单选择")?;
-            phase4_stable_id(
+            let menu_id = phase4_stable_id(
                 phase4_field(menu, "menuStructureId", "菜单编号")?,
                 "菜单编号",
             )?;
+            if !phase4_menu_allowed(type_id, menu_id) {
+                return Err(phase4_error("目录引用无效"));
+            }
             phase4_unique_ids(
                 phase4_field(menu, "selectedItemIds", "菜单条目")?,
                 "菜单条目",
@@ -1769,7 +2035,7 @@ fn validate_phase4(value: &Value, game: &Value) -> Result<(), String> {
                 1,
                 30,
             )?;
-            if day <= previous_day {
+            if day <= previous_day || day > current_day {
                 return Err(phase4_error("设施历史日期无效"));
             }
             previous_day = day;
@@ -2129,6 +2395,10 @@ struct OperationsDailyTotals {
     facility_operating_cost: i64,
 }
 
+fn operations_report_error() -> String {
+    "经营报告算术不一致".into()
+}
+
 fn operations_report_category_version(value: &Value) -> Result<u8, String> {
     let present = [
         "roomRevenueCents",
@@ -2141,7 +2411,7 @@ fn operations_report_category_version(value: &Value) -> Result<u8, String> {
         [false, false, false, false] => Ok(0),
         [true, false, true, false] => Ok(1),
         [true, true, true, true] => Ok(2),
-        _ => Err("经营存档数据损坏".into()),
+        _ => Err(operations_report_error()),
     }
 }
 
@@ -2155,7 +2425,7 @@ fn validate_operations_daily(
     let mut segment_sold = Vec::new();
     let segments = operations_array(value, "segments")?;
     if segments.len() != OPERATIONS_SEGMENTS.len() {
-        return Err("经营存档数据损坏".into());
+        return Err(operations_report_error());
     }
     for (index, segment) in segments.iter().enumerate() {
         let id = operations_one_of(segment, "segmentId", &OPERATIONS_SEGMENTS)?;
@@ -2220,7 +2490,7 @@ fn validate_operations_daily(
         || operations_optional_int(value, "loanInterestCents", 0, JS_MAX_SAFE_INTEGER)?
             .is_some_and(|stored| stored != finance)
     {
-        return Err("经营存档数据损坏".into());
+        return Err(operations_report_error());
     }
     operations_optional_int(value, "cashShortfallCents", 0, JS_MAX_SAFE_INTEGER)?;
     let available =
@@ -2358,7 +2628,10 @@ fn validate_operations_aggregate(
     if operations_int(value, number_key, 1, 4)? != number
         || operations_int(value, "startDay", 1, 30)? != first.day
         || operations_int(value, "endDay", 1, 30)? != last.day
-        || operations_int(value, "revenueCents", 0, JS_MAX_SAFE_INTEGER)? != revenue
+    {
+        return Err("经营存档数据损坏".into());
+    }
+    if operations_int(value, "revenueCents", 0, JS_MAX_SAFE_INTEGER)? != revenue
         || operations_int(
             value,
             "netIncomeCents",
@@ -2387,7 +2660,7 @@ fn validate_operations_aggregate(
                 || operations_int(value, "facilityOperatingCostCents", 0, JS_MAX_SAFE_INTEGER)?
                     != facility_operating_cost))
     {
-        return Err("经营存档数据损坏".into());
+        return Err(operations_report_error());
     }
     if number_key == "week"
         && (value.get("averageOccupancyBps").is_none() || value.get("reputationBps").is_none())
@@ -4097,20 +4370,23 @@ mod tests {
 
     #[test]
     fn phase4_retains_task2_validation_regressions() {
-        type Phase4Mutation = (&'static str, Box<dyn Fn(&mut Value)>);
+        type Phase4Mutation = (&'static str, &'static str, Box<dyn Fn(&mut Value)>);
         let cases: Vec<Phase4Mutation> = vec![
             (
                 "duplicate-floor-id",
+                "楼层编号重复",
                 Box::new(|value| value["phase4"]["floors"][1]["id"] = json!("floor:01")),
             ),
             (
                 "unknown-room-floor",
+                "客房楼层引用无效",
                 Box::new(|value| {
                     value["phase4"]["floors"][4]["rooms"][0]["floorId"] = json!("floor:unknown")
                 }),
             ),
             (
                 "unsafe-money",
+                "施工金额必须是安全整数",
                 Box::new(|value| {
                     value["phase4"]["floors"][4]["rooms"][0]["committedBuildCostCents"] =
                         json!(JS_MAX_SAFE_INTEGER + 1)
@@ -4118,12 +4394,14 @@ mod tests {
             ),
             (
                 "wrong-containing-floor",
+                "客房必须属于所在楼层",
                 Box::new(|value| {
                     value["phase4"]["floors"][4]["rooms"][0]["floorId"] = json!("floor:06")
                 }),
             ),
             (
                 "malformed-record-key",
+                "记录键必须是稳定 ID",
                 Box::new(|value| {
                     let record = value["phase4"]["publicSpaces"].as_object_mut().unwrap();
                     let first = record.values().next().unwrap().clone();
@@ -4132,6 +4410,7 @@ mod tests {
             ),
             (
                 "non-object-record-value",
+                "公共空间蓝图结构无效",
                 Box::new(|value| {
                     let record = value["phase4"]["spaceBlueprints"].as_object_mut().unwrap();
                     let key = record.keys().next().unwrap().clone();
@@ -4140,6 +4419,7 @@ mod tests {
             ),
             (
                 "record-key-id-mismatch",
+                "记录键与编号不一致",
                 Box::new(|value| {
                     let record = value["phase4"]["facilities"].as_object_mut().unwrap();
                     record.values_mut().next().unwrap()["id"] = json!("facility:mismatch");
@@ -4147,6 +4427,7 @@ mod tests {
             ),
             (
                 "duplicate-record-value-id",
+                "公共空间编号重复",
                 Box::new(|value| {
                     let record = value["phase4"]["publicSpaces"].as_object_mut().unwrap();
                     let keys = record.keys().take(2).cloned().collect::<Vec<_>>();
@@ -4155,14 +4436,347 @@ mod tests {
                 }),
             ),
         ];
-        for (name, mutate) in cases {
+        for (name, expected, mutate) in cases {
             let mut invalid = phase4_fixture(include_str!("../tests/fixtures/phase4-valid.json"));
             mutate(&mut invalid);
+            let error = validate_game(&invalid).err().unwrap();
             assert!(
-                validate_game(&invalid).is_err(),
-                "{name} unexpectedly accepted"
+                error.contains(expected),
+                "{name} expected {expected}, got {error}"
             );
         }
+    }
+
+    #[test]
+    fn phase4_rejects_catalog_and_envelope_mutations_with_stable_classes() {
+        type Phase4Mutation = (&'static str, &'static str, Box<dyn Fn(&mut Value)>);
+        let cases: Vec<Phase4Mutation> = vec![
+            (
+                "unknown-developed-offering",
+                "目录引用无效",
+                Box::new(|value| {
+                    value["phase4"]["facilities"]["facility:floor:02:all-day-dining"]
+                        ["developedOfferingIds"] = json!(["dish:unknown"]);
+                }),
+            ),
+            (
+                "unknown-signature-in-developed",
+                "目录引用无效",
+                Box::new(|value| {
+                    let facility =
+                        &mut value["phase4"]["facilities"]["facility:floor:02:all-day-dining"];
+                    facility["developedOfferingIds"] = json!(["dish:unknown"]);
+                    facility["policy"]["signatureOfferingId"] = json!("dish:unknown");
+                }),
+            ),
+            (
+                "wrong-offering-type",
+                "目录引用无效",
+                Box::new(|value| {
+                    value["phase4"]["facilities"]["facility:floor:02:all-day-dining"]
+                        ["developedOfferingIds"] = json!(["drink:cloud-negroni"]);
+                }),
+            ),
+            (
+                "wrong-signature-group",
+                "目录引用无效",
+                Box::new(|value| {
+                    let facility =
+                        &mut value["phase4"]["facilities"]["facility:floor:02:all-day-dining"];
+                    facility["developedOfferingIds"] = json!(["drink:cloud-negroni"]);
+                    facility["policy"]["signatureOfferingId"] = json!("drink:cloud-negroni");
+                }),
+            ),
+            (
+                "unknown-menu",
+                "目录引用无效",
+                Box::new(|value| {
+                    value["phase4"]["facilities"]["facility:floor:02:all-day-dining"]
+                        ["menuSelection"]["menuStructureId"] = json!("menu:unknown");
+                }),
+            ),
+            (
+                "incompatible-menu",
+                "目录引用无效",
+                Box::new(|value| {
+                    value["phase4"]["facilities"]["facility:floor:02:all-day-dining"]
+                        ["menuSelection"]["menuStructureId"] = json!("menu:bar-classics");
+                }),
+            ),
+            (
+                "unknown-positioning",
+                "目录引用无效",
+                Box::new(|value| {
+                    value["phase4"]["facilities"]["facility:floor:02:all-day-dining"]["policy"]
+                        ["positioningId"] = json!("positioning:unknown");
+                }),
+            ),
+            (
+                "unknown-price",
+                "目录引用无效",
+                Box::new(|value| {
+                    value["phase4"]["facilities"]["facility:floor:02:all-day-dining"]["policy"]
+                        ["priceBandId"] = json!("price-band:unknown");
+                }),
+            ),
+            (
+                "unknown-opening",
+                "目录引用无效",
+                Box::new(|value| {
+                    value["phase4"]["facilities"]["facility:floor:02:all-day-dining"]["policy"]
+                        ["openingPolicyId"] = json!("opening-policy:unknown");
+                }),
+            ),
+            (
+                "wrong-policy-group",
+                "目录引用无效",
+                Box::new(|value| {
+                    let policy = &mut value["phase4"]["facilities"]
+                        ["facility:floor:02:all-day-dining"]["policy"];
+                    policy["positioningId"] = json!("positioning:restorative-wellness");
+                    policy["openingPolicyId"] = json!("opening-policy:appointment-daily");
+                }),
+            ),
+            (
+                "65-templates",
+                "楼层模板最多保留64项",
+                Box::new(|value| {
+                    let source =
+                        value["phase4"]["floorTemplates"]["template:entrance:standard"].clone();
+                    let record = value["phase4"]["floorTemplates"].as_object_mut().unwrap();
+                    for index in 0..60 {
+                        let id = format!("template:extra:{index:02}");
+                        let mut template = source.clone();
+                        template["id"] = json!(id);
+                        record.insert(id, template);
+                    }
+                }),
+            ),
+            (
+                "zero-template-columns",
+                "楼层模板列数必须是安全整数",
+                Box::new(|value| {
+                    value["phase4"]["floorTemplates"]["template:guest:dense-ring"]["columns"] =
+                        json!(0);
+                }),
+            ),
+            (
+                "oversized-template-rows",
+                "楼层模板行数必须是安全整数",
+                Box::new(|value| {
+                    value["phase4"]["floorTemplates"]["template:guest:dense-ring"]["rows"] =
+                        json!(513);
+                }),
+            ),
+            (
+                "wrong-cell-area",
+                "楼层模板单元面积无效",
+                Box::new(|value| {
+                    value["phase4"]["floorTemplates"]["template:guest:dense-ring"]
+                        ["cellAreaSquareMeters"] = json!(2);
+                }),
+            ),
+            (
+                "fractional-anchor",
+                "客房横坐标必须是安全整数",
+                Box::new(|value| {
+                    value["phase4"]["floorTemplates"]["template:guest:dense-ring"]
+                        ["roomPlacements"][0]["anchorX"] = json!(0.5);
+                }),
+            ),
+            (
+                "negative-anchor",
+                "客房纵坐标必须是安全整数",
+                Box::new(|value| {
+                    value["phase4"]["floorTemplates"]["template:guest:dense-ring"]
+                        ["roomPlacements"][0]["anchorY"] = json!(-1);
+                }),
+            ),
+            (
+                "zero-placement-width",
+                "客房宽度必须是安全整数",
+                Box::new(|value| {
+                    value["phase4"]["floorTemplates"]["template:guest:dense-ring"]
+                        ["roomPlacements"][0]["width"] = json!(0);
+                }),
+            ),
+            (
+                "placement-out-of-bounds",
+                "客房放置超出楼层模板",
+                Box::new(|value| {
+                    let placement = &mut value["phase4"]["floorTemplates"]
+                        ["template:guest:dense-ring"]["roomPlacements"][0];
+                    placement["anchorX"] = json!(23);
+                    placement["width"] = json!(2);
+                }),
+            ),
+            (
+                "blank-blueprint-name",
+                "公共空间名称文本无效",
+                Box::new(|value| {
+                    value["phase4"]["spaceBlueprints"]["space-blueprint:bar"]["name"] = json!(" ");
+                }),
+            ),
+            (
+                "long-blueprint-name",
+                "公共空间名称文本无效",
+                Box::new(|value| {
+                    value["phase4"]["spaceBlueprints"]["space-blueprint:bar"]["name"] =
+                        json!("中".repeat(257));
+                }),
+            ),
+        ];
+        for (name, expected, mutate) in cases {
+            let mut invalid = phase4_fixture(include_str!("../tests/fixtures/phase4-valid.json"));
+            mutate(&mut invalid);
+            let error = validate_game(&invalid).err().unwrap();
+            assert!(
+                error.contains(expected),
+                "{name} expected {expected}, got {error}"
+            );
+        }
+    }
+
+    #[test]
+    fn phase4_scalar_and_forbidden_rules_match_browser() {
+        let raw = include_str!("../tests/fixtures/phase4-valid.json");
+        let exponent = raw.replacen("\"columns\": 24", "\"columns\": 1e2", 1);
+        assert!(validate_game(&phase4_fixture(&exponent)).is_ok());
+        assert_eq!(
+            phase4_int(&phase4_fixture("1e2"), "测试数值", 0, JS_MAX_SAFE_INTEGER).unwrap(),
+            100
+        );
+        assert!(phase4_int(
+            &json!(9_007_199_254_740_992_i64),
+            "测试数值",
+            0,
+            JS_MAX_SAFE_INTEGER
+        )
+        .is_err());
+        assert!(phase4_int(
+            &phase4_fixture("9.007199254740992e15"),
+            "测试数值",
+            0,
+            JS_MAX_SAFE_INTEGER
+        )
+        .is_err());
+        assert!(validate_phase4_money(&json!(9_007_199_254_740_992_i64)).is_err());
+        assert!(validate_phase4_money(&phase4_fixture("9.007199254740992e15")).is_err());
+
+        let mut unicode = phase4_fixture(raw);
+        unicode["phase4"]["persistenceMetadata"] = json!({"description": "😀".repeat(3_000)});
+        assert!(validate_game(&unicode).is_ok());
+        unicode["phase4"]["persistenceMetadata"] = json!({"description": "中".repeat(4_097)});
+        assert!(validate_game(&unicode)
+            .err()
+            .unwrap()
+            .contains("文本超过长度限制"));
+
+        let mut unicode_key = phase4_fixture(raw);
+        unicode_key["phase4"]["persistenceMetadata"] = json!({"😀".repeat(100): "fixture"});
+        assert!(validate_game(&unicode_key).is_ok());
+        unicode_key["phase4"]["persistenceMetadata"] = json!({"中".repeat(129): "fixture"});
+        assert!(validate_game(&unicode_key)
+            .err()
+            .unwrap()
+            .contains("字段名超过长度限制"));
+
+        for credential in [
+            "password=hunter2",
+            "secret: fixture",
+            "credential=fixture",
+            "api-key: fixture",
+            "access_token=fixture",
+            "Bearer abcdefghijklmnop",
+            "secret phrase then secret=fixture",
+        ] {
+            let mut invalid = phase4_fixture(raw);
+            invalid["phase4"]["persistenceMetadata"] = json!({"description": credential});
+            assert!(
+                validate_game(&invalid)
+                    .err()
+                    .unwrap()
+                    .contains("禁止持久化凭据"),
+                "{credential}"
+            );
+        }
+        for description in ["notsecret=fixture", "Bearer short"] {
+            let mut valid = phase4_fixture(raw);
+            valid["phase4"]["persistenceMetadata"] = json!({"description": description});
+            assert!(validate_game(&valid).is_ok(), "{description}");
+        }
+        for field in ["password", "secret", "credential", "apiKey", "access_token"] {
+            let mut invalid = phase4_fixture(raw);
+            invalid["phase4"]["persistenceMetadata"] = json!({field: "fixture"});
+            assert!(
+                validate_game(&invalid)
+                    .err()
+                    .unwrap()
+                    .contains("禁止持久化凭据"),
+                "{field}"
+            );
+        }
+        let mut internal_padding = phase4_fixture(raw);
+        internal_padding["phase4"]["persistenceMetadata"] =
+            json!({"description": format!("{}={}", "A".repeat(64), "A".repeat(64))});
+        assert!(validate_game(&internal_padding).is_ok());
+        internal_padding["phase4"]["persistenceMetadata"] = json!({"description": "A".repeat(128)});
+        assert!(validate_game(&internal_padding)
+            .err()
+            .unwrap()
+            .contains("禁止持久化Base64数据"));
+    }
+
+    #[test]
+    fn phase4_only_maps_report_errors_to_report_arithmetic() {
+        let mut invalid_loan = phase4_fixture(include_str!("../tests/fixtures/phase4-valid.json"));
+        invalid_loan["operations"]["loans"] = json!([{
+            "id": "loan:bad", "principalCents": 1, "outstandingCents": 0,
+            "dailyInterestBps": 1, "minimumPaymentCents": 1
+        }]);
+        let loan_error = validate_game(&invalid_loan).err().unwrap();
+        assert!(loan_error.contains("经营存档"), "{loan_error}");
+        assert!(!loan_error.contains("经营报告算术"), "{loan_error}");
+
+        let mut invalid_report =
+            phase4_fixture(include_str!("../tests/fixtures/phase4-valid.json"));
+        invalid_report["operations"]["dailyReports"][0]["revenueCents"] = json!(1_501);
+        assert!(validate_game(&invalid_report)
+            .err()
+            .unwrap()
+            .contains("经营报告算术不一致"));
+
+        let mut invalid_aggregate =
+            phase4_fixture(include_str!("../tests/fixtures/phase4-valid.json"));
+        invalid_aggregate["operations"]["weeklyReports"][0]["revenueCents"] = json!(10_501);
+        assert!(validate_game(&invalid_aggregate)
+            .err()
+            .unwrap()
+            .contains("经营报告算术不一致"));
+
+        let mut partial_categories =
+            phase4_fixture(include_str!("../tests/fixtures/phase4-valid.json"));
+        partial_categories["operations"]["weeklyReports"][0]
+            .as_object_mut()
+            .unwrap()
+            .remove("publicSpaceRevenueCents");
+        assert!(validate_game(&partial_categories)
+            .err()
+            .unwrap()
+            .contains("经营报告算术不一致"));
+    }
+
+    #[test]
+    fn phase4_rejects_facility_history_after_current_day() {
+        let game = phase4_fixture(include_str!("../tests/fixtures/phase4-valid.json"));
+        let phase4 = game["phase4"].clone();
+        let mut earlier_game = game.clone();
+        earlier_game["currentDay"] = json!(29);
+
+        assert!(validate_phase4(&phase4, &earlier_game)
+            .err()
+            .unwrap()
+            .contains("设施历史日期无效"));
     }
 
     #[test]
@@ -4236,26 +4850,38 @@ mod tests {
         valid["revision"] = json!(1);
         repository.commit_game(0, valid.clone()).unwrap();
 
-        let mut invalid = phase4_fixture(include_str!(
-            "../tests/fixtures/phase4-invalid/excessive-flow-events.json"
-        ));
-        invalid["revision"] = json!(2);
-        let error = repository.commit_game(1, invalid).unwrap_err();
-
-        assert!(error.contains("流动事件最多保留150项"));
-        assert_eq!(
-            repository.load_game("phase4-shared").unwrap(),
-            Some(valid.clone())
-        );
-
-        let mut forbidden = phase4_fixture(include_str!(
-            "../tests/fixtures/phase4-invalid/forbidden-credential.json"
-        ));
-        forbidden["revision"] = json!(2);
-        let error = repository.commit_game(1, forbidden).unwrap_err();
-
-        assert!(error.contains("禁止持久化凭据"));
-        assert_eq!(repository.load_game("phase4-shared").unwrap(), Some(valid));
+        for (name, raw, expected) in [
+            (
+                "unknown-catalog",
+                include_str!("../tests/fixtures/phase4-invalid/unknown-catalog-reference.json"),
+                "目录引用无效",
+            ),
+            (
+                "bad-report",
+                include_str!("../tests/fixtures/phase4-invalid/bad-report-arithmetic.json"),
+                "经营报告算术不一致",
+            ),
+            (
+                "excessive-flow",
+                include_str!("../tests/fixtures/phase4-invalid/excessive-flow-events.json"),
+                "流动事件最多保留150项",
+            ),
+            (
+                "credential",
+                include_str!("../tests/fixtures/phase4-invalid/forbidden-credential.json"),
+                "禁止持久化凭据",
+            ),
+        ] {
+            let mut invalid = phase4_fixture(raw);
+            invalid["revision"] = json!(2);
+            let error = repository.commit_game(1, invalid).unwrap_err();
+            assert!(error.contains(expected), "{name}: {error}");
+            assert_eq!(
+                repository.load_game("phase4-shared").unwrap(),
+                Some(valid.clone()),
+                "{name} changed persisted state"
+            );
+        }
     }
 
     #[test]
