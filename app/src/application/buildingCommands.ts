@@ -208,9 +208,9 @@ export function createBuildingCommands(savePort: SavePort) {
 
   return {
     async initializeContentScale(state: GameState): Promise<GameState> {
-      if (state.phase4) return state;
       assertRevision(state.revision);
       assertSafeMoney(state.cashCents);
+      if (state.phase4) return state;
       const upgraded = upgradeLegacyToPhase4(state);
       return persist(
         state,

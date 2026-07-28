@@ -10,12 +10,19 @@ import type { RoomOffer } from "../operations/roomOffer";
 import type { GuestSegmentId } from "../operations/operationsTypes";
 import type { BedType } from "../operations/segmentCatalog";
 import type { RoomMaster } from "../design/roomSeries";
-import type {
-  ContentScaleState,
-  HotelFloor,
-  ScaleFloorTemplate,
-  ScaleRoomPlacement,
+import {
+  assertStableId,
+  type ContentScaleState,
+  type HotelFloor,
+  type ScaleFloorTemplate,
+  type ScaleRoomPlacement,
 } from "./buildingTypes";
+
+interface FloorPlacementIndexes {
+  canonical: Map<string, ScaleRoomPlacement>;
+  snapshot: Map<string, ScaleRoomPlacement> | null;
+  snapshotCellAreaSquareMeters: number | null;
+}
 
 export interface HotelInventoryRoom extends RoomOffer {
   floorId: string;
@@ -323,29 +330,48 @@ function appliedPlacementMaps(
   phase4: Readonly<ContentScaleState>,
   floors: readonly Readonly<HotelFloor>[],
   templates: ReadonlyMap<string, ScaleFloorTemplate>,
-): Map<string, Map<string, ScaleRoomPlacement> | null> {
-  const byFloor = new Map<string, Map<string, ScaleRoomPlacement> | null>();
+): Map<string, FloorPlacementIndexes> {
+  const byFloor = new Map<string, FloorPlacementIndexes>();
+  const indexedTemplates = new Map<string, Map<string, ScaleRoomPlacement>>();
+  const indexPlacements = (
+    template: Readonly<ScaleFloorTemplate>,
+  ): Map<string, ScaleRoomPlacement> => {
+    const indexed = indexedTemplates.get(template.id);
+    if (indexed) return indexed;
+    const placements = new Map<string, ScaleRoomPlacement>();
+    for (const placement of template.roomPlacements) {
+      assertStableId(placement.id);
+      if (placements.has(placement.id)) {
+        throw new Error(`模板 ${template.id} 的客房放置编号重复`);
+      }
+      placements.set(placement.id, placement);
+    }
+    indexedTemplates.set(template.id, placements);
+    return placements;
+  };
   for (const floor of floors) {
     const canonical = templates.get(floor.templateId);
     if (!canonical) throw new Error(`楼层 ${floor.id} 引用了未知模板`);
     if (canonical.use !== floor.use) throw new Error(`楼层 ${floor.id} 的用途与模板不匹配`);
+    const canonicalPlacements = indexPlacements(canonical);
     const snapshotId = `template-snapshot:${floor.id}`;
     const applied = phase4.floorTemplates[snapshotId];
     if (!applied) {
-      byFloor.set(floor.id, null);
+      byFloor.set(floor.id, {
+        canonical: canonicalPlacements,
+        snapshot: null,
+        snapshotCellAreaSquareMeters: null,
+      });
       continue;
     }
     if (applied.use !== floor.use) {
       throw new Error(`楼层 ${floor.id} 的快照用途不匹配`);
     }
-    const placements = new Map<string, ScaleRoomPlacement>();
-    for (const placement of applied.roomPlacements) {
-      if (placements.has(placement.id)) {
-        throw new Error(`模板 ${applied.id} 的客房放置编号重复`);
-      }
-      placements.set(placement.id, placement);
-    }
-    byFloor.set(floor.id, placements);
+    byFloor.set(floor.id, {
+      canonical: canonicalPlacements,
+      snapshot: indexPlacements(applied),
+      snapshotCellAreaSquareMeters: applied.cellAreaSquareMeters,
+    });
   }
   return byFloor;
 }
@@ -418,45 +444,64 @@ function projectPhase4Inventory(state: Readonly<GameState>): HotelInventory {
 
   for (const floor of floors) {
     if (!floor.purchased) continue;
-    const placements = placementsByFloor.get(floor.id)!;
-    if (placements && placements.size !== floor.rooms.length) {
+    const placementIndexes = placementsByFloor.get(floor.id)!;
+    const snapshotPlacements = placementIndexes.snapshot;
+    if (snapshotPlacements && snapshotPlacements.size !== floor.rooms.length) {
       throw new Error(`楼层 ${floor.id} 的快照客房集合不一致`);
     }
+    const localPlacementIds = new Set<string>();
     for (const room of [...floor.rooms].sort((left, right) =>
       compareStableIds(left.id, right.id))) {
       if (roomIds.has(room.id)) throw new Error(`客房编号冲突：${room.id}`);
       roomIds.add(room.id);
       if (room.floorId !== floor.id) throw new Error(`客房 ${room.id} 的楼层引用不一致`);
-      const placement = placements?.get(room.localPlacementId);
-      if (placements && !placement) throw new Error(`客房 ${room.id} 引用了未知模板放置`);
+      assertStableId(room.localPlacementId);
+      if (localPlacementIds.has(room.localPlacementId)) {
+        throw new Error(`楼层 ${floor.id} 的客房本地放置编号重复`);
+      }
+      localPlacementIds.add(room.localPlacementId);
+      const placement = snapshotPlacements?.get(room.localPlacementId);
+      if (snapshotPlacements && !placement) throw new Error(`客房 ${room.id} 引用了未知模板放置`);
+      if (!snapshotPlacements && !placementIndexes.canonical.has(room.localPlacementId)) {
+        throw new Error(`客房 ${room.id} 引用了未知模板放置`);
+      }
       if (placement && (
         placement.roomBlueprintId !== room.roomBlueprintId ||
         placement.variantId !== room.variantId
       )) throw new Error(`客房 ${room.id} 的设计引用与楼层快照不一致`);
       const design = designs.get(room.roomBlueprintId);
       if (!design) throw new Error(`客房 ${room.id} 引用了未知客房设计`);
-      let offer: RoomOffer;
+      let variant: RoomVariant | undefined;
+      let designAreaSquareMeters: number;
       if (room.variantId !== undefined) {
-        const variant = variants.get(room.variantId);
+        variant = variants.get(room.variantId);
         if (!variant) throw new Error(`客房 ${room.id} 引用了未知客房变体`);
         if (variant.masterId !== room.roomBlueprintId) {
           throw new Error(`客房 ${room.id} 的母版与变体引用不一致`);
         }
         if (!variant.metrics) throw new Error(`客房 ${room.id} 的变体缺少权威面积`);
-        offer = variantOffer(
-          state,
-          room.id,
-          variant,
-          variant.metrics.areaSquareMeters,
-        );
+        designAreaSquareMeters = variant.metrics.areaSquareMeters;
       } else {
-        offer = designOffer(
-          state,
-          room.id,
-          design,
-          design.metrics.areaSquareMeters,
-        );
+        designAreaSquareMeters = design.metrics.areaSquareMeters;
       }
+      let areaSquareMeters = designAreaSquareMeters;
+      if (placement) {
+        const cellAreaSquareMeters = placementIndexes.snapshotCellAreaSquareMeters;
+        if (
+          cellAreaSquareMeters === null ||
+          !Number.isSafeInteger(placement.width) ||
+          !Number.isSafeInteger(placement.height) ||
+          !Number.isSafeInteger(cellAreaSquareMeters) ||
+          placement.width <= 0 ||
+          placement.height <= 0 ||
+          cellAreaSquareMeters <= 0
+        ) throw new Error(`客房 ${room.id} 的快照面积无效`);
+        areaSquareMeters =
+          placement.width * placement.height * cellAreaSquareMeters;
+      }
+      const offer = variant
+        ? variantOffer(state, room.id, variant, areaSquareMeters)
+        : designOffer(state, room.id, design, areaSquareMeters);
       if (!Number.isSafeInteger(offer.areaSquareMeters) || offer.areaSquareMeters <= 0) {
         throw new Error(`客房 ${room.id} 的权威面积无效`);
       }

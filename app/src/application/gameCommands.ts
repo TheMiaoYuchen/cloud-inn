@@ -224,9 +224,7 @@ export function createGameCommands(savePort: SavePort) {
   }
 
   function projectOperationsDay(state: GameState, nowMs: number): GameState {
-    if (state.phase !== "open" || !state.roomBlueprint) {
-      throw new Error("酒店尚未开业");
-    }
+    if (state.phase !== "open") throw new Error("酒店尚未开业");
     const operations = state.operations;
     if (!operations) throw new Error("经营系统尚未初始化");
     if (state.currentDay >= MAX_OPERATIONS_DAY) throw new Error("经营模拟已到第 30 日终点");
@@ -236,6 +234,7 @@ export function createGameCommands(savePort: SavePort) {
       && nowMs < operations.lastOfflineCheckpointMs
     ) throw new Error("离线检查点不能倒退");
     const offers = projectRoomOffers(state);
+    if (offers.length === 0) throw new Error("至少建造一间客房才能营业");
     const pricedOperations = operationsWithCurrentAutomaticRates(state, offers);
     const settled = settleOperationsDay({
       day: state.currentDay + 1,
@@ -772,16 +771,15 @@ export function createGameCommands(savePort: SavePort) {
     },
 
     async advanceDay(state: GameState, nowMs?: number): Promise<GameState> {
-      const roomDesign = state.roomBlueprint ?? state.phase2?.roomMaster;
-      if (state.phase !== "open" || !roomDesign) {
-        throw new Error("酒店尚未开业");
-      }
+      if (state.phase !== "open") throw new Error("酒店尚未开业");
 
       if (state.operations) {
         if (nowMs === undefined) throw new Error("日结时间必须由应用层提供");
         return persist(state, projectOperationsDay(state, nowMs));
       }
 
+      const roomDesign = state.roomBlueprint ?? state.phase2?.roomMaster;
+      if (!roomDesign) throw new Error("酒店尚未开业");
       const report = settleDay({
         day: state.currentDay + 1,
         cashCents: state.cashCents,
@@ -849,7 +847,11 @@ export function createGameCommands(savePort: SavePort) {
         });
       }
       const days = offlineDaysForElapsed(nowMs - checkpoint, millisecondsPerGameDay);
-      if (days === 0 || state.phase !== "open" || !state.roomBlueprint) {
+      if (
+        days === 0 ||
+        state.phase !== "open" ||
+        projectRoomOffers(state).length === 0
+      ) {
         if (checkpoint === nowMs) return state;
         return persist(state, {
           ...state,

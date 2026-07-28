@@ -38,7 +38,53 @@ async function initializedScaleCommands() {
   return { state, commands, store };
 }
 
+async function masterOnlyOperationsCommands(saveId: string) {
+  const store = new InMemorySavePort();
+  const commands = createGameCommands(store);
+  const initial = createPhase4AcceptanceState(saveId);
+  initial.phase = "open";
+  const state = await commands.initializeOperations(initial, "management");
+  return { store, commands, state };
+}
+
 describe("atomic building commands", () => {
+  it("advances one operations day for a master-only Phase 4 hotel", async () => {
+    const { commands, state } = await masterOnlyOperationsCommands(
+      "building-master-operations-single",
+    );
+
+    const settled = await commands.advanceDay(state, 1_000);
+
+    expect(settled.currentDay).toBe(1);
+    expect(settled.operations!.dailyReports).toHaveLength(1);
+    expect(settled.operations!.dailyReports[0].availableRooms).toBe(120);
+  });
+
+  it("advances an operations batch for a master-only Phase 4 hotel", async () => {
+    const { commands, state } = await masterOnlyOperationsCommands(
+      "building-master-operations-batch",
+    );
+
+    const settled = await commands.advanceOperationsDays(state, 2, 2_000);
+
+    expect(settled.currentDay).toBe(2);
+    expect(settled.operations!.dailyReports).toHaveLength(2);
+    expect(settled.reports).toHaveLength(2);
+  });
+
+  it("settles offline operations for a master-only Phase 4 hotel", async () => {
+    const { commands, state } = await masterOnlyOperationsCommands(
+      "building-master-operations-offline",
+    );
+    const checkpointed = await commands.checkpointOfflineTime(state, 0);
+
+    const settled = await commands.settleOffline(checkpointed, 2_000, 1_000);
+
+    expect(settled.currentDay).toBe(2);
+    expect(settled.operations!.dailyReports).toHaveLength(2);
+    expect(settled.operations!.lastOfflineCheckpointMs).toBe(2_000);
+  });
+
   it("rejects revision overflow before any building command persistence", async () => {
     const expectOverflowRejected = async (
       state: GameState,
@@ -86,6 +132,33 @@ describe("atomic building commands", () => {
     expect(result.revision).toBe(revision);
     expect(store.commits).toBe(0);
     expect(await store.load(state.saveId)).toBeNull();
+  });
+
+  it("validates existing content-scale revision and cash before idempotent return", async () => {
+    const expectInvalidExistingRejected = async (
+      state: GameState,
+      message: string,
+    ) => {
+      const store = new RecordingSavePort();
+      const commands = createGameCommands(store);
+
+      await expect(commands.initializeContentScale(state)).rejects.toThrow(message);
+      expect(store.commits).toBe(0);
+    };
+    const valid = createPhase4AcceptanceState("building-initialize-validation");
+
+    await expectInvalidExistingRejected(
+      { ...valid, revision: Number.MAX_SAFE_INTEGER },
+      "修订号",
+    );
+    await expectInvalidExistingRejected(
+      { ...valid, revision: 1.5 },
+      "修订号",
+    );
+    await expectInvalidExistingRejected(
+      { ...valid, cashCents: Number.MAX_SAFE_INTEGER + 1 },
+      "金额",
+    );
   });
 
   it("opens a master-only Phase 4 hotel with authoritative physical rooms", async () => {

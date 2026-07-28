@@ -4,6 +4,7 @@ import { pricingContextForState } from "../../application/pricingContextForState
 import { createPhase4AcceptanceState } from "../../testing/phase4Fixtures";
 import { createOperationsState } from "../operations/createOperationsState";
 import type { OperationsDailyReport } from "../operations/operationsTypes";
+import { applyTemplateSync, copyGuestFloor } from "./towerHotel";
 import {
   projectHotelInventory,
   projectHotelRoomOffers,
@@ -90,8 +91,6 @@ describe("authoritative hotel inventory", () => {
     const template = changed.phase4!.floorTemplates[guestFloor.templateId];
     template.roomPlacements[0] = {
       ...template.roomPlacements[0],
-      id: "placement:replacement" as typeof template.roomPlacements[0]["id"],
-      roomBlueprintId: "room-blueprint:canonical-draft" as typeof template.roomPlacements[0]["roomBlueprintId"],
       width: 9,
       height: 9,
     };
@@ -100,6 +99,66 @@ describe("authoritative hotel inventory", () => {
 
     expect(after).toEqual(before);
     expect(after[0].areaSquareMeters).toBe(24);
+  });
+
+  it("rejects missing and duplicate no-snapshot physical local placements", () => {
+    const missing = createPhase4AcceptanceState("inventory-placement-missing");
+    const missingFloor = missing.phase4!.floors.find(({ use }) => use === "guest")!;
+    missingFloor.rooms[0].localPlacementId =
+      "placement:missing" as typeof missingFloor.rooms[0]["localPlacementId"];
+
+    expect(() => projectHotelInventory(missing)).toThrow("模板放置");
+
+    const duplicate = createPhase4AcceptanceState("inventory-placement-duplicate");
+    const duplicateFloor = duplicate.phase4!.floors.find(({ use }) => use === "guest")!;
+    duplicateFloor.rooms[1].localPlacementId = duplicateFloor.rooms[0].localPlacementId;
+
+    expect(() => projectHotelInventory(duplicate)).toThrow("本地放置编号重复");
+  });
+
+  it("rejects duplicate canonical placement IDs without a floor snapshot", () => {
+    const state = createPhase4AcceptanceState("inventory-canonical-duplicate");
+    const floor = state.phase4!.floors.find(({ use }) => use === "guest")!;
+    const template = state.phase4!.floorTemplates[floor.templateId];
+    template.roomPlacements[1] = {
+      ...template.roomPlacements[1],
+      id: template.roomPlacements[0].id,
+    };
+
+    expect(() => projectHotelInventory(state)).toThrow("客房放置编号重复");
+  });
+
+  it("uses selected floor snapshot geometry as area without changing unselected floors", () => {
+    const game = createPhase4AcceptanceState("inventory-selected-area");
+    const source = game.phase4!.floors.find(({ use }) => use === "guest")!;
+    const copied = copyGuestFloor(game.phase4!, source.id, 29).phase4;
+    const template = copied.floorTemplates[source.templateId];
+    const placementId = template.roomPlacements[0].id;
+    const changed = {
+      ...copied,
+      floorTemplates: {
+        ...copied.floorTemplates,
+        [template.id]: {
+          ...template,
+          roomPlacements: template.roomPlacements.map((placement, index) =>
+            index === 0 ? { ...placement, width: 5 } : placement,
+          ),
+        },
+      },
+    };
+    const synchronized = applyTemplateSync(changed, [source.id]);
+    const inventory = projectHotelInventory({ ...game, phase4: synchronized });
+    const selected = inventory.rooms.find(
+      ({ floorId, localPlacementId }) =>
+        floorId === source.id && localPlacementId === placementId,
+    )!;
+    const unselected = inventory.rooms.find(
+      ({ floorId, localPlacementId }) =>
+        floorId === "floor:29" && localPlacementId === placementId,
+    )!;
+
+    expect(selected.areaSquareMeters).toBe(30);
+    expect(unselected.areaSquareMeters).toBe(24);
   });
 
   it("rejects colliding physical IDs and inconsistent design references", () => {
