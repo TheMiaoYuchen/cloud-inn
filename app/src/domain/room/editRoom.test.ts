@@ -23,7 +23,11 @@ import {
   rotateRoom,
 } from "./transformRoom";
 import { SPACE_EDITOR_HISTORY_LIMIT } from "../spaces/spaceTypes";
-import { createRectangle, ROOM_MAX_OPENINGS } from "./grid";
+import {
+  createRectangle,
+  ROOM_MAX_CELLS,
+  ROOM_MAX_OPENINGS,
+} from "./grid";
 
 const cells: Cell[] = [
   { x: 0, y: 0, zone: "bedroom" },
@@ -196,6 +200,24 @@ describe("room editing primitives", () => {
       .toHaveLength(1_025);
   });
 
+  it("validates the maximum compatible room and boundary-door set in linear time", () => {
+    const strip = createRectangle(0, 0, ROOM_MAX_CELLS, 1, "bedroom");
+    strip[0] = { ...strip[0], zone: "bathroom" };
+    const doors = Array.from({ length: ROOM_MAX_CELLS }, (_, x) => ({
+      x,
+      y: 0,
+      side: "north" as const,
+    }));
+    const draft = { ...createRoomDraft(strip, ROOM_MAX_CELLS, 1), doors };
+    const startedAt = performance.now();
+
+    expect(validateRoomDraft(draft)).toEqual({
+      ok: true,
+      areaSquareMeters: 2_525,
+    });
+    expect(performance.now() - startedAt).toBeLessThan(500);
+  });
+
   it("uses the same explicit room opening cap for additions", () => {
     const draft = createRoomDraft(cells, 8, 12);
     const belowCap = {
@@ -205,6 +227,9 @@ describe("room editing primitives", () => {
     const atCap = addDoor(belowCap, { x: 0, y: 0, side: "north" });
 
     expect(atCap.doors).toHaveLength(ROOM_MAX_OPENINGS);
+    const duplicate = addDoor(atCap, { x: 0, y: 0, side: "north" });
+    expect(duplicate).not.toBe(atCap);
+    expect(duplicate.doors).toHaveLength(ROOM_MAX_OPENINGS);
     expect(() => addDoor(atCap, { x: 0, y: 0, side: "west" }))
       .toThrow("房间开口数量超过上限");
   });

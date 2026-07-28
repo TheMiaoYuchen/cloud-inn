@@ -231,6 +231,46 @@ describe("shared space editor boundaries", () => {
     );
   });
 
+  it.each([0, -1, 1.5, Number.NaN, Number.POSITIVE_INFINITY])(
+    "rejects invalid configurable opening limit %s without a native numeric error",
+    (maximum) => {
+      const draft = paintSpaceCell(createSpaceDraft("gym", 1, 1), {
+        x: 0, y: 0, zoneId: "zone:fitness",
+      });
+
+      expect(() => addSpaceOpening(
+        draft,
+        { x: 0, y: 0, side: "north" },
+        "doors",
+        maximum,
+      )).toThrow("空间开口上限必须是正安全整数");
+    },
+  );
+
+  it("keeps same-edge additions idempotent at the cap before rejecting conflicts or new edges", () => {
+    const opening = { x: 0, y: 0, side: "north" as const };
+    const draft = paintSpaceRectangle(
+      createSpaceDraft("gym", 2, 1),
+      { x: 0, y: 0, width: 2, height: 1 },
+      "zone:fitness",
+    );
+    const doors = new Array(SPACE_EDITOR_MAX_OPENINGS) as typeof draft.doors;
+    doors[0] = opening;
+    const atCap = { ...draft, doors };
+
+    const duplicate = addSpaceDoor(atCap, opening);
+
+    expect(duplicate).not.toBe(atCap);
+    expect(duplicate.doors).toHaveLength(SPACE_EDITOR_MAX_OPENINGS);
+    duplicate.cells[0].zoneId = "mutated";
+    duplicate.doors[0].x = 1;
+    expect(atCap.cells[0].zoneId).toBe("zone:fitness");
+    expect(atCap.doors[0].x).toBe(0);
+    expect(() => addSpaceWall(atCap, opening)).toThrow("这条边已有其他开口");
+    expect(() => addSpaceDoor(atCap, { x: 1, y: 0, side: "north" }))
+      .toThrow("空间开口数量超过上限");
+  });
+
   it("places and rotates bounded, non-colliding items", () => {
     const draft = createSpaceDraft("gym", 8, 8);
     const first = placeSpaceItem(draft, {

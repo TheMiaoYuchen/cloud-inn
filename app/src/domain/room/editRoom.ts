@@ -152,26 +152,28 @@ export function validateRoomDraft(draft: RoomDraft) {
   const openings = collectBoundedSpaceOpenings(draft, ROOM_MAX_OPENINGS)
     .map(({ opening }) => opening);
   const openingKeys = new Set<string>();
-  const validationDraft = roomDraftToSpaceDraft({
-    ...draft,
-    walls: [],
-    doors: [],
-    windows: [],
-  });
   for (const opening of openings) {
+    if (!Number.isSafeInteger(opening.x) || !Number.isSafeInteger(opening.y) ||
+        typeof opening.side !== "string") {
+      return { ok: false as const, reason: "开口必须位于房间边界" };
+    }
     const key = `${opening.x},${opening.y},${opening.side}`;
     if (openingKeys.has(key)) {
       return { ok: false as const, reason: "同一房间边只能设置一个开口" };
     }
     openingKeys.add(key);
-    try {
-      addSpaceOpening(
-        validationDraft,
-        opening,
-        "doors",
-        ROOM_MAX_OPENINGS,
-      );
-    } catch {
+  }
+  const occupied = new Set(draft.cells.map(({ x, y }) => `${x},${y}`));
+  const offsets = {
+    north: [0, -1],
+    east: [1, 0],
+    south: [0, 1],
+    west: [-1, 0],
+  } as const;
+  for (const opening of openings) {
+    const offset = offsets[opening.side];
+    if (!offset || !occupied.has(`${opening.x},${opening.y}`) ||
+        occupied.has(`${opening.x + offset[0]},${opening.y + offset[1]}`)) {
       return { ok: false as const, reason: "开口必须位于房间边界" };
     }
   }

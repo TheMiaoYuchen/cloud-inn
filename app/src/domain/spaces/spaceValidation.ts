@@ -7,6 +7,7 @@ import {
 } from "../content/contentCatalog";
 import {
   collectBoundedSpaceOpenings,
+  deterministicSpaceItemKey,
   validateSpaceConnectivity,
   validateSpaceDraft,
 } from "./spaceEditor";
@@ -23,6 +24,28 @@ import {
 
 const issue = (code: string, message: string): PlanningIssue => ({ code, message });
 const coordinateKey = (x: number, y: number) => `${x},${y}`;
+
+function compareText(left: string, right: string): number {
+  return left < right ? -1 : left > right ? 1 : 0;
+}
+
+function issueRank(code: string): number {
+  if (code.startsWith("editor:")) return 0;
+  if (code.startsWith("required-zone:") || code === "dining-kitchen") return 10;
+  if (code.startsWith("unknown-zone:")) return 20;
+  if (code.startsWith("disallowed-zone:")) return 21;
+  if (code.startsWith("unknown-item:")) return 30;
+  if (code.startsWith("item-not-permitted:")) return 31;
+  if (code.startsWith("item-zone:")) return 32;
+  if (code.startsWith("required-item:")) return 40;
+  if (code === "minimum-capacity") return 50;
+  return 60;
+}
+
+function sortIssues(values: PlanningIssue[]): PlanningIssue[] {
+  return [...values].sort((left, right) => issueRank(left.code) - issueRank(right.code) ||
+    compareText(left.code, right.code) || compareText(left.message, right.message));
+}
 
 function definitionFor(draft: SpaceDraft): Readonly<SpaceTypeDefinition> | undefined {
   return FACILITY_CATALOG.find(({ type }) => type === draft.type);
@@ -86,18 +109,6 @@ function itemInAllowedZone(
   return BigInt(covered.size) === area;
 }
 
-function deterministicItemKey(item: PlacedItem): string {
-  return [
-    item.id,
-    item.catalogItemId,
-    item.x,
-    item.y,
-    item.width,
-    item.height,
-    item.rotation,
-  ].join("\u0000");
-}
-
 function unambiguousItems(
   draft: SpaceDraft,
 ): PlacedItem[] {
@@ -125,8 +136,10 @@ function unambiguousItems(
         !validItemGeometry(draft, item)) continue;
     values.push(item);
   }
-  return values.sort((left, right) => deterministicItemKey(left)
-    .localeCompare(deterministicItemKey(right)));
+  return values.sort((left, right) => compareText(
+    deterministicSpaceItemKey(left),
+    deterministicSpaceItemKey(right),
+  ));
 }
 
 interface ValidationView {
@@ -149,6 +162,8 @@ function buildValidationView(
   const uniqueOpenings = new Map<string, (typeof openings)[number]>();
   for (const entry of openings) {
     const { opening, type } = entry;
+    if (!Number.isSafeInteger(opening.x) || !Number.isSafeInteger(opening.y) ||
+        typeof opening.side !== "string") continue;
     uniqueOpenings.set(`${type},${opening.x},${opening.y},${opening.side}`, entry);
   }
   const doors = [...uniqueOpenings.values()]
@@ -379,7 +394,7 @@ export function validatePublicSpace(draft: SpaceDraft): PublicSpaceValidation {
   const advisory: PlanningIssue[] = [];
   const editorValidation = validateSpaceDraft(draft);
   if (!editorValidation.ok) {
-    editorValidation.reasons.forEach((message, index) => {
+    [...editorValidation.reasons].sort(compareText).forEach((message, index) => {
       blocking.push(issue(`editor:${index}`, message));
     });
   }
@@ -387,8 +402,8 @@ export function validatePublicSpace(draft: SpaceDraft): PublicSpaceValidation {
   if (!definition) {
     blocking.push(issue("unknown-space-type", "公共空间类型未在目录中定义"));
     return {
-      blocking,
-      advisory,
+      blocking: sortIssues(blocking),
+      advisory: sortIssues(advisory),
       metrics: {
         constructionCostCents: 0,
         capacity: 0,
@@ -422,8 +437,9 @@ export function validatePublicSpace(draft: SpaceDraft): PublicSpaceValidation {
   }
   const knownItemIds = new Set<string>(ITEM_CATALOG.map(({ id }) => id));
   for (const item of [...view.boundedItems].sort((left, right) =>
-    String(left.id).localeCompare(String(right.id)),
+    compareText(deterministicSpaceItemKey(left), deterministicSpaceItemKey(right)),
   )) {
+    if (typeof item.catalogItemId !== "string") continue;
     if (!knownItemIds.has(item.catalogItemId)) {
       blocking.push(issue(`unknown-item:${item.catalogItemId}`, `物件未在目录中定义：${item.catalogItemId}`));
       continue;
@@ -457,5 +473,9 @@ export function validatePublicSpace(draft: SpaceDraft): PublicSpaceValidation {
       metrics.serviceDistance > definition.metrics.serviceDistanceAdvisoryMaximum) {
     advisory.push(issue("service-distance", "服务距离过长，建议优化服务动线"));
   }
-  return { blocking, advisory, metrics };
+  return {
+    blocking: sortIssues(blocking),
+    advisory: sortIssues(advisory),
+    metrics,
+  };
 }

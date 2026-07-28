@@ -56,6 +56,32 @@ export function collectBoundedSpaceOpenings(
   return collected;
 }
 
+function safeScalarKey(value: unknown): string {
+  if (typeof value === "string") return `string:${value}`;
+  if (typeof value === "number") {
+    if (Number.isNaN(value)) return "number:NaN";
+    return `number:${value}`;
+  }
+  if (typeof value === "bigint") return `bigint:${value.toString()}`;
+  if (typeof value === "symbol") return value.description === undefined
+    ? "symbol"
+    : `symbol:${value.description}`;
+  if (value === null) return "null";
+  return typeof value;
+}
+
+export function deterministicSpaceItemKey(item: PlacedItem): string {
+  return [
+    item.id,
+    item.catalogItemId,
+    item.x,
+    item.y,
+    item.width,
+    item.height,
+    item.rotation,
+  ].map(safeScalarKey).join("\u0000");
+}
+
 function isSafeInteger(value: number): boolean {
   return Number.isSafeInteger(value);
 }
@@ -97,12 +123,9 @@ export function addSpaceOpening(
   property: "walls" | "doors" | "windows",
   maximumOpenings = SPACE_EDITOR_MAX_OPENINGS,
 ): SpaceDraft {
-  const openingCount = BigInt(draft.walls.length) + BigInt(draft.doors.length) +
-    BigInt(draft.windows.length);
-  if (openingCount >= BigInt(maximumOpenings)) {
-    throw new Error("空间开口数量超过上限");
+  if (!Number.isSafeInteger(maximumOpenings) || maximumOpenings <= 0) {
+    throw new Error("空间开口上限必须是正安全整数");
   }
-  if (!boundaryCell(draft, opening)) throw new Error("开口必须位于空间边界");
   const openingKey = `${opening.x},${opening.y},${opening.side}`;
   const duplicateProperty = (["walls", "doors", "windows"] as const).find((candidate) =>
     draft[candidate].some(
@@ -112,6 +135,12 @@ export function addSpaceOpening(
     if (duplicateProperty === property) return cloneSpaceDraft(draft);
     throw new Error("这条边已有其他开口");
   }
+  const openingCount = BigInt(draft.walls.length) + BigInt(draft.doors.length) +
+    BigInt(draft.windows.length);
+  if (openingCount >= BigInt(maximumOpenings)) {
+    throw new Error("空间开口数量超过上限");
+  }
+  if (!boundaryCell(draft, opening)) throw new Error("开口必须位于空间边界");
   const next = cloneSpaceDraft(draft);
   next[property].push({ ...opening });
   return next;
@@ -375,7 +404,9 @@ function connected(cells: SpaceCell[]): boolean {
 }
 
 export function validateSpaceConnectivity(draft: SpaceDraft): SpaceConnectivity {
-  const cells = draft.cells.slice(0, SPACE_EDITOR_MAX_CELLS);
+  const cells = draft.cells.slice(0, SPACE_EDITOR_MAX_CELLS)
+    .filter(({ x, y, zoneId }) => typeof zoneId === "string" &&
+      isSafeInteger(x) && isSafeInteger(y));
   const items = draft.items.slice(0, SPACE_EDITOR_MAX_ITEMS);
   const zoneIds = [...new Set(cells.map(({ zoneId }) => zoneId))].sort();
   const zoneConnectivity = Object.fromEntries(
@@ -414,16 +445,24 @@ export function validateSpaceDraft(
   const boundedCells = draft.cells.slice(0, SPACE_EDITOR_MAX_CELLS);
   const cellKeys = new Set<string>();
   for (const cell of boundedCells) {
-    if (!isSafeInteger(cell.x) || !isSafeInteger(cell.y) || cell.x < 0 || cell.y < 0 ||
-        cell.x >= draft.columns || cell.y >= draft.rows) addReason("空间坐标超出网格边界");
-    const coordinate = key(cell.x, cell.y);
-    if (cellKeys.has(coordinate)) addReason("同一坐标只能设置一个分区");
-    cellKeys.add(coordinate);
+    const validCoordinate = isSafeInteger(cell.x) && isSafeInteger(cell.y) &&
+      cell.x >= 0 && cell.y >= 0 && cell.x < draft.columns && cell.y < draft.rows;
+    if (!validCoordinate) addReason("空间坐标超出网格边界");
+    else {
+      const coordinate = key(cell.x, cell.y);
+      if (cellKeys.has(coordinate)) addReason("同一坐标只能设置一个分区");
+      cellKeys.add(coordinate);
+    }
     if (typeof cell.zoneId !== "string") addReason("分区编号必须是字符串");
     else if (!cell.zoneId.trim()) addReason("分区编号不能为空");
   }
   if (draft.items.length > SPACE_EDITOR_MAX_ITEMS) addReason("空间物件数量超过上限");
-  const boundedItems = draft.items.slice(0, SPACE_EDITOR_MAX_ITEMS);
+  const boundedItems = draft.items.slice(0, SPACE_EDITOR_MAX_ITEMS)
+    .sort((left, right) => {
+      const leftKey = deterministicSpaceItemKey(left);
+      const rightKey = deterministicSpaceItemKey(right);
+      return leftKey < rightKey ? -1 : leftKey > rightKey ? 1 : 0;
+    });
   const itemIds = new Set<string>();
   for (const item of boundedItems) {
     if (typeof item.id !== "string") addReason("物件编号必须是字符串");
@@ -443,9 +482,15 @@ export function validateSpaceDraft(
       addReason("物件超出空间边界");
     }
   }
-  for (let left = 0; left < boundedItems.length; left += 1) {
-    for (let right = left + 1; right < boundedItems.length; right += 1) {
-      if (overlaps(boundedItems[left], boundedItems[right])) addReason("物件不能互相重叠");
+  const collisionCandidates = boundedItems.filter((item) =>
+    [item.x, item.y, item.width, item.height].every(isSafeInteger) &&
+    item.width > 0 && item.height > 0,
+  );
+  for (let left = 0; left < collisionCandidates.length; left += 1) {
+    for (let right = left + 1; right < collisionCandidates.length; right += 1) {
+      if (overlaps(collisionCandidates[left], collisionCandidates[right])) {
+        addReason("物件不能互相重叠");
+      }
     }
   }
   const openingCount = BigInt(draft.walls.length) + BigInt(draft.doors.length) +
@@ -455,16 +500,21 @@ export function validateSpaceDraft(
     .map(({ opening }) => opening);
   const openingKeys = new Set<string>();
   for (const opening of boundedOpenings) {
-    if (typeof opening.side !== "string" ||
-        !(["north", "east", "south", "west"] as string[]).includes(opening.side)) {
+    const validSide = typeof opening.side === "string" &&
+      (["north", "east", "south", "west"] as string[]).includes(opening.side);
+    const validCoordinate = isSafeInteger(opening.x) && isSafeInteger(opening.y);
+    if (!validSide) {
       addReason("开口方向无效");
     }
-    const openingCoordinate = `${opening.x},${opening.y},${opening.side}`;
-    if (openingKeys.has(openingCoordinate)) addReason("同一空间边只能设置一个开口");
-    openingKeys.add(openingCoordinate);
+    if (validSide && validCoordinate) {
+      const openingCoordinate = `${opening.x},${opening.y},${opening.side}`;
+      if (openingKeys.has(openingCoordinate)) addReason("同一空间边只能设置一个开口");
+      openingKeys.add(openingCoordinate);
+    }
   }
   for (const opening of boundedOpenings) {
-    if (typeof opening.side !== "string" ||
+    if (typeof opening.side !== "string" || !isSafeInteger(opening.x) ||
+        !isSafeInteger(opening.y) ||
         !boundaryCell({ ...draft, cells: boundedCells }, opening)) {
       addReason("开口必须位于空间边界");
     }

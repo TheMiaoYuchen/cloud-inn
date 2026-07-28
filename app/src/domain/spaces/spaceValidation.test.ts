@@ -528,6 +528,33 @@ describe("public-space validation strategies", () => {
       .toEqual(validatePublicSpace(draft));
   });
 
+  it("produces identical full issues for duplicate IDs with different catalog semantics", () => {
+    const draft = playableDraft("gym");
+    const ambiguous = [
+      {
+        id: "dup", catalogItemId: "item:unknown",
+        x: 8, y: 1, width: 1, height: 1, rotation: 0 as const,
+      },
+      {
+        id: "dup", catalogItemId: "item:display-case",
+        x: 9, y: 1, width: 1, height: 1, rotation: 0 as const,
+      },
+    ];
+
+    const forward = validatePublicSpace({ ...draft, items: [...draft.items, ...ambiguous] });
+    const reversed = validatePublicSpace({
+      ...draft,
+      items: [...draft.items, ...ambiguous.reverse()],
+    });
+
+    expect(reversed).toEqual(forward);
+    expect(forward.blocking.map(({ message }) => message)).toEqual(expect.arrayContaining([
+      "物件编号不能重复",
+      "物件未在目录中定义：item:unknown",
+      "物件 dup 不适用于该空间",
+    ]));
+  });
+
   it("produces identical validation for permutations of conflicting imported cells", () => {
     const draft: SpaceDraft = {
       type: "gym",
@@ -710,10 +737,21 @@ describe("public-space validation strategies", () => {
 
   it.each([
     ["cell zone", (draft: any) => { draft.cells[0].zoneId = 7; }, "分区编号必须是字符串"],
+    ["symbol cell zone beside a normal zone", (draft: any) => {
+      draft.cells = [draft.cells[0], { ...draft.cells[1], zoneId: Symbol("zone") }];
+    }, "分区编号必须是字符串"],
     ["item id", (draft: any) => { draft.items[0].id = null; }, "物件编号必须是字符串"],
+    ["symbol item id", (draft: any) => { draft.items[0].id = Symbol("item"); }, "物件编号必须是字符串"],
     ["item catalog id", (draft: any) => { draft.items[0].catalogItemId = {}; }, "物件目录引用必须是字符串"],
+    ["symbol item catalog id", (draft: any) => {
+      draft.items[0].catalogItemId = Symbol("catalog");
+    }, "物件目录引用必须是字符串"],
     ["space type", (draft: any) => { draft.type = 7; }, "公共空间类型无效"],
+    ["symbol space type", (draft: any) => { draft.type = Symbol("type"); }, "公共空间类型无效"],
     ["opening side", (draft: any) => { draft.doors = [{ x: 0, y: 0, side: null }]; }, "开口方向无效"],
+    ["symbol opening side", (draft: any) => {
+      draft.doors = [{ x: 0, y: 0, side: Symbol("side") }];
+    }, "开口方向无效"],
   ])("returns blocking issues and safe metrics for malformed runtime %s", (_label, mutate, message) => {
     const draft: any = playableDraft("gym");
     mutate(draft);
