@@ -2425,7 +2425,7 @@ fn validate_operations_daily(
     let mut segment_sold = Vec::new();
     let segments = operations_array(value, "segments")?;
     if segments.len() != OPERATIONS_SEGMENTS.len() {
-        return Err(operations_report_error());
+        return Err("经营存档数据损坏".into());
     }
     for (index, segment) in segments.iter().enumerate() {
         let id = operations_one_of(segment, "segmentId", &OPERATIONS_SEGMENTS)?;
@@ -4331,6 +4331,93 @@ mod tests {
         ("unknown-catalog-reference.json", "目录引用无效"),
     ];
 
+    const PHASE4_TASK2_ERROR_CLASSES: [(&str, &str); 8] = [
+        ("duplicate-floor-id", "楼层编号重复"),
+        ("unknown-room-floor", "客房楼层引用无效"),
+        ("unsafe-money", "施工金额必须是安全整数"),
+        ("wrong-containing-floor", "客房必须属于所在楼层"),
+        ("malformed-record-key", "记录键必须是稳定 ID"),
+        ("non-object-record-value", "公共空间蓝图结构无效"),
+        ("record-key-id-mismatch", "记录键与编号不一致"),
+        ("duplicate-record-value-id", "公共空间编号重复"),
+    ];
+
+    fn phase4_fixture_with_serialized_bytes(target: usize) -> Value {
+        let mut game = phase4_fixture(include_str!("../tests/fixtures/phase4-valid.json"));
+        let phase4 = game["phase4"].as_object_mut().unwrap();
+        phase4.insert(
+            "persistenceMetadata".into(),
+            json!({
+                "asciiKey": "ascii value",
+                "非ASCII键": "中文值",
+                "exponentNumber": phase4_fixture("1e2"),
+            }),
+        );
+        let phase4_without_metadata = serde_json::to_vec(&Value::Object(
+            phase4
+                .iter()
+                .filter(|(key, _)| key.as_str() != "persistenceMetadata")
+                .map(|(key, value)| (key.clone(), value.clone()))
+                .collect(),
+        ))
+        .unwrap()
+        .len();
+        let metadata = phase4["persistenceMetadata"].as_object_mut().unwrap();
+        let mut bytes = serde_json::to_vec(metadata).unwrap().len();
+        bytes += phase4_without_metadata + ",\"persistenceMetadata\":".len() - 2;
+        let mut index = 0usize;
+        let mut last_key = String::new();
+
+        loop {
+            let key = format!("{}{index:06}", "界".repeat(122));
+            let empty_entry_bytes = serde_json::to_vec(&json!({key.clone(): ""})).unwrap().len()
+                - 2
+                + usize::from(!metadata.is_empty());
+            let full_entry_bytes = empty_entry_bytes + 4_096;
+            if bytes + full_entry_bytes > target {
+                break;
+            }
+            metadata.insert(key.clone(), json!("!".repeat(4_096)));
+            bytes += full_entry_bytes;
+            last_key = key;
+            index += 1;
+        }
+
+        let key = format!("{}{index:06}", "界".repeat(122));
+        let empty_entry_bytes =
+            serde_json::to_vec(&json!({key.clone(): ""})).unwrap().len() - 2 + 1;
+        let mut deficit = target - bytes;
+        if deficit > 0 && deficit < empty_entry_bytes {
+            let prior = metadata[&last_key].as_str().unwrap();
+            metadata.insert(
+                last_key.clone(),
+                json!(&prior[..prior.len() - (empty_entry_bytes - deficit)]),
+            );
+            bytes -= empty_entry_bytes - deficit;
+            deficit = target - bytes;
+        }
+        if deficit > 0 {
+            metadata.insert(key, json!("!".repeat(deficit - empty_entry_bytes)));
+        }
+
+        let actual = serde_json::to_vec(&game["phase4"]).unwrap().len();
+        if actual != target {
+            let metadata = game["phase4"]["persistenceMetadata"]
+                .as_object_mut()
+                .unwrap();
+            let calibration_key = last_key.clone();
+            let prior = metadata[&calibration_key].as_str().unwrap();
+            let calibrated = if actual > target {
+                prior[..prior.len() - (actual - target)].to_string()
+            } else {
+                format!("{prior}{}", "!".repeat(target - actual))
+            };
+            metadata.insert(calibration_key, json!(calibrated));
+        }
+        assert_eq!(serde_json::to_vec(&game["phase4"]).unwrap().len(), target);
+        game
+    }
+
     #[test]
     fn phase4_shared_fixture_manifest_is_exact() {
         let directory =
@@ -4370,23 +4457,20 @@ mod tests {
 
     #[test]
     fn phase4_retains_task2_validation_regressions() {
-        type Phase4Mutation = (&'static str, &'static str, Box<dyn Fn(&mut Value)>);
+        type Phase4Mutation = (&'static str, Box<dyn Fn(&mut Value)>);
         let cases: Vec<Phase4Mutation> = vec![
             (
                 "duplicate-floor-id",
-                "楼层编号重复",
                 Box::new(|value| value["phase4"]["floors"][1]["id"] = json!("floor:01")),
             ),
             (
                 "unknown-room-floor",
-                "客房楼层引用无效",
                 Box::new(|value| {
                     value["phase4"]["floors"][4]["rooms"][0]["floorId"] = json!("floor:unknown")
                 }),
             ),
             (
                 "unsafe-money",
-                "施工金额必须是安全整数",
                 Box::new(|value| {
                     value["phase4"]["floors"][4]["rooms"][0]["committedBuildCostCents"] =
                         json!(JS_MAX_SAFE_INTEGER + 1)
@@ -4394,14 +4478,12 @@ mod tests {
             ),
             (
                 "wrong-containing-floor",
-                "客房必须属于所在楼层",
                 Box::new(|value| {
                     value["phase4"]["floors"][4]["rooms"][0]["floorId"] = json!("floor:06")
                 }),
             ),
             (
                 "malformed-record-key",
-                "记录键必须是稳定 ID",
                 Box::new(|value| {
                     let record = value["phase4"]["publicSpaces"].as_object_mut().unwrap();
                     let first = record.values().next().unwrap().clone();
@@ -4410,7 +4492,6 @@ mod tests {
             ),
             (
                 "non-object-record-value",
-                "公共空间蓝图结构无效",
                 Box::new(|value| {
                     let record = value["phase4"]["spaceBlueprints"].as_object_mut().unwrap();
                     let key = record.keys().next().unwrap().clone();
@@ -4419,7 +4500,6 @@ mod tests {
             ),
             (
                 "record-key-id-mismatch",
-                "记录键与编号不一致",
                 Box::new(|value| {
                     let record = value["phase4"]["facilities"].as_object_mut().unwrap();
                     record.values_mut().next().unwrap()["id"] = json!("facility:mismatch");
@@ -4427,7 +4507,6 @@ mod tests {
             ),
             (
                 "duplicate-record-value-id",
-                "公共空间编号重复",
                 Box::new(|value| {
                     let record = value["phase4"]["publicSpaces"].as_object_mut().unwrap();
                     let keys = record.keys().take(2).cloned().collect::<Vec<_>>();
@@ -4436,7 +4515,14 @@ mod tests {
                 }),
             ),
         ];
-        for (name, expected, mutate) in cases {
+        assert_eq!(
+            cases.iter().map(|(name, _)| *name).collect::<Vec<_>>(),
+            PHASE4_TASK2_ERROR_CLASSES
+                .iter()
+                .map(|(name, _)| *name)
+                .collect::<Vec<_>>()
+        );
+        for ((name, mutate), (_, expected)) in cases.into_iter().zip(PHASE4_TASK2_ERROR_CLASSES) {
             let mut invalid = phase4_fixture(include_str!("../tests/fixtures/phase4-valid.json"));
             mutate(&mut invalid);
             let error = validate_game(&invalid).err().unwrap();
@@ -4444,6 +4530,27 @@ mod tests {
                 error.contains(expected),
                 "{name} expected {expected}, got {error}"
             );
+        }
+    }
+
+    #[test]
+    fn phase4_enforces_exact_serialized_json_size() {
+        for (target, rejected) in [
+            (PHASE4_MAX_JSON_BYTES - 1, false),
+            (PHASE4_MAX_JSON_BYTES, false),
+            (PHASE4_MAX_JSON_BYTES + 1, true),
+            (8_630_528, true),
+        ] {
+            let game = phase4_fixture_with_serialized_bytes(target);
+            let result = validate_game(&game);
+            if rejected {
+                assert!(
+                    result.err().unwrap().contains("JSON超过大小限制"),
+                    "{target} bytes"
+                );
+            } else {
+                assert!(result.is_ok(), "{target} bytes");
+            }
         }
     }
 
@@ -4737,6 +4844,16 @@ mod tests {
         let loan_error = validate_game(&invalid_loan).err().unwrap();
         assert!(loan_error.contains("经营存档"), "{loan_error}");
         assert!(!loan_error.contains("经营报告算术"), "{loan_error}");
+
+        let mut incomplete_segments =
+            phase4_fixture(include_str!("../tests/fixtures/phase4-valid.json"));
+        incomplete_segments["operations"]["dailyReports"][0]["segments"]
+            .as_array_mut()
+            .unwrap()
+            .pop();
+        let segment_error = validate_game(&incomplete_segments).err().unwrap();
+        assert!(segment_error.contains("经营存档"), "{segment_error}");
+        assert!(!segment_error.contains("经营报告算术"), "{segment_error}");
 
         let mut invalid_report =
             phase4_fixture(include_str!("../tests/fixtures/phase4-valid.json"));

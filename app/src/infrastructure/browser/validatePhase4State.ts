@@ -124,7 +124,6 @@ function isStrictBase64(value: string): boolean {
 }
 
 function validateTree(value: unknown): void {
-  let bytes = 0;
   const pending: Array<{ value: unknown; depth: number }> = [{ value, depth: 0 }];
   while (pending.length > 0) {
     const current = pending.pop()!;
@@ -135,37 +134,34 @@ function validateTree(value: unknown): void {
       if (isStrictBase64(current.value)) {
         phase4Error("禁止持久化Base64数据");
       }
-      bytes += new TextEncoder().encode(current.value).length + 2;
     } else if (Array.isArray(current.value)) {
-      bytes += 2 + current.value.length;
       current.value.forEach((child) => pending.push({ value: child, depth: current.depth + 1 }));
     } else if (typeof current.value === "object" && current.value !== null) {
-      bytes += 2;
       for (const [key, child] of Object.entries(current.value)) {
         if (Array.from(key).length > 128) phase4Error("字段名超过长度限制");
         if (CREDENTIAL_KEY.test(key)) phase4Error("禁止持久化凭据");
-        bytes += key.length + 3;
         pending.push({ value: child, depth: current.depth + 1 });
       }
-    } else {
-      bytes += 8;
     }
-    if (bytes > MAX_JSON_BYTES) phase4Error("JSON超过大小限制");
   }
 }
 
 function validateIdentityRecord(value: unknown, label: string, maximum = Number.MAX_SAFE_INTEGER): JsonObject {
   const record = object(value, label);
   const entries = Object.entries(record);
-  if (entries.length > maximum) phase4Error(`${label}最多保留${maximum}项`);
   const ids = new Set<string>();
   for (const [key, raw] of entries) {
     stableId(key, "记录键");
     const definition = object(raw, label);
     const id = stableId(definition.id, `${label}编号`);
-    if (!ids.add(id)) phase4Error(`${label}编号重复`);
-    if (key !== id) phase4Error("记录键与编号不一致");
+    if (ids.has(id)) phase4Error(`${label}编号重复`);
+    ids.add(id);
   }
+  for (const [key, raw] of entries) {
+    const definition = object(raw, label);
+    if (key !== definition.id) phase4Error("记录键与编号不一致");
+  }
+  if (entries.length > maximum) phase4Error(`${label}最多保留${maximum}项`);
   return record;
 }
 
@@ -195,6 +191,8 @@ function validateFacilityHistory(facility: JsonObject, currentDay: number): void
 }
 
 export function validatePhase4State(value: unknown, gameValue?: unknown): void {
+  const serialized = JSON.stringify(value);
+  if (new TextEncoder().encode(serialized).byteLength > MAX_JSON_BYTES) phase4Error("JSON超过大小限制");
   validateTree(value);
   const phase4 = object(value, "状态");
   const game = gameValue === undefined ? undefined : object(gameValue, "游戏");
@@ -277,12 +275,19 @@ export function validatePhase4State(value: unknown, gameValue?: unknown): void {
   const floorNumbers = new Set<number>();
   const floorById = new Map<string, JsonObject>();
   const roomIds = new Set<string>();
-  let roomCount = 0;
   for (const rawFloor of floors) {
     const floor = object(rawFloor, "楼层");
     const floorId = stableId(floor.id, "楼层编号");
     const floorNumber = integer(floor.floorNumber, "楼层号", 1, 64);
-    if (!floorIds.add(floorId) || !floorNumbers.add(floorNumber)) phase4Error("楼层编号或楼层号重复");
+    if (floorIds.has(floorId)) phase4Error("楼层编号重复");
+    if (floorNumbers.has(floorNumber)) phase4Error("楼层号重复");
+    floorIds.add(floorId);
+    floorNumbers.add(floorNumber);
+  }
+  let roomCount = 0;
+  for (const rawFloor of floors) {
+    const floor = object(rawFloor, "楼层");
+    const floorId = stableId(floor.id, "楼层编号");
     floorById.set(floorId, floor);
     const templateId = stableId(floor.templateId, "楼层模板编号");
     const template = templates[templateId];
@@ -296,7 +301,9 @@ export function validatePhase4State(value: unknown, gameValue?: unknown): void {
     for (const rawRoom of rooms) {
       const room = object(rawRoom, "客房");
       const roomId = stableId(room.id, "客房编号");
-      if (!roomIds.add(roomId)) phase4Error("客房编号重复");
+      if (roomIds.has(roomId)) phase4Error("客房编号重复");
+      roomIds.add(roomId);
+      if (!floorIds.has(String(room.floorId))) phase4Error("客房楼层引用无效");
       if (room.floorId !== floorId) phase4Error("客房必须属于所在楼层");
       const placementId = stableId(room.localPlacementId, "客房放置编号");
       const placement = templatePlacements.get(templateId)?.get(placementId);

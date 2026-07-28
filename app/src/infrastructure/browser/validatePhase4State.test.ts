@@ -30,6 +30,61 @@ const EXPECTED_ERRORS: Readonly<Record<(typeof EXPECTED_INVALID_FIXTURES)[number
   "unknown-catalog-reference.json": "目录引用无效",
 };
 
+const TASK2_ERROR_CLASSES = {
+  "duplicate-floor-id": "楼层编号重复",
+  "unknown-room-floor": "客房楼层引用无效",
+  "unsafe-money": "施工金额必须是安全整数",
+  "wrong-containing-floor": "客房必须属于所在楼层",
+  "malformed-record-key": "记录键必须是稳定 ID",
+  "non-object-record-value": "公共空间蓝图结构无效",
+  "record-key-id-mismatch": "记录键与编号不一致",
+  "duplicate-record-value-id": "公共空间编号重复",
+} as const;
+
+const MAX_JSON_BYTES = 8 * 1024 * 1024;
+
+function serializedBytes(value: unknown): number {
+  return new TextEncoder().encode(JSON.stringify(value)).byteLength;
+}
+
+function phase4FixtureWithSerializedBytes(target: number): any {
+  const value = structuredClone(sharedPhase4Fixture) as any;
+  const metadata: Record<string, unknown> = {
+    asciiKey: "ascii value",
+    "非ASCII键": "中文值",
+    exponentNumber: JSON.parse("1e2"),
+  };
+  value.phase4.persistenceMetadata = metadata;
+  let bytes = serializedBytes(value.phase4);
+  let index = 0;
+  let lastKey = "";
+
+  while (true) {
+    const key = `${"界".repeat(122)}${String(index).padStart(6, "0")}`;
+    const emptyEntryBytes = serializedBytes({ [key]: "" }) - 2 + 1;
+    const fullEntryBytes = emptyEntryBytes + 4_096;
+    if (bytes + fullEntryBytes > target) break;
+    metadata[key] = "!".repeat(4_096);
+    bytes += fullEntryBytes;
+    lastKey = key;
+    index += 1;
+  }
+
+  const key = `${"界".repeat(122)}${String(index).padStart(6, "0")}`;
+  const emptyEntryBytes = serializedBytes({ [key]: "" }) - 2 + (index === 0 ? 0 : 1);
+  let deficit = target - bytes;
+  if (deficit > 0 && deficit < emptyEntryBytes) {
+    const prior = String(metadata[lastKey]);
+    metadata[lastKey] = prior.slice(0, prior.length - (emptyEntryBytes - deficit));
+    bytes -= emptyEntryBytes - deficit;
+    deficit = target - bytes;
+  }
+  if (deficit > 0) metadata[key] = "!".repeat(deficit - emptyEntryBytes);
+
+  expect(serializedBytes(value.phase4)).toBe(target);
+  return value;
+}
+
 const sharedInvalidModules = import.meta.glob(
   "../../../src-tauri/tests/fixtures/phase4-invalid/*.json",
   { eager: true, import: "default" },
@@ -64,23 +119,42 @@ describe("complete Phase 4 browser persistence validation", () => {
       .toThrow(EXPECTED_ERRORS[name as keyof typeof EXPECTED_ERRORS]);
   });
 
+  it("keeps incomplete report segment catalogs in the general operations class", () => {
+    const value = structuredClone(sharedPhase4Fixture) as any;
+    value.operations.dailyReports[0].segments.pop();
+    expect(() => validateBrowserGameState(value, "phase4-shared")).toThrow("经营存档");
+    expect(() => validateBrowserGameState(value, "phase4-shared")).not.toThrow("经营报告算术");
+  });
+
   it.each([
-    ["duplicate-floor-id", "入口楼层引用无效", (value: any) => { value.phase4.floors[1].id = value.phase4.floors[0].id; }],
-    ["unknown-room-floor", "客房必须属于所在楼层", (value: any) => { value.phase4.floors[4].rooms[0].floorId = "floor:unknown"; }],
-    ["unsafe-money", "施工金额必须是安全整数", (value: any) => { value.phase4.floors[4].rooms[0].committedBuildCostCents = Number.MAX_SAFE_INTEGER + 1; }],
-    ["wrong-containing-floor", "客房必须属于所在楼层", (value: any) => { value.phase4.floors[4].rooms[0].floorId = "floor:06"; }],
-    ["malformed-record-key", "公共空间最多保留32项", (value: any) => { value.phase4.publicSpaces["Bad Key"] = value.phase4.publicSpaces[Object.keys(value.phase4.publicSpaces)[0]]; }],
-    ["non-object-record-value", "公共空间蓝图结构无效", (value: any) => { value.phase4.spaceBlueprints[Object.keys(value.phase4.spaceBlueprints)[0]] = "bad"; }],
-    ["record-key-id-mismatch", "记录键与编号不一致", (value: any) => { value.phase4.facilities[Object.keys(value.phase4.facilities)[0]].id = "facility:mismatch"; }],
+    ["duplicate-floor-id", (value: any) => { value.phase4.floors[1].id = value.phase4.floors[0].id; }],
+    ["unknown-room-floor", (value: any) => { value.phase4.floors[4].rooms[0].floorId = "floor:unknown"; }],
+    ["unsafe-money", (value: any) => { value.phase4.floors[4].rooms[0].committedBuildCostCents = Number.MAX_SAFE_INTEGER + 1; }],
+    ["wrong-containing-floor", (value: any) => { value.phase4.floors[4].rooms[0].floorId = "floor:06"; }],
+    ["malformed-record-key", (value: any) => { value.phase4.publicSpaces["Bad Key"] = value.phase4.publicSpaces[Object.keys(value.phase4.publicSpaces)[0]]; }],
+    ["non-object-record-value", (value: any) => { value.phase4.spaceBlueprints[Object.keys(value.phase4.spaceBlueprints)[0]] = "bad"; }],
+    ["record-key-id-mismatch", (value: any) => { value.phase4.facilities[Object.keys(value.phase4.facilities)[0]].id = "facility:mismatch"; }],
     ["duplicate-record-value-id", (value: any) => {
       const keys = Object.keys(value.phase4.publicSpaces);
       value.phase4.publicSpaces[keys[1]].id = value.phase4.publicSpaces[keys[0]].id;
     }],
-  ].map((entry) => entry.length === 2 ? [entry[0], "记录键与编号不一致", entry[1]] : entry) as Array<[string, string, (value: any) => void]>)
-  ("retains Task 2 regression %s with error class %s", (_name, errorClass, mutate) => {
+  ] as Array<[keyof typeof TASK2_ERROR_CLASSES, (value: any) => void]>)
+  ("retains Task 2 regression %s with its canonical error class", (name, mutate) => {
     const value = structuredClone(sharedPhase4Fixture);
     mutate(value);
-    expect(() => validateBrowserGameState(value, "phase4-shared")).toThrow(errorClass);
+    expect(() => validateBrowserGameState(value, "phase4-shared")).toThrow(TASK2_ERROR_CLASSES[name]);
+  });
+
+  it.each([
+    [MAX_JSON_BYTES - 1, false],
+    [MAX_JSON_BYTES, false],
+    [MAX_JSON_BYTES + 1, true],
+    [8_630_528, true],
+  ] as const)("enforces exact serialized Phase 4 size %i", (target, rejected) => {
+    const value = phase4FixtureWithSerializedBytes(target);
+    const validation = () => validateBrowserGameState(value, "phase4-shared");
+    if (rejected) expect(validation).toThrow("JSON超过大小限制");
+    else expect(validation).not.toThrow();
   });
 
   const facilityCases: Array<[string, (value: any, facility: any) => void]> = [
