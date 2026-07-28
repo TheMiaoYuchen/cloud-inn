@@ -6,6 +6,7 @@ import {
   type SpaceTypeDefinition,
 } from "../content/contentCatalog";
 import {
+  buildCanonicalSpaceValidationView,
   collectBoundedSpaceOpenings,
   deterministicSpaceItemKey,
   sanitizeSpaceDraft,
@@ -52,35 +53,15 @@ function definitionFor(draft: SpaceDraft): Readonly<SpaceTypeDefinition> | undef
   return FACILITY_CATALOG.find(({ type }) => type === draft.type);
 }
 
-function validCellGeometry(draft: SpaceDraft, cell: SpaceCell): boolean {
-  return Number.isSafeInteger(draft.columns) && Number.isSafeInteger(draft.rows) &&
-    Number.isSafeInteger(cell.x) && Number.isSafeInteger(cell.y) &&
-    typeof cell.zoneId === "string" &&
-    cell.x >= 0 && cell.y >= 0 && cell.x < draft.columns && cell.y < draft.rows;
-}
-
 function validItemGeometry(draft: SpaceDraft, item: PlacedItem): boolean {
   return Number.isSafeInteger(draft.columns) && Number.isSafeInteger(draft.rows) &&
-    typeof item.id === "string" && typeof item.catalogItemId === "string" &&
+    typeof item.id === "string" && Boolean(item.id.trim()) &&
+    typeof item.catalogItemId === "string" && Boolean(item.catalogItemId.trim()) &&
     Number.isSafeInteger(item.x) && Number.isSafeInteger(item.y) &&
     Number.isSafeInteger(item.width) && Number.isSafeInteger(item.height) &&
     item.x >= 0 && item.y >= 0 && item.width > 0 && item.height > 0 &&
     item.x < draft.columns && item.y < draft.rows &&
     item.width <= draft.columns - item.x && item.height <= draft.rows - item.y;
-}
-
-function unambiguousValidCells(draft: SpaceDraft): SpaceCell[] {
-  const byCoordinate = new Map<string, { cell: SpaceCell; count: number }>();
-  for (const cell of draft.cells.slice(0, SPACE_EDITOR_MAX_CELLS)) {
-    if (!validCellGeometry(draft, cell)) continue;
-    const cellKey = coordinateKey(cell.x, cell.y);
-    const existing = byCoordinate.get(cellKey);
-    byCoordinate.set(cellKey, { cell, count: (existing?.count ?? 0) + 1 });
-  }
-  return [...byCoordinate.values()]
-    .filter(({ count }) => count === 1)
-    .map(({ cell }) => cell)
-    .sort((left, right) => left.y - right.y || left.x - right.x);
 }
 
 function itemRuleFor(
@@ -110,39 +91,6 @@ function itemInAllowedZone(
   return BigInt(covered.size) === area;
 }
 
-function unambiguousItems(
-  draft: SpaceDraft,
-): PlacedItem[] {
-  const boundedItems = draft.items.slice(0, SPACE_EDITOR_MAX_ITEMS);
-  const idCounts = new Map<string, number>();
-  for (const item of boundedItems) idCounts.set(item.id, (idCounts.get(item.id) ?? 0) + 1);
-  const collidingIndexes = new Set<number>();
-  for (let left = 0; left < boundedItems.length; left += 1) {
-    if (!validItemGeometry(draft, boundedItems[left])) continue;
-    for (let right = left + 1; right < boundedItems.length; right += 1) {
-      if (validItemGeometry(draft, boundedItems[right]) &&
-          boundedItems[left].x < boundedItems[right].x + boundedItems[right].width &&
-          boundedItems[left].x + boundedItems[left].width > boundedItems[right].x &&
-          boundedItems[left].y < boundedItems[right].y + boundedItems[right].height &&
-          boundedItems[left].y + boundedItems[left].height > boundedItems[right].y) {
-        collidingIndexes.add(left);
-        collidingIndexes.add(right);
-      }
-    }
-  }
-  const values: PlacedItem[] = [];
-  for (let index = 0; index < boundedItems.length; index += 1) {
-    const item = boundedItems[index];
-    if (idCounts.get(item.id) !== 1 || collidingIndexes.has(index) ||
-        !validItemGeometry(draft, item)) continue;
-    values.push(item);
-  }
-  return values.sort((left, right) => compareText(
-    deterministicSpaceItemKey(left),
-    deterministicSpaceItemKey(right),
-  ));
-}
-
 interface ValidationView {
   cells: SpaceCell[];
   items: PlacedItem[];
@@ -155,9 +103,8 @@ function buildValidationView(
   draft: SpaceDraft,
   definition: Readonly<SpaceTypeDefinition>,
 ): ValidationView {
-  const cells = unambiguousValidCells(draft);
+  const { cells, items } = buildCanonicalSpaceValidationView(draft);
   const boundedItems = draft.items.slice(0, SPACE_EDITOR_MAX_ITEMS);
-  const items = unambiguousItems(draft);
   const openings = collectBoundedSpaceOpenings(draft)
     .map(({ property, opening }) => ({ type: property, opening }));
   const uniqueOpenings = new Map<string, (typeof openings)[number]>();
@@ -442,7 +389,7 @@ export function validatePublicSpace(input: SpaceDraft): PublicSpaceValidation {
   for (const item of [...view.boundedItems].sort((left, right) =>
     compareText(deterministicSpaceItemKey(left), deterministicSpaceItemKey(right)),
   )) {
-    if (typeof item.catalogItemId !== "string") continue;
+    if (typeof item.catalogItemId !== "string" || !item.catalogItemId.trim()) continue;
     if (!knownItemIds.has(item.catalogItemId)) {
       blocking.push(issue(`unknown-item:${item.catalogItemId}`, `物件未在目录中定义：${item.catalogItemId}`));
       continue;

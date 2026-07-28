@@ -6,6 +6,7 @@ import {
   createSpaceDraft,
   paintSpaceRectangle,
   placeSpaceItem,
+  validateSpaceConnectivity,
 } from "./spaceEditor";
 import { validatePublicSpace } from "./spaceValidation";
 import {
@@ -548,6 +549,7 @@ describe("public-space validation strategies", () => {
     });
 
     expect(reversed).toEqual(forward);
+    expect(forward.metrics).toEqual(validatePublicSpace(draft).metrics);
     expect(forward.blocking.map(({ message }) => message)).toEqual(expect.arrayContaining([
       "物件编号不能重复",
       "物件未在目录中定义：item:unknown",
@@ -573,8 +575,14 @@ describe("public-space validation strategies", () => {
       windows: [],
     };
 
-    expect(validatePublicSpace({ ...draft, cells: [...draft.cells].reverse() }))
-      .toEqual(validatePublicSpace(draft));
+    const forward = validatePublicSpace(draft);
+    const reversed = validatePublicSpace({ ...draft, cells: [...draft.cells].reverse() });
+    const withoutConflict = validatePublicSpace({ ...draft, cells: [] });
+
+    expect(reversed).toEqual(forward);
+    expect(forward.metrics).toEqual(withoutConflict.metrics);
+    expect(forward.blocking.filter(({ message }) => message !== "同一坐标只能设置一个分区"))
+      .toEqual(withoutConflict.blocking);
   });
 
   it("deduplicates imported doors before counting ballroom egress", () => {
@@ -635,6 +643,77 @@ describe("public-space validation strategies", () => {
     expect(validatePublicSpace(playablePool()).metrics.guestAppealBps).not.toBe(
       diningMetrics.guestAppealBps,
     );
+  });
+
+  it("keeps an out-of-bounds unknown item out of dining route connectivity", () => {
+    const draft = playableDining("all-day-dining");
+    const malformed = {
+      ...draft,
+      items: [...draft.items, {
+        id: "oob", catalogItemId: "unknown",
+        x: -1, y: 4, width: 12, height: 1, rotation: 0 as const,
+      }],
+    };
+
+    expect(validateSpaceConnectivity(draft).serviceRouteConnected).toBe(true);
+    expect(validateSpaceConnectivity(malformed).serviceRouteConnected).toBe(true);
+    const result = validatePublicSpace(malformed);
+    expect(result.blocking.map(({ message }) => message)).toEqual(expect.arrayContaining([
+      "物件超出空间边界",
+      "物件未在目录中定义：unknown",
+    ]));
+    expect(result.blocking.map(({ message }) => message)).not.toContain(
+      "餐饮服务路线必须连接服务区与座位区",
+    );
+  });
+
+  it.each([
+    ["id", "   ", "物件编号不能为空"],
+    ["catalogItemId", "   ", "物件目录引用不能为空"],
+  ] as const)("treats a blank %s item as removed from public metrics and requirements", (
+    property,
+    value,
+    diagnostic,
+  ) => {
+    const playable = playableDraft("gym");
+    const onlyStation = { ...playable, items: [playable.items[0]] };
+    const malformed = {
+      ...onlyStation,
+      items: [{ ...onlyStation.items[0], [property]: value }],
+    };
+    const removed = validatePublicSpace({ ...onlyStation, items: [] });
+    const result = validatePublicSpace(malformed);
+    const messages = result.blocking.map(({ message }) => message);
+
+    expect(result.metrics).toEqual(removed.metrics);
+    expect(messages).toEqual(expect.arrayContaining([
+      diagnostic,
+      "缺少必需物件：item:fitness-station",
+      "实际容量低于最低要求：8",
+    ]));
+    expect(messages.filter((message) => message !== diagnostic)).toEqual(
+      removed.blocking.map(({ message }) => message),
+    );
+  });
+
+  it("excludes out-of-bounds and blank-zone cells from connectivity and metrics", () => {
+    const draft = playableDraft("gym");
+    const malformed = {
+      ...draft,
+      cells: [
+        ...draft.cells,
+        { x: 12, y: 0, zoneId: "zone:fitness" },
+        { x: 11, y: 11, zoneId: "   " },
+      ],
+    };
+    const result = validatePublicSpace(malformed);
+
+    expect(validateSpaceConnectivity(malformed)).toEqual(validateSpaceConnectivity(draft));
+    expect(result.metrics).toEqual(validatePublicSpace(draft).metrics);
+    expect(result.blocking.map(({ message }) => message)).toEqual(expect.arrayContaining([
+      "空间坐标超出网格边界",
+      "分区编号不能为空",
+    ]));
   });
 
   it("clamps an imported service-distance average that exceeds the safe integer range", () => {

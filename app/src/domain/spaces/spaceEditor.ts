@@ -97,6 +97,11 @@ export interface SanitizedSpaceDraft {
   reasons: string[];
 }
 
+export interface CanonicalSpaceValidationView {
+  cells: SpaceCell[];
+  items: PlacedItem[];
+}
+
 export function sanitizeSpaceDraft(input: unknown): SanitizedSpaceDraft {
   const reasons: string[] = [];
   const addReason = (reason: string) => {
@@ -249,6 +254,63 @@ export function sanitizeSpaceDraft(input: unknown): SanitizedSpaceDraft {
     },
     reasons,
   };
+}
+
+function validCanonicalCell(draft: SpaceDraft, cell: SpaceCell): boolean {
+  return Number.isSafeInteger(cell.x) && Number.isSafeInteger(cell.y) &&
+    typeof cell.zoneId === "string" && Boolean(cell.zoneId.trim()) &&
+    cell.x >= 0 && cell.y >= 0 && cell.x < draft.columns && cell.y < draft.rows;
+}
+
+function validCanonicalItem(draft: SpaceDraft, item: PlacedItem): boolean {
+  return typeof item.id === "string" && Boolean(item.id.trim()) &&
+    typeof item.catalogItemId === "string" && Boolean(item.catalogItemId.trim()) &&
+    rotations.has(item.rotation) &&
+    [item.x, item.y, item.width, item.height].every(isSafeInteger) &&
+    item.x >= 0 && item.y >= 0 && item.width > 0 && item.height > 0 &&
+    item.x < draft.columns && item.y < draft.rows &&
+    item.width <= draft.columns - item.x && item.height <= draft.rows - item.y;
+}
+
+export function buildCanonicalSpaceValidationView(
+  draft: SpaceDraft,
+): CanonicalSpaceValidationView {
+  const cellCandidates = draft.cells.slice(0, SPACE_EDITOR_MAX_CELLS)
+    .filter((cell) => validCanonicalCell(draft, cell));
+  const cellCounts = new Map<string, number>();
+  for (const cell of cellCandidates) {
+    const coordinate = key(cell.x, cell.y);
+    cellCounts.set(coordinate, (cellCounts.get(coordinate) ?? 0) + 1);
+  }
+  const cells = cellCandidates
+    .filter((cell) => cellCounts.get(key(cell.x, cell.y)) === 1)
+    .sort((left, right) => left.y - right.y || left.x - right.x ||
+      (left.zoneId < right.zoneId ? -1 : left.zoneId > right.zoneId ? 1 : 0));
+
+  const itemCandidates = draft.items.slice(0, SPACE_EDITOR_MAX_ITEMS)
+    .filter((item) => validCanonicalItem(draft, item));
+  const idCounts = new Map<string, number>();
+  for (const item of itemCandidates) {
+    idCounts.set(item.id, (idCounts.get(item.id) ?? 0) + 1);
+  }
+  const collidingIndexes = new Set<number>();
+  for (let left = 0; left < itemCandidates.length; left += 1) {
+    for (let right = left + 1; right < itemCandidates.length; right += 1) {
+      if (overlaps(itemCandidates[left], itemCandidates[right])) {
+        collidingIndexes.add(left);
+        collidingIndexes.add(right);
+      }
+    }
+  }
+  const items = itemCandidates
+    .filter((item, index) => idCounts.get(item.id) === 1 && !collidingIndexes.has(index))
+    .sort((left, right) => {
+      const leftKey = deterministicSpaceItemKey(left);
+      const rightKey = deterministicSpaceItemKey(right);
+      return leftKey < rightKey ? -1 : leftKey > rightKey ? 1 : 0;
+    });
+
+  return { cells, items };
 }
 
 function assertCoordinate(draft: SpaceDraft, x: number, y: number): void {
@@ -570,11 +632,7 @@ function connected(cells: SpaceCell[]): boolean {
 }
 
 export function validateSanitizedSpaceConnectivity(draft: SpaceDraft): SpaceConnectivity {
-  const cells = draft.cells.slice(0, SPACE_EDITOR_MAX_CELLS)
-    .filter(({ x, y, zoneId }) => typeof zoneId === "string" &&
-      isSafeInteger(x) && isSafeInteger(y) && x >= 0 && y >= 0 &&
-      x < draft.columns && y < draft.rows);
-  const items = draft.items.slice(0, SPACE_EDITOR_MAX_ITEMS);
+  const { cells, items } = buildCanonicalSpaceValidationView(draft);
   const zoneIds = [...new Set(cells.map(({ zoneId }) => zoneId))].sort();
   const zoneConnectivity = Object.fromEntries(
     zoneIds.map((zoneId) => [zoneId, connected(cells.filter((cell) => cell.zoneId === zoneId))]),

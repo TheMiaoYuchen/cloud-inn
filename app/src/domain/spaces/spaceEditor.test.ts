@@ -381,6 +381,50 @@ describe("shared space editor boundaries", () => {
     expect(validateSpaceConnectivity(draft).serviceRouteConnected).toBe(false);
   });
 
+  it("excludes both duplicate-coordinate cells from canonical connectivity", () => {
+    const draft = paintSpaceRectangle(
+      createSpaceDraft("all-day-dining", 5, 1),
+      { x: 0, y: 0, width: 5, height: 1 },
+      "zone:service-route",
+    );
+    const duplicated = {
+      ...draft,
+      cells: [...draft.cells, { ...draft.cells[2] }],
+    };
+    const withoutConflict = {
+      ...draft,
+      cells: draft.cells.filter(({ x, y }) => x !== 2 || y !== 0),
+    };
+
+    expect(validateSpaceConnectivity(duplicated)).toEqual(
+      validateSpaceConnectivity(withoutConflict),
+    );
+    expect(validateSpaceConnectivity({ ...duplicated, cells: [...duplicated.cells].reverse() }))
+      .toEqual(validateSpaceConnectivity(withoutConflict));
+  });
+
+  it.each([
+    ["duplicate IDs", [
+      { id: "duplicate", catalogItemId: "item:dining-table", x: 1, y: 0, width: 1, height: 1, rotation: 0 as const },
+      { id: "duplicate", catalogItemId: "item:dining-table", x: 3, y: 0, width: 1, height: 1, rotation: 0 as const },
+    ]],
+    ["colliding footprints", [
+      { id: "left", catalogItemId: "item:dining-table", x: 2, y: 0, width: 1, height: 1, rotation: 0 as const },
+      { id: "right", catalogItemId: "item:dining-table", x: 2, y: 0, width: 1, height: 1, rotation: 0 as const },
+    ]],
+  ] as const)("excludes both items with %s from canonical connectivity", (_label, items) => {
+    const draft = paintSpaceRectangle(
+      createSpaceDraft("all-day-dining", 5, 1),
+      { x: 0, y: 0, width: 5, height: 1 },
+      "zone:service-route",
+    );
+    const conflicted = { ...draft, items: [...items] };
+
+    expect(validateSpaceConnectivity(conflicted)).toEqual(validateSpaceConnectivity(draft));
+    expect(validateSpaceConnectivity({ ...conflicted, items: [...items].reverse() }))
+      .toEqual(validateSpaceConnectivity(draft));
+  });
+
   it("collects bounds, collision, duplicate ID, and opening errors from imported drafts", () => {
     const draft = paintSpaceRectangle(
       createSpaceDraft("gym", 2, 2),
