@@ -106,6 +106,8 @@ export interface OperationsDailyReport {
   occupancyBps?: number;
   departmentCostCents?: number;
   roomRevenueCents?: number;
+  publicSpaceRevenueCents?: number;
+  facilityOperatingCostCents?: number;
   loanInterestCents?: number;
   cashShortfallCents?: number;
   lostBookings?: LostBookingReason[];
@@ -122,6 +124,10 @@ export interface WeeklyOperationsReport {
   revenueCents: number;
   operatingCostCents?: number;
   financeCostCents?: number;
+  roomRevenueCents?: number;
+  publicSpaceRevenueCents?: number;
+  departmentCostCents?: number;
+  facilityOperatingCostCents?: number;
   netIncomeCents: number;
   availableRooms?: number;
   soldRooms?: number;
@@ -139,6 +145,10 @@ export interface MonthlyOperationsClose {
   revenueCents: number;
   operatingCostCents?: number;
   financeCostCents?: number;
+  roomRevenueCents?: number;
+  publicSpaceRevenueCents?: number;
+  departmentCostCents?: number;
+  facilityOperatingCostCents?: number;
   netIncomeCents: number;
   debtPaymentCents: number;
   availableRooms?: number;

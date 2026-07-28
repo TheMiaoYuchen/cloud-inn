@@ -36,6 +36,99 @@ function daily(day: number): OperationsDailyReport {
 }
 
 describe("operations reporting", () => {
+  it("aggregates every report-v2 revenue and cost category independently", () => {
+    const reports = Array.from({ length: 7 }, (_, index) => ({
+      ...daily(index + 1),
+      revenueCents: 300,
+      roomRevenueCents: 100,
+      publicSpaceRevenueCents: 200,
+      operatingCostCents: 110,
+      departmentCostCents: 40,
+      facilityOperatingCostCents: 70,
+      financeCostCents: 10,
+      netIncomeCents: 180,
+    }));
+
+    expect(aggregateWeeklyReport(reports)).toMatchObject({
+      revenueCents: 2_100,
+      roomRevenueCents: 700,
+      publicSpaceRevenueCents: 1_400,
+      operatingCostCents: 770,
+      departmentCostCents: 280,
+      facilityOperatingCostCents: 490,
+      financeCostCents: 70,
+      netIncomeCents: 1_260,
+    });
+  });
+
+  it("keeps Phase 3 room and department detail compatible without Phase 4 categories", () => {
+    const reports = Array.from({ length: 7 }, (_, index) => ({
+      ...daily(index + 1),
+      roomRevenueCents: (index + 1) * 1_000,
+      departmentCostCents: (index + 1) * 100,
+    }));
+
+    expect(aggregateWeeklyReport(reports)).toMatchObject({
+      revenueCents: 28_000,
+      operatingCostCents: 2_800,
+    });
+  });
+
+  it("rejects partial or arithmetically inconsistent report-v2 categories", () => {
+    const reports = Array.from({ length: 7 }, (_, index) => ({
+      ...daily(index + 1),
+      roomRevenueCents: 400,
+      publicSpaceRevenueCents: 600,
+      departmentCostCents: 40,
+      facilityOperatingCostCents: 60,
+    }));
+
+    expect(() => aggregateWeeklyReport(reports)).toThrow("收入分类");
+    expect(() => aggregateWeeklyReport(reports.map((report) => ({
+      ...report,
+      revenueCents: 1_000,
+      publicSpaceRevenueCents: undefined,
+    })))).toThrow("完整包含");
+  });
+
+  it("rejects a reporting window that mixes old and report-v2 daily contracts", () => {
+    const reports = Array.from({ length: 7 }, (_, index) => daily(index + 1));
+    reports[6] = {
+      ...reports[6],
+      roomRevenueCents: reports[6].revenueCents,
+      publicSpaceRevenueCents: 0,
+      departmentCostCents: reports[6].operatingCostCents,
+      facilityOperatingCostCents: 0,
+    };
+
+    expect(() => aggregateWeeklyReport(reports)).toThrow("同一版本");
+  });
+
+  it("aggregates every report-v2 category independently in a monthly close", () => {
+    const reports = Array.from({ length: 30 }, (_, index) => ({
+      ...daily(index + 1),
+      revenueCents: 300,
+      roomRevenueCents: 100,
+      publicSpaceRevenueCents: 200,
+      operatingCostCents: 110,
+      departmentCostCents: 40,
+      facilityOperatingCostCents: 70,
+      financeCostCents: 10,
+      netIncomeCents: 180,
+    }));
+
+    expect(aggregateMonthlyClose(reports)).toMatchObject({
+      revenueCents: 9_000,
+      roomRevenueCents: 3_000,
+      publicSpaceRevenueCents: 6_000,
+      operatingCostCents: 3_300,
+      departmentCostCents: 1_200,
+      facilityOperatingCostCents: 2_100,
+      financeCostCents: 300,
+      netIncomeCents: 5_400,
+    });
+  });
+
   it("aggregates an exact seven-day week with integer totals and stable code tie-breaks", () => {
     const reports = Array.from({ length: 7 }, (_, index) => daily(index + 1));
     const snapshot = structuredClone(reports);

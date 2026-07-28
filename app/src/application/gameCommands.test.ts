@@ -34,6 +34,7 @@ import { matchGuest } from "../domain/operations/matchGuest";
 import { getGuestSegment } from "../domain/operations/segmentCatalog";
 import { settleOperationsDay } from "../domain/operations/settleOperationsDay";
 import { createApprovedOperations } from "../domain/operations/operationsFixtures";
+import { createPhase4AcceptanceState } from "../testing/phase4Fixtures";
 
 function prototypeCells() {
   return [
@@ -52,6 +53,99 @@ async function expectSavedRevision(
 }
 
 describe("game commands", () => {
+  function openedPhase4(saveId: string) {
+    const store = new InMemorySavePort();
+    const commands = createGameCommands(store);
+    const state: GameState = {
+      ...createPhase4AcceptanceState(saveId),
+      phase: "open",
+      cashCents: 100_000_000,
+      operations: createApprovedOperations(),
+    };
+    return { store, commands, state };
+  }
+
+  it("dispatches a Phase 4 day to one mixed hotel settlement", async () => {
+    const { store, commands, state } = openedPhase4("phase4-command-day");
+
+    const settled = await commands.advanceDay(state, 10_000);
+
+    expect(settled.operations?.dailyReports[0]).toMatchObject({
+      roomRevenueCents: expect.any(Number),
+      publicSpaceRevenueCents: expect.any(Number),
+      departmentCostCents: expect.any(Number),
+      facilityOperatingCostCents: expect.any(Number),
+    });
+    expect(Object.values(settled.phase4!.facilities).some(
+      ({ dailyResults }) => dailyResults.length === 1,
+    )).toBe(true);
+    expect(settled.phase4?.recentFlowSnapshot?.day).toBe(1);
+    await expectSavedRevision(state, settled, store);
+  });
+
+  it("keeps Phase 4 batch and repeated daily settlement equivalent", async () => {
+    const batchFixture = openedPhase4("phase4-batch");
+    const dailyFixture = openedPhase4("phase4-daily");
+
+    const batch = await batchFixture.commands.advanceOperationsDays(
+      batchFixture.state,
+      7,
+      70_000,
+    );
+    let daily = dailyFixture.state;
+    for (let day = 1; day <= 7; day += 1) {
+      daily = await dailyFixture.commands.advanceDay(daily, 70_000);
+    }
+
+    expect({ ...batch, saveId: "same", revision: 0 }).toEqual({
+      ...daily,
+      saveId: "same",
+      revision: 0,
+    });
+    expect(batch.operations?.weeklyReports[0]).toMatchObject({
+      publicSpaceRevenueCents: expect.any(Number),
+      facilityOperatingCostCents: expect.any(Number),
+    });
+  });
+
+  it("does not partially apply Phase 4 mixed settlement when its commit fails", async () => {
+    const fixture = openedPhase4("phase4-failing-port");
+    const snapshot = structuredClone(fixture.state);
+    const persisted = await fixture.store.load(fixture.state.saveId);
+    const commands = createGameCommands({
+      load: (saveId) => fixture.store.load(saveId),
+      commit: async () => { throw new Error("磁盘写入失败"); },
+    });
+
+    await expect(commands.advanceDay(fixture.state, 10_000)).rejects.toThrow("磁盘写入失败");
+    expect(fixture.state).toEqual(snapshot);
+    expect(await fixture.store.load(fixture.state.saveId)).toEqual(persisted);
+  });
+
+  it("keeps Phase 4 offline catch-up equivalent to a same-window batch", async () => {
+    const offlineFixture = openedPhase4("phase4-offline");
+    const batchFixture = openedPhase4("phase4-offline-batch");
+    offlineFixture.state.operations!.lastOfflineCheckpointMs = 0;
+    batchFixture.state.operations!.lastOfflineCheckpointMs = 0;
+
+    const offline = await offlineFixture.commands.settleOffline(
+      offlineFixture.state,
+      7 * 60_000,
+      60_000,
+    );
+    const batch = await batchFixture.commands.advanceOperationsDays(
+      batchFixture.state,
+      7,
+      7 * 60_000,
+    );
+
+    expect({ ...offline, saveId: "same", revision: 0 }).toEqual({
+      ...batch,
+      saveId: "same",
+      revision: 0,
+    });
+  });
+
   async function openedOperations(saveId: string, difficulty: "casual" | "management") {
     const store = new InMemorySavePort();
     const commands = createGameCommands(store);

@@ -8,9 +8,158 @@ import {
   projectMenuStructures,
   projectOperatingChoices,
   validateFacilityPolicy,
+  settleFacilityOperations,
 } from "./facilityOperations";
+import { createPhase4AcceptanceState } from "../../testing/phase4Fixtures";
+import { createApprovedOperations } from "../operations/operationsFixtures";
 
 describe("light facility operations", () => {
+  function settlementInput() {
+    const phase4 = createPhase4AcceptanceState("facility-settlement").phase4!;
+    const dining = Object.values(phase4.facilities).find(
+      ({ type }) => type === "all-day-dining",
+    )!;
+    dining.status = "operating";
+    dining.enabled = true;
+    dining.policy = createFacilityPolicy("all-day-dining", {
+      positioningId: "positioning:international-luxury",
+      priceBandId: "price-band:premium",
+      capacity: 30,
+      openingPolicyId: "opening-policy:breakfast-dinner",
+      serviceBudgetCents: 180_000,
+    });
+    const blueprint = phase4.spaceBlueprints[
+      phase4.publicSpaces[dining.publicSpaceInstanceId].blueprintId
+    ];
+    blueprint.placedItems = Array.from({ length: 8 }, (_, index) => ({
+      id: `item:dining-table:${index + 1}` as typeof blueprint.placedItems[number]["id"],
+      catalogItemId: "item:dining-table" as typeof blueprint.placedItems[number]["catalogItemId"],
+      x: index,
+      y: 0,
+      width: 1,
+      height: 1,
+      rotation: 0,
+    }));
+    for (const facility of Object.values(phase4.facilities)) {
+      if (facility.id !== dining.id) facility.enabled = false;
+    }
+    return {
+      day: 1,
+      seed: "facility-seed",
+      occupiedRooms: 90,
+      availableRooms: 120,
+      segmentMix: { business: 5_000, leisure: 5_000 },
+      reputationBps: 6_000,
+      departments: createApprovedOperations().departments,
+      facilities: phase4.facilities,
+      publicSpaces: phase4.publicSpaces,
+      blueprints: phase4.spaceBlueprints,
+    };
+  }
+
+  it("settles configured facilities in stable order within authoritative capacity", () => {
+    const input = settlementInput();
+    const snapshot = structuredClone(input);
+
+    const result = settleFacilityOperations(input);
+
+    expect(result.results.map(({ facilityId }) => facilityId)).toEqual(
+      result.results.map(({ facilityId }) => facilityId).sort(),
+    );
+    expect(result.results).toHaveLength(1);
+    expect(result.results[0].visits).toBeLessThanOrEqual(30);
+    expect(result.publicSpaceRevenueCents).toBeGreaterThan(0);
+    expect(result.facilityOperatingCostCents).toBeGreaterThan(0);
+    expect(input).toEqual(snapshot);
+  });
+
+  it("orders facility IDs by explicit code units instead of locale collation", () => {
+    const input = settlementInput();
+    const original = Object.values(input.facilities).find(({ enabled }) => enabled)!;
+    const colon = { ...structuredClone(original), id: "facility:a:b" as typeof original.id };
+    const digit = { ...structuredClone(original), id: "facility:a0" as typeof original.id };
+    input.facilities = {
+      [colon.id]: colon,
+      [digit.id]: digit,
+    };
+
+    expect(settleFacilityOperations(input).results.map(({ facilityId }) => facilityId)).toEqual([
+      "facility:a0",
+      "facility:a:b",
+    ]);
+  });
+
+  it("uses both policy and design capacity as authoritative visit bounds", () => {
+    const input = settlementInput();
+    const facility = Object.values(input.facilities).find(({ enabled }) => enabled)!;
+    const blueprint = input.blueprints[
+      input.publicSpaces[facility.publicSpaceInstanceId].blueprintId
+    ];
+    blueprint.placedItems = blueprint.placedItems.slice(0, 2);
+
+    const result = settleFacilityOperations(input).results[0];
+
+    expect(result.visits).toBeLessThanOrEqual(8);
+  });
+
+  it("settles enabled boost facilities without requiring a light-operation policy", () => {
+    const input = settlementInput();
+    for (const facility of Object.values(input.facilities)) facility.enabled = false;
+    const gym = Object.values(input.facilities).find(({ type }) => type === "gym")!;
+    gym.enabled = true;
+    gym.status = "operating";
+    gym.policy = null;
+    const blueprint = input.blueprints[input.publicSpaces[gym.publicSpaceInstanceId].blueprintId];
+    blueprint.placedItems = [{
+      id: "item:gym:station" as typeof blueprint.placedItems[number]["id"],
+      catalogItemId: "item:fitness-station" as typeof blueprint.placedItems[number]["catalogItemId"],
+      x: 0,
+      y: 0,
+      width: 1,
+      height: 1,
+      rotation: 0,
+    }];
+
+    expect(settleFacilityOperations(input).results).toEqual([
+      expect.objectContaining({
+        facilityId: gym.id,
+        revenueCents: 0,
+        operatingCostCents: gym.dailyOperatingCostCents,
+        appealDeltaBps: expect.any(Number),
+      }),
+    ]);
+  });
+
+
+
+  it("skips disabled and unconfigured facilities with explicit bounded reasons", () => {
+    const input = settlementInput();
+    const facility = Object.values(input.facilities)[0];
+    facility.enabled = true;
+    facility.status = "operating";
+    facility.policy = null;
+
+    const result = settleFacilityOperations(input);
+
+    expect(result.results.find(({ facilityId }) => facilityId === facility.id)).toMatchObject({
+      visits: 0,
+      revenueCents: 0,
+      operatingCostCents: 0,
+      reasonCodes: ["facility:unconfigured"],
+    });
+  });
+
+  it("caps representative flows without letting the cap alter economics", () => {
+    const input = settlementInput();
+
+    const full = settleFacilityOperations({ ...input, maximumFlowEvents: 150 });
+    const truncated = settleFacilityOperations({ ...input, maximumFlowEvents: 0 });
+
+    expect(full.flowEvents.length).toBeLessThanOrEqual(150);
+    expect(truncated.flowEvents).toEqual([]);
+    expect({ ...truncated, flowEvents: full.flowEvents }).toEqual(full);
+  });
+
   it("configures light operations without ingredient inventory", () => {
     const policy = createFacilityPolicy("all-day-dining", {
       positioningId: "positioning:international-luxury",

@@ -35,6 +35,7 @@ function validateReports(
 ): void {
   if (reports.length !== expectedLength) throw new Error(`${label}必须包含连续${expectedLength === 7 ? "七" : "三十"}天日报`);
   const seen = new Set<number>();
+  let phase4ReportCount = 0;
   reports.forEach((report, index) => {
     safeInteger(report.day, "日报日期");
     if (report.day <= 0) throw new Error("日报日期必须是正安全整数");
@@ -43,7 +44,41 @@ function validateReports(
     if (index > 0 && report.day !== reports[index - 1].day + 1) {
       throw new Error("日报日期必须连续且严格递增");
     }
+    const hasPublicRevenue = report.publicSpaceRevenueCents !== undefined;
+    const hasFacilityCost = report.facilityOperatingCostCents !== undefined;
+    const isPhase4 = hasPublicRevenue || hasFacilityCost;
+    if (isPhase4) phase4ReportCount += 1;
+    if (isPhase4 && (
+      report.roomRevenueCents === undefined
+      || !hasPublicRevenue
+      || report.departmentCostCents === undefined
+      || !hasFacilityCost
+    )) {
+      throw new Error("新版日报必须完整包含收入与成本分类");
+    }
+    if (isPhase4) {
+      const roomRevenueCents = safeInteger(report.roomRevenueCents!, "客房收入");
+      const publicSpaceRevenueCents = safeInteger(report.publicSpaceRevenueCents!, "公共空间收入");
+      const departmentCostCents = safeInteger(report.departmentCostCents!, "部门成本");
+      const facilityOperatingCostCents = safeInteger(report.facilityOperatingCostCents!, "设施经营成本");
+      if (safeSum([roomRevenueCents, publicSpaceRevenueCents], "营业收入") !== report.revenueCents) {
+        throw new Error("新版日报收入分类之和必须等于营业收入");
+      }
+      if (safeSum([departmentCostCents, facilityOperatingCostCents], "经营成本") !== report.operatingCostCents) {
+        throw new Error("新版日报成本分类之和必须等于经营成本");
+      }
+      const expectedNet = BigInt(report.revenueCents)
+        - BigInt(report.operatingCostCents)
+        - BigInt(report.financeCostCents);
+      if (expectedNet < MIN_SAFE_BIGINT || expectedNet > MAX_SAFE_BIGINT
+          || Number(expectedNet) !== report.netIncomeCents) {
+        throw new Error("新版日报净利润算术不一致");
+      }
+    }
   });
+  if (phase4ReportCount !== 0 && phase4ReportCount !== reports.length) {
+    throw new Error("同一报表窗口必须使用同一版本的日报合同");
+  }
 }
 
 function highestCode(counts: ReadonlyMap<string, bigint>, fallback: string): string {
@@ -85,6 +120,12 @@ function topCodes(reports: ReadonlyArray<Readonly<OperationsDailyReport>>) {
 function commonTotals(reports: ReadonlyArray<Readonly<OperationsDailyReport>>) {
   const availableRooms = safeSum(reports.map((report) => report.availableRooms ?? 0), "可售客房总数");
   const soldRooms = safeSum(reports.map((report) => report.soldRooms ?? 0), "售出客房总数");
+  const phase4 = reports.every((report) =>
+    report.roomRevenueCents !== undefined
+      && report.publicSpaceRevenueCents !== undefined
+      && report.departmentCostCents !== undefined
+      && report.facilityOperatingCostCents !== undefined,
+  );
   return {
     revenueCents: safeSum(reports.map(({ revenueCents }) => revenueCents), "收入"),
     operatingCostCents: safeSum(reports.map(({ operatingCostCents }) => operatingCostCents), "经营成本"),
@@ -94,6 +135,12 @@ function commonTotals(reports: ReadonlyArray<Readonly<OperationsDailyReport>>) {
     soldRooms,
     averageOccupancyBps: Math.trunc(safeSum(reports.map((report) => report.occupancyBps ?? 0), "入住率") / reports.length),
     reputationBps: Math.trunc(safeSum(reports.map(({ reputationBps }) => reputationBps), "声誉") / reports.length),
+    ...(phase4 ? {
+      roomRevenueCents: safeSum(reports.map((report) => report.roomRevenueCents!), "客房收入"),
+      publicSpaceRevenueCents: safeSum(reports.map((report) => report.publicSpaceRevenueCents!), "公共空间收入"),
+      departmentCostCents: safeSum(reports.map((report) => report.departmentCostCents!), "部门成本"),
+      facilityOperatingCostCents: safeSum(reports.map((report) => report.facilityOperatingCostCents!), "设施经营成本"),
+    } : {}),
     ...topCodes(reports),
   };
 }

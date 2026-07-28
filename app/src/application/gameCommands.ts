@@ -40,6 +40,10 @@ import {
   type DepartmentConfiguration,
 } from "../domain/operations/departmentCatalog";
 import { settleOperationsDay } from "../domain/operations/settleOperationsDay";
+import {
+  settleHotelDay,
+  type HotelDaySettlementResult,
+} from "../domain/operations/settleHotelDay";
 import { projectPeriodicReports } from "../domain/operations/reporting";
 import { offlineDaysForElapsed } from "../domain/operations/offlineSettlement";
 import {
@@ -238,12 +242,22 @@ export function createGameCommands(savePort: SavePort) {
     const offers = projectRoomOffers(state);
     if (offers.length === 0) throw new Error("至少建造一间客房才能营业");
     const pricedOperations = operationsWithCurrentAutomaticRates(state, offers);
-    const settled = settleOperationsDay({
-      day: state.currentDay + 1,
-      cashCents: state.cashCents,
-      operations: pricedOperations,
-      offers,
-    });
+    const day = state.currentDay + 1;
+    const settled = state.phase4
+      ? settleHotelDay({
+          day,
+          seed: `${state.saveId}:${day}`,
+          cashCents: state.cashCents,
+          operations: pricedOperations,
+          offers,
+          phase4: state.phase4,
+        })
+      : settleOperationsDay({
+          day,
+          cashCents: state.cashCents,
+          operations: pricedOperations,
+          offers,
+        });
     const periodic = projectPeriodicReports(settled.operations);
     const nextOperations: OperationsState = {
       ...settled.operations,
@@ -256,6 +270,9 @@ export function createGameCommands(savePort: SavePort) {
       currentDay: settled.report.day,
       cashCents: settled.cashCents,
       operations: nextOperations,
+      ...(state.phase4
+        ? { phase4: (settled as HotelDaySettlementResult).phase4 }
+        : {}),
       reports: [...state.reports, settled.legacyReport],
       latestReport: settled.legacyReport,
     };
