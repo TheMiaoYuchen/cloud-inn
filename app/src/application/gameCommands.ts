@@ -59,6 +59,8 @@ import {
   type RoomRenovationPreview,
 } from "../domain/operations/renovation";
 import { createBuildingCommands } from "./buildingCommands";
+import { createSpaceCommands } from "./spaceCommands";
+import { createFacilityCommands } from "./facilityCommands";
 import { projectHotelInventory } from "../domain/building/hotelInventory";
 
 export function previewRoomRenovation(
@@ -261,6 +263,8 @@ export function createGameCommands(savePort: SavePort) {
 
   return {
     ...createBuildingCommands(savePort),
+    ...createSpaceCommands(savePort),
+    ...createFacilityCommands(savePort),
     async takeLoan(
       state: GameState,
       request: Readonly<LoanRequest>,
