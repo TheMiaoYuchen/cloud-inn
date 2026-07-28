@@ -50381,6 +50381,9 @@
           "count": 150
         }
       ]
+    },
+    "persistenceMetadata": {
+      "previewImage": "data:image/png;base64,AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
     }
   },
   "operations": {

@@ -6,6 +6,7 @@ import { createOperationsState } from "../../domain/operations/createOperationsS
 import { aggregateMonthlyClose, aggregateWeeklyReport } from "../../domain/operations/reporting";
 import { REPUTATION_UNLOCKS } from "../../domain/operations/unlocks";
 import { validateBrowserGameState } from "./validateBrowserGameState";
+import sharedPhase4Fixture from "../../../src-tauri/tests/fixtures/phase4-valid.json";
 
 function daily(day: number): OperationsDailyReport {
   return {
@@ -132,6 +133,13 @@ function malformed(mutate: (state: Record<string, any>) => void): unknown {
 }
 
 describe("browser operations persistence validation", () => {
+  it("accepts exact report-v2 arithmetic from the shared maximum fixture", () => {
+    expect(() => validateBrowserGameState(
+      structuredClone(sharedPhase4Fixture),
+      "phase4-shared",
+    )).not.toThrow();
+  });
+
   it("keeps operations optional and accepts a minimal operations state", () => {
     const phaseOne = createNewGame("phase-one");
     expect(validateBrowserGameState(phaseOne, phaseOne.saveId)).toEqual(phaseOne);

@@ -3646,6 +3646,15 @@
         "purchased": true,
         "rooms": [],
         "publicSpaceInstanceIds": []
+      },
+      {
+        "id": "floor:65",
+        "floorNumber": 65,
+        "use": "guest",
+        "templateId": "template:guest:dense-ring",
+        "purchased": true,
+        "rooms": [],
+        "publicSpaceInstanceIds": []
       }
     ],
     "spaceBlueprints": {

@@ -10,7 +10,7 @@ CREATE TABLE IF NOT EXISTS saves (
   rate_cents INTEGER NOT NULL CHECK(rate_cents > 0),
   phase2_json TEXT,
   latest_report_json TEXT,
-  phase4_json TEXT,
+  phase4_json TEXT CHECK(phase4_json IS NULL OR (json_valid(phase4_json) AND json_type(phase4_json) = 'object')),
   updated_at TEXT NOT NULL
 );
 CREATE TABLE IF NOT EXISTS room_blueprints (

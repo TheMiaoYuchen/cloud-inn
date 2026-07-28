@@ -46921,6 +46921,15 @@
             "width": 1,
             "height": 1,
             "rotation": 0
+          },
+          {
+            "id": "placed-item:257",
+            "catalogItemId": "item:dining-table",
+            "x": 0,
+            "y": 3,
+            "width": 1,
+            "height": 1,
+            "rotation": 0
           }
         ],
         "committedBuildCostCents": 5100000

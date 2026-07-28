@@ -300,7 +300,7 @@ describe("Phase 4 state contracts", () => {
         facility.policy?.signatureOfferingId,
       ]);
       expect(
-        facility.policy?.signatureOfferingId?.split(":")[1],
+        facility.policy?.signatureOfferingId?.split(":")[0],
       ).toBe(offeringKind);
     },
   );
@@ -316,7 +316,7 @@ describe("Phase 4 state contracts", () => {
 
       expect(facility.menuSelection).toBeNull();
       expect(facility.policy?.signatureOfferingId).toMatch(
-        /^offering:service-package:/,
+        /^service:/,
       );
       expect(facility.developedOfferingIds).toEqual([
         facility.policy?.signatureOfferingId,

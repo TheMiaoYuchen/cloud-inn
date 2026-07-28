@@ -452,7 +452,20 @@ export function validateBrowserGameState(
     throw new Error("浏览器存档已损坏，无法加载");
   }
   if (game.phase2 !== undefined) validatePhase2(game.phase2);
-  if (game.operations !== undefined) validateOperations(game.operations, game);
-  if (game.phase4 !== undefined) validatePhase4State(game.phase4);
+  if (game.operations !== undefined) {
+    try {
+      validateOperations(game.operations, game);
+    } catch (error) {
+      if (
+        game.phase4 !== undefined
+        && error instanceof Error
+        && error.message.includes("日报汇总与客群明细不一致")
+      ) {
+        throw new Error("浏览器存档已损坏：内容规模存档经营报告算术不一致");
+      }
+      throw error;
+    }
+  }
+  if (game.phase4 !== undefined) validatePhase4State(game.phase4, game);
   return structuredClone(game) as unknown as GameState;
 }

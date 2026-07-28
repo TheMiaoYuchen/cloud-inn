@@ -44615,6 +44615,11 @@
             "x": 127,
             "y": 63,
             "zoneId": "zone:seating"
+          },
+          {
+            "x": 0,
+            "y": 64,
+            "zoneId": "zone:seating"
           }
         ],
         "placedItems": [

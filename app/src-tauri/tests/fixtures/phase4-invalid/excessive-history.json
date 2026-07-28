@@ -47775,6 +47775,18 @@
             "reasonCodes": [
               "result:steady"
             ]
+          },
+          {
+            "day": 31,
+            "visits": 1,
+            "revenueCents": 1,
+            "operatingCostCents": 1,
+            "utilizationBps": 1,
+            "satisfactionDeltaBps": 0,
+            "appealDeltaBps": 0,
+            "reasonCodes": [
+              "result:steady"
+            ]
           }
         ]
       },

@@ -1,94 +1,83 @@
 import { describe, expect, it } from "vitest";
 
-import duplicateFloorId from "../../../src-tauri/tests/fixtures/phase4-invalid/duplicate-floor-id.json";
-import duplicateRecordValueId from "../../../src-tauri/tests/fixtures/phase4-invalid/duplicate-record-value-id.json";
-import malformedRecordKey from "../../../src-tauri/tests/fixtures/phase4-invalid/malformed-record-key.json";
-import nonObjectRecordValue from "../../../src-tauri/tests/fixtures/phase4-invalid/non-object-record-value.json";
-import recordKeyIdMismatch from "../../../src-tauri/tests/fixtures/phase4-invalid/record-key-id-mismatch.json";
-import unknownRoomFloor from "../../../src-tauri/tests/fixtures/phase4-invalid/unknown-room-floor.json";
-import unsafeMoney from "../../../src-tauri/tests/fixtures/phase4-invalid/unsafe-money.json";
-import wrongContainingFloor from "../../../src-tauri/tests/fixtures/phase4-invalid/wrong-containing-floor.json";
 import sharedPhase4Fixture from "../../../src-tauri/tests/fixtures/phase4-valid.json";
-import { createPhase4AcceptanceState } from "../../testing/phase4Fixtures";
 import { validateBrowserGameState } from "./validateBrowserGameState";
 
-function sharedPhase4Json(): unknown {
-  return structuredClone(sharedPhase4Fixture);
-}
+const EXPECTED_INVALID_FIXTURES = [
+  "bad-report-arithmetic.json",
+  "excessive-cells.json",
+  "excessive-floors.json",
+  "excessive-flow-events.json",
+  "excessive-history.json",
+  "excessive-items.json",
+  "excessive-rooms.json",
+  "forbidden-base64.json",
+  "forbidden-credential.json",
+  "unknown-catalog-reference.json",
+] as const;
 
-function phase4JsonWithMoneyToken(token: string): unknown {
-  const json = JSON.stringify(sharedPhase4Fixture);
-  const original = '"committedBuildCostCents":2500000';
-  expect(json).toContain(original);
-  return JSON.parse(json.replace(original, `"committedBuildCostCents":${token}`));
-}
+const EXPECTED_ERRORS: Readonly<Record<(typeof EXPECTED_INVALID_FIXTURES)[number], string>> = {
+  "bad-report-arithmetic.json": "经营报告算术不一致",
+  "excessive-cells.json": "公共空间蓝图格子最多保留8192项",
+  "excessive-floors.json": "楼层最多保留64层",
+  "excessive-flow-events.json": "流动事件最多保留150项",
+  "excessive-history.json": "设施历史最多保留30天",
+  "excessive-items.json": "公共空间蓝图物品最多保留256项",
+  "excessive-rooms.json": "客房最多保留240间",
+  "forbidden-base64.json": "禁止持久化Base64数据",
+  "forbidden-credential.json": "禁止持久化凭据",
+  "unknown-catalog-reference.json": "目录引用无效",
+};
 
-describe("minimal Phase 4 browser persistence validation", () => {
-  it("matches and accepts the checked-in cross-runtime fixture", () => {
-    const json = sharedPhase4Json();
-    expect(json).toEqual(
-      JSON.parse(
-        JSON.stringify(createPhase4AcceptanceState("phase4-shared")),
-      ),
-    );
-    expect(() =>
-      validateBrowserGameState(json, "phase4-shared"),
-    ).not.toThrow();
+const sharedInvalidModules = import.meta.glob(
+  "../../../src-tauri/tests/fixtures/phase4-invalid/*.json",
+  { eager: true, import: "default" },
+) as Record<string, unknown>;
+
+const sharedInvalidFixtures = Object.entries(sharedInvalidModules)
+  .map(([modulePath, snapshot]) => {
+    const parts = modulePath.split("/");
+    return [parts[parts.length - 1], snapshot] as const;
+  })
+  .sort(([left], [right]) => left.localeCompare(right));
+
+describe("complete Phase 4 browser persistence validation", () => {
+  it("enumerates the exact shared invalid fixture manifest", () => {
+    expect(sharedInvalidFixtures.map(([name]) => name)).toEqual(EXPECTED_INVALID_FIXTURES);
+  });
+
+  it("accepts the shared maximum Phase 4 fixture", () => {
+    const value = structuredClone(sharedPhase4Fixture);
+    expect(() => validateBrowserGameState(value, "phase4-shared")).not.toThrow();
+    expect(value.phase4.floors).toHaveLength(64);
+    expect(value.phase4.floors.flatMap(({ rooms }) => rooms)).toHaveLength(240);
+    expect(Object.keys(value.phase4.publicSpaces)).toHaveLength(32);
+    expect(Object.keys(value.phase4.facilities)).toHaveLength(32);
+    expect(value.phase4.spaceBlueprints["space-blueprint:all-day-dining"].cells).toHaveLength(8_192);
+    expect(value.phase4.spaceBlueprints["space-blueprint:all-day-dining"].placedItems).toHaveLength(256);
+    expect(value.phase4.recentFlowSnapshot?.events).toHaveLength(150);
+  });
+
+  it.each(sharedInvalidFixtures)("rejects shared fixture %s with its stable error class", (name, snapshot) => {
+    expect(() => validateBrowserGameState(structuredClone(snapshot), "phase4-shared"))
+      .toThrow(EXPECTED_ERRORS[name as keyof typeof EXPECTED_ERRORS]);
   });
 
   it.each([
-    ["duplicate floor ID", duplicateFloorId, "楼层编号重复"],
-    ["room with unknown floor", unknownRoomFloor, "客房楼层引用无效"],
-    ["unsafe construction money", unsafeMoney, "施工金额必须是安全整数"],
-    ["room owned by another existing floor", wrongContainingFloor, "客房必须属于所在楼层"],
-    ["malformed identity record key", malformedRecordKey, "记录键必须是稳定 ID"],
-    ["non-object identity record value", nonObjectRecordValue, "公共空间蓝图结构无效"],
-    ["identity record key and ID mismatch", recordKeyIdMismatch, "记录键与编号不一致"],
-    ["duplicate identity record value ID", duplicateRecordValueId, "公共空间编号重复"],
-  ])("rejects a shared snapshot with %s", (_label, snapshot, message) => {
-    expect(() =>
-      validateBrowserGameState(structuredClone(snapshot), "phase4-shared"),
-    ).toThrow(message);
+    ["duplicate-floor-id", (value: any) => { value.phase4.floors[1].id = value.phase4.floors[0].id; }],
+    ["unknown-room-floor", (value: any) => { value.phase4.floors[4].rooms[0].floorId = "floor:unknown"; }],
+    ["unsafe-money", (value: any) => { value.phase4.floors[4].rooms[0].committedBuildCostCents = Number.MAX_SAFE_INTEGER + 1; }],
+    ["wrong-containing-floor", (value: any) => { value.phase4.floors[4].rooms[0].floorId = "floor:06"; }],
+    ["malformed-record-key", (value: any) => { value.phase4.publicSpaces["Bad Key"] = value.phase4.publicSpaces[Object.keys(value.phase4.publicSpaces)[0]]; }],
+    ["non-object-record-value", (value: any) => { value.phase4.spaceBlueprints[Object.keys(value.phase4.spaceBlueprints)[0]] = "bad"; }],
+    ["record-key-id-mismatch", (value: any) => { value.phase4.facilities[Object.keys(value.phase4.facilities)[0]].id = "facility:mismatch"; }],
+    ["duplicate-record-value-id", (value: any) => {
+      const keys = Object.keys(value.phase4.publicSpaces);
+      value.phase4.publicSpaces[keys[1]].id = value.phase4.publicSpaces[keys[0]].id;
+    }],
+  ] as const)("retains Task 2 regression %s", (_name, mutate) => {
+    const value = structuredClone(sharedPhase4Fixture);
+    mutate(value);
+    expect(() => validateBrowserGameState(value, "phase4-shared")).toThrow("内容规模存档");
   });
-
-  it("rejects malformed stable IDs outside the identity collections", () => {
-    const snapshot = sharedPhase4Json() as {
-      phase4: { building: { templateId: string } };
-    };
-    snapshot.phase4.building.templateId = "Building Template";
-
-    expect(() =>
-      validateBrowserGameState(snapshot, "phase4-shared"),
-    ).toThrow("稳定 ID");
-  });
-
-  it.each(["2500000.0", "25e5", "9007199254740991.0"])(
-    "accepts safe integral construction money token %s",
-    (token) => {
-      expect(() =>
-        validateBrowserGameState(
-          phase4JsonWithMoneyToken(token),
-          "phase4-shared",
-        ),
-      ).not.toThrow();
-    },
-  );
-
-  it.each([
-    "2500000.5",
-    "-1.0",
-    "9007199254740992",
-    "9007199254740992.0",
-    "1e400",
-  ])(
-    "rejects unsafe construction money token %s",
-    (token) => {
-      expect(() =>
-        validateBrowserGameState(
-          phase4JsonWithMoneyToken(token),
-          "phase4-shared",
-        ),
-      ).toThrow("施工金额必须是安全整数");
-    },
-  );
 });

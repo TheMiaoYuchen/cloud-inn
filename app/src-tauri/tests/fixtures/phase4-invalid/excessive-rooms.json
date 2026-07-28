@@ -3329,7 +3329,15 @@
         "use": "guest",
         "templateId": "template:guest:dense-ring",
         "purchased": true,
-        "rooms": [],
+        "rooms": [
+          {
+            "id": "room:floor:29:placement:001",
+            "floorId": "floor:29",
+            "localPlacementId": "placement:001",
+            "roomBlueprintId": "room-blueprint:standard-king",
+            "committedBuildCostCents": 2500000
+          }
+        ],
         "publicSpaceInstanceIds": []
       },
       {

@@ -45,17 +45,35 @@ const OPERATING_FACILITY_TYPES = new Set<PublicSpaceType>([
   "gym",
 ]);
 
-const RESTAURANT_TYPES = new Set<PublicSpaceType>([
-  "all-day-dining",
-  "chinese-restaurant",
-  "bar",
-]);
+const BLUEPRINT_ZONE_IDS: Readonly<Record<PublicSpaceType, string>> = {
+  "sky-lobby": "zone:arrival",
+  "all-day-dining": "zone:seating",
+  "chinese-restaurant": "zone:seating",
+  bar: "zone:seating",
+  "executive-lounge": "zone:quiet",
+  spa: "zone:reception",
+  pool: "zone:wet",
+  gym: "zone:fitness",
+  ballroom: "zone:event",
+  "meeting-room": "zone:event",
+  "garden-terrace": "zone:terrace",
+  boutique: "zone:retail",
+};
 
-const SERVICE_PACKAGE_TYPES = new Set<PublicSpaceType>([
-  "spa",
-  "ballroom",
-  "meeting-room",
-]);
+const FACILITY_CONFIGURATION: Partial<Record<PublicSpaceType, {
+  positioningId: string;
+  priceBandId: string;
+  openingPolicyId: string;
+  menuStructureId?: string;
+  offeringId: string;
+}>> = {
+  "all-day-dining": { positioningId: "positioning:international-luxury", priceBandId: "price-band:premium", openingPolicyId: "opening-policy:breakfast-dinner", menuStructureId: "menu:all-day-balanced", offeringId: "dish:cloud-breakfast" },
+  "chinese-restaurant": { positioningId: "positioning:international-luxury", priceBandId: "price-band:premium", openingPolicyId: "opening-policy:breakfast-dinner", menuStructureId: "menu:chinese-regional", offeringId: "dish:tea-smoked-duck" },
+  bar: { positioningId: "positioning:craft-cocktail", priceBandId: "price-band:premium", openingPolicyId: "opening-policy:evening", menuStructureId: "menu:bar-classics", offeringId: "drink:cloud-negroni" },
+  spa: { positioningId: "positioning:restorative-wellness", priceBandId: "price-band:premium", openingPolicyId: "opening-policy:appointment-daily", offeringId: "service:cloud-restoration" },
+  ballroom: { positioningId: "positioning:corporate-events", priceBandId: "price-band:premium", openingPolicyId: "opening-policy:booked-events", offeringId: "service:cloud-wedding" },
+  "meeting-room": { positioningId: "positioning:corporate-events", priceBandId: "price-band:premium", openingPolicyId: "opening-policy:booked-events", offeringId: "service:executive-summit" },
+};
 
 const PUBLIC_SPACE_PLACEMENTS = FACILITY_TYPES.map((type, index) => ({
   type,
@@ -176,13 +194,10 @@ function createPublicSpaceRecords(floors: HotelFloor[]): {
         `public-space:${floorId}:${localPlacementId}`,
       );
       const facilityId = assertStableId(`facility:${floorId}:${type}`);
-      const signatureOfferingId = RESTAURANT_TYPES.has(type)
-        ? assertStableId(
-            `offering:${type === "bar" ? "drink" : "dish"}:${type}`,
-          )
-        : SERVICE_PACKAGE_TYPES.has(type)
-          ? assertStableId(`offering:service-package:${type}`)
-          : undefined;
+      const configuration = FACILITY_CONFIGURATION[type];
+      const signatureOfferingId = configuration
+        ? assertStableId(configuration.offeringId)
+        : undefined;
 
       blueprints.push({
         id: blueprintId,
@@ -190,7 +205,7 @@ function createPublicSpaceRecords(floors: HotelFloor[]): {
         name: type,
         columns: 8,
         rows: 8,
-        cells: [{ x: 0, y: 0, zoneId: assertStableId("zone:guest") }],
+        cells: [{ x: 0, y: 0, zoneId: assertStableId(BLUEPRINT_ZONE_IDS[type]) }],
         placedItems: [],
         committedBuildCostCents: 5_000_000 + index * 100_000,
       });
@@ -211,19 +226,19 @@ function createPublicSpaceRecords(floors: HotelFloor[]): {
         dailyOperatingCostCents: 50_000 + index * 2_500,
         segmentInputs: createSegmentInputs(),
         policy:
-          RESTAURANT_TYPES.has(type) || SERVICE_PACKAGE_TYPES.has(type)
+          configuration
             ? {
-                positioningId: assertStableId(`positioning:${type}:standard`),
-                priceBandId: assertStableId("price-band:premium"),
+                positioningId: assertStableId(configuration.positioningId),
+                priceBandId: assertStableId(configuration.priceBandId),
                 capacity: 20 + index * 5,
-                openingPolicyId: assertStableId("opening-policy:daily"),
+                openingPolicyId: assertStableId(configuration.openingPolicyId),
                 serviceBudgetCents: 50_000 + index * 2_500,
                 signatureOfferingId,
               }
             : null,
-        menuSelection: RESTAURANT_TYPES.has(type)
+        menuSelection: configuration?.menuStructureId
           ? {
-              menuStructureId: assertStableId(`menu:${type}:standard`),
+              menuStructureId: assertStableId(configuration.menuStructureId),
               selectedItemIds: [],
             }
           : null,

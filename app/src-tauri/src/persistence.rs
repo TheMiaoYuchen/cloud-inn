@@ -82,7 +82,7 @@ impl SaveRepository {
             game["operations"] = parse_json(raw)?;
         }
         if let Some(raw) = phase4 {
-            game["phase4"] = parse_json(raw)?;
+            game["phase4"] = parse_phase4_json(raw)?;
         }
         validate_game(&game)?;
         Ok(Some(game))
@@ -305,6 +305,12 @@ fn db_err(e: rusqlite::Error) -> String {
 }
 fn parse_json(s: String) -> Result<Value, String> {
     serde_json::from_str(&s).map_err(|_| "存档数据损坏".to_string())
+}
+fn parse_phase4_json(s: String) -> Result<Value, String> {
+    if s.len() > PHASE4_MAX_JSON_BYTES {
+        return Err(phase4_error("JSON超过大小限制"));
+    }
+    serde_json::from_str(&s).map_err(|_| phase4_error("JSON结构无效"))
 }
 fn validate_save_id(id: &str) -> Result<(), String> {
     if id.is_empty()
@@ -723,14 +729,20 @@ fn validate_game(g: &Value) -> Result<Fields, String> {
     let operations = match g.get("operations") {
         Some(Value::Null) | None => None,
         Some(value) => {
-            validate_operations(value, current_day, cash_cents)?;
+            validate_operations(value, current_day, cash_cents).map_err(|error| {
+                if g.get("phase4").is_some() {
+                    phase4_error("经营报告算术不一致")
+                } else {
+                    error
+                }
+            })?;
             Some(serde_json::to_string(value).map_err(|_| "存档数据损坏".to_string())?)
         }
     };
     let phase4 = match g.get("phase4") {
         None => None,
         Some(value) => {
-            validate_phase4(value)?;
+            validate_phase4(value, g)?;
             Some(serde_json::to_string(value).map_err(|_| "存档数据损坏".to_string())?)
         }
     };
@@ -868,6 +880,21 @@ fn validate_game(g: &Value) -> Result<Fields, String> {
 
 const JS_MAX_SAFE_INTEGER: i64 = 9_007_199_254_740_991;
 const PHASE4_STABLE_ID_MAX_LENGTH: usize = 96;
+const PHASE4_MAX_JSON_BYTES: usize = 8 * 1024 * 1024;
+const PHASE4_PUBLIC_SPACE_TYPES: [&str; 12] = [
+    "sky-lobby",
+    "all-day-dining",
+    "chinese-restaurant",
+    "bar",
+    "executive-lounge",
+    "spa",
+    "pool",
+    "gym",
+    "ballroom",
+    "meeting-room",
+    "garden-terrace",
+    "boutique",
+];
 
 fn phase4_error(detail: &str) -> String {
     format!("内容规模存档{detail}")
@@ -978,7 +1005,218 @@ fn validate_phase4_identity_record(value: &Value, label: &str) -> Result<(), Str
     Ok(())
 }
 
-fn validate_phase4(value: &Value) -> Result<(), String> {
+fn phase4_is_credential_key(key: &str) -> bool {
+    let normalized = key
+        .chars()
+        .enumerate()
+        .flat_map(|(index, character)| {
+            if character == '-' {
+                vec!['_']
+            } else if character.is_ascii_uppercase() {
+                let mut result = Vec::with_capacity(2);
+                if index > 0 {
+                    result.push('_');
+                }
+                result.push(character.to_ascii_lowercase());
+                result
+            } else {
+                vec![character.to_ascii_lowercase()]
+            }
+        })
+        .collect::<String>();
+    matches!(
+        normalized.as_str(),
+        "password"
+            | "passwd"
+            | "secret"
+            | "api_key"
+            | "access_token"
+            | "refresh_token"
+            | "auth_token"
+            | "private_key"
+            | "client_secret"
+            | "credential"
+            | "credentials"
+    )
+}
+
+fn phase4_is_base64(value: &str) -> bool {
+    let lower = value.to_ascii_lowercase();
+    if lower.starts_with("data:") && lower.contains(";base64,") {
+        return true;
+    }
+    let compact = value
+        .bytes()
+        .filter(|byte| !byte.is_ascii_whitespace())
+        .collect::<Vec<_>>();
+    compact.len() >= 128
+        && compact
+            .iter()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'+' | b'/' | b'='))
+}
+
+fn validate_phase4_tree(value: &Value, depth: usize) -> Result<(), String> {
+    if depth > 32 {
+        return Err(phase4_error("JSON嵌套过深"));
+    }
+    match value {
+        Value::String(text) => {
+            if text.len() > 4_096 {
+                return Err(phase4_error("文本超过长度限制"));
+            }
+            let lower = text.to_ascii_lowercase();
+            if lower.contains("-----begin private key-----")
+                || lower.contains("bearer ") && text.len() >= 24
+            {
+                return Err(phase4_error("禁止持久化凭据"));
+            }
+            if phase4_is_base64(text) {
+                return Err(phase4_error("禁止持久化Base64数据"));
+            }
+        }
+        Value::Array(values) => {
+            for child in values {
+                validate_phase4_tree(child, depth + 1)?;
+            }
+        }
+        Value::Object(object) => {
+            for (key, child) in object {
+                if key.len() > 128 {
+                    return Err(phase4_error("字段名超过长度限制"));
+                }
+                if phase4_is_credential_key(key) {
+                    return Err(phase4_error("禁止持久化凭据"));
+                }
+                validate_phase4_tree(child, depth + 1)?;
+            }
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
+fn phase4_type<'a>(value: &'a Value, label: &str) -> Result<&'a str, String> {
+    let candidate = value
+        .as_str()
+        .ok_or_else(|| phase4_error(&format!("{label}目录引用无效")))?;
+    if !PHASE4_PUBLIC_SPACE_TYPES.contains(&candidate) {
+        return Err(phase4_error(&format!("{label}目录引用无效")));
+    }
+    Ok(candidate)
+}
+
+fn phase4_zone(value: &Value) -> Result<&str, String> {
+    phase4_one_of(
+        value,
+        &[
+            "zone:arrival",
+            "zone:seating",
+            "zone:kitchen",
+            "zone:bar-service",
+            "zone:quiet",
+            "zone:wet",
+            "zone:fitness",
+            "zone:event",
+            "zone:back-of-house",
+            "zone:terrace",
+            "zone:retail",
+            "zone:deck",
+            "zone:service-route",
+            "zone:entrance",
+            "zone:reception",
+            "zone:waiting",
+            "zone:luggage",
+            "zone:elevator-lobby",
+            "zone:treatment",
+            "zone:wet-route",
+            "zone:stage",
+            "zone:meeting-setup",
+            "zone:partition",
+        ],
+        "分区",
+    )
+}
+
+fn phase4_item(value: &Value) -> Result<&str, String> {
+    phase4_one_of(
+        value,
+        &[
+            "item:reception-desk",
+            "item:lounge-seat",
+            "item:dining-table",
+            "item:service-counter",
+            "item:bar-counter",
+            "item:treatment-bed",
+            "item:pool",
+            "item:fitness-station",
+            "item:event-table",
+            "item:meeting-table",
+            "item:planter",
+            "item:display-case",
+        ],
+        "物品目录",
+    )
+}
+
+fn phase4_unique_catalog_ids(value: &Value, allowed: &HashSet<String>) -> Result<(), String> {
+    let mut ids = HashSet::new();
+    for raw in phase4_array(value, "目录进度")? {
+        let id = phase4_stable_id(raw, "目录进度编号")?;
+        if !ids.insert(id) {
+            return Err(phase4_error("目录进度编号重复"));
+        }
+        if !allowed.contains(id) {
+            return Err(phase4_error("目录引用无效"));
+        }
+    }
+    Ok(())
+}
+
+fn phase4_int(value: &Value, label: &str, minimum: i64, maximum: i64) -> Result<i64, String> {
+    value
+        .as_i64()
+        .filter(|number| (*number >= minimum) && (*number <= maximum))
+        .ok_or_else(|| phase4_error(&format!("{label}必须是安全整数")))
+}
+
+fn phase4_bool(value: &Value, label: &str) -> Result<bool, String> {
+    value
+        .as_bool()
+        .ok_or_else(|| phase4_error(&format!("{label}结构无效")))
+}
+
+fn phase4_one_of<'a>(value: &'a Value, allowed: &[&str], label: &str) -> Result<&'a str, String> {
+    let candidate = value
+        .as_str()
+        .ok_or_else(|| phase4_error(&format!("{label}目录引用无效")))?;
+    if !allowed.contains(&candidate) {
+        return Err(phase4_error(&format!("{label}目录引用无效")));
+    }
+    Ok(candidate)
+}
+
+fn phase4_unique_ids<'a>(value: &'a Value, label: &str) -> Result<Vec<&'a str>, String> {
+    let mut ids = HashSet::new();
+    let mut result = Vec::new();
+    for raw in phase4_array(value, label)? {
+        let id = phase4_stable_id(raw, label)?;
+        if !ids.insert(id) {
+            return Err(phase4_error(&format!("{label}编号重复")));
+        }
+        result.push(id);
+    }
+    Ok(result)
+}
+
+fn validate_phase4(value: &Value, game: &Value) -> Result<(), String> {
+    if serde_json::to_vec(value)
+        .map_err(|_| phase4_error("JSON结构无效"))?
+        .len()
+        > PHASE4_MAX_JSON_BYTES
+    {
+        return Err(phase4_error("JSON超过大小限制"));
+    }
+    validate_phase4_tree(value, 0)?;
     let phase4 = phase4_object(value, "状态")?;
     if phase4.get("rulesetVersion").and_then(Value::as_str) != Some("content-scale-v1") {
         return Err(phase4_error("规则版本无效"));
@@ -1003,21 +1241,164 @@ fn validate_phase4(value: &Value) -> Result<(), String> {
         validate_phase4_identity_record(phase4_field(phase4, key, label)?, label)?;
     }
     let floors = phase4_array(phase4_field(phase4, "floors", "楼层")?, "楼层")?;
+    if floors.len() > 64 {
+        return Err(phase4_error("楼层最多保留64层"));
+    }
     match phase4.get("recentFlowSnapshot") {
         Some(Value::Null | Value::Object(_)) => {}
         _ => return Err(phase4_error("近期流动快照结构无效")),
     }
 
+    let templates = phase4_object(
+        phase4_field(phase4, "floorTemplates", "楼层模板")?,
+        "楼层模板",
+    )?;
+    let mut design_ids = HashSet::new();
+    if let Some(master) = game
+        .get("phase2")
+        .and_then(|phase2| phase2.get("roomMaster"))
+        .filter(|master| !master.is_null())
+    {
+        design_ids.insert(phase4_stable_id(obj(master, "id")?, "客房母版编号")?);
+    }
+    if let Some(blueprint) = game.get("roomBlueprint").filter(|value| !value.is_null()) {
+        design_ids.insert(phase4_stable_id(obj(blueprint, "id")?, "客房设计编号")?);
+    }
+    let mut variants = HashMap::new();
+    if let Some(raw_variants) = game
+        .get("phase2")
+        .and_then(|phase2| phase2.get("roomVariants"))
+    {
+        for raw_variant in phase4_array(raw_variants, "客房变体")? {
+            let variant = phase4_object(raw_variant, "客房变体")?;
+            let id =
+                phase4_stable_id(phase4_field(variant, "id", "客房变体编号")?, "客房变体编号")?;
+            let master_id = phase4_stable_id(
+                phase4_field(variant, "masterId", "客房母版编号")?,
+                "客房母版编号",
+            )?;
+            if variants.insert(id, master_id).is_some() {
+                return Err(phase4_error("客房变体编号重复"));
+            }
+        }
+    }
+    let mut template_uses = HashMap::new();
+    let mut template_placements: HashMap<&str, HashMap<&str, (&str, Option<&str>)>> =
+        HashMap::new();
+    let mut template_slots: HashMap<&str, HashMap<&str, HashSet<&str>>> = HashMap::new();
+    for (template_id, raw_template) in templates {
+        let template = phase4_object(raw_template, "楼层模板")?;
+        let use_id = phase4_one_of(
+            phase4_field(template, "use", "楼层用途")?,
+            &["entrance", "sky-lobby", "guest", "facility", "service"],
+            "楼层用途",
+        )?;
+        template_uses.insert(template_id.as_str(), use_id);
+        let mut placements = HashMap::new();
+        for raw_placement in phase4_array(
+            phase4_field(template, "roomPlacements", "客房放置")?,
+            "客房放置",
+        )? {
+            let placement = phase4_object(raw_placement, "客房放置")?;
+            let id = phase4_stable_id(
+                phase4_field(placement, "id", "客房放置编号")?,
+                "客房放置编号",
+            )?;
+            let master_id = phase4_stable_id(
+                phase4_field(placement, "roomBlueprintId", "客房母版编号")?,
+                "客房母版编号",
+            )?;
+            if !design_ids.is_empty() && !design_ids.contains(master_id) {
+                return Err(phase4_error("客房设计引用无效"));
+            }
+            let variant_id = placement
+                .get("variantId")
+                .map(|value| phase4_stable_id(value, "客房变体编号"))
+                .transpose()?;
+            if variant_id.is_some_and(|id| variants.get(id).copied() != Some(master_id)) {
+                return Err(phase4_error("客房变体引用无效"));
+            }
+            if placements.insert(id, (master_id, variant_id)).is_some() {
+                return Err(phase4_error("客房放置编号重复"));
+            }
+        }
+        template_placements.insert(template_id, placements);
+        let mut slots = HashMap::new();
+        for raw_slot in phase4_array(
+            phase4_field(template, "publicSpaceSlots", "公共空间槽位")?,
+            "公共空间槽位",
+        )? {
+            let slot = phase4_object(raw_slot, "公共空间槽位")?;
+            let id = phase4_stable_id(
+                phase4_field(slot, "id", "公共空间槽位编号")?,
+                "公共空间槽位编号",
+            )?;
+            let permitted = phase4_array(
+                phase4_field(slot, "permittedTypes", "允许设施类型")?,
+                "允许设施类型",
+            )?
+            .iter()
+            .map(|value| phase4_type(value, "设施类型"))
+            .collect::<Result<HashSet<_>, _>>()?;
+            if permitted.is_empty() || slots.insert(id, permitted).is_some() {
+                return Err(phase4_error("公共空间槽位无效"));
+            }
+        }
+        template_slots.insert(template_id, slots);
+    }
+
     let mut floor_ids = HashSet::new();
+    let mut floor_records = HashMap::new();
+    let mut floor_numbers = HashSet::new();
+    let mut owned_spaces = HashMap::new();
     let mut room_ids = HashSet::new();
     let mut room_owners = Vec::new();
+    let mut room_count = 0usize;
     for raw_floor in floors {
         let floor = phase4_object(raw_floor, "楼层")?;
         let floor_id = phase4_stable_id(phase4_field(floor, "id", "楼层编号")?, "楼层编号")?;
         if !floor_ids.insert(floor_id) {
             return Err(phase4_error("楼层编号重复"));
         }
+        let floor_number = phase4_int(
+            phase4_field(floor, "floorNumber", "楼层号")?,
+            "楼层号",
+            1,
+            64,
+        )?;
+        if !floor_numbers.insert(floor_number) {
+            return Err(phase4_error("楼层号重复"));
+        }
+        let use_id = phase4_one_of(
+            phase4_field(floor, "use", "楼层用途")?,
+            &["entrance", "sky-lobby", "guest", "facility", "service"],
+            "楼层用途",
+        )?;
+        let template_id = phase4_stable_id(
+            phase4_field(floor, "templateId", "楼层模板编号")?,
+            "楼层模板编号",
+        )?;
+        if template_uses.get(template_id).copied() != Some(use_id) {
+            return Err(phase4_error("楼层模板引用无效"));
+        }
+        phase4_bool(
+            phase4_field(floor, "purchased", "楼层购买状态")?,
+            "楼层购买状态",
+        )?;
+        for space_id in phase4_unique_ids(
+            phase4_field(floor, "publicSpaceInstanceIds", "楼层公共空间")?,
+            "楼层公共空间",
+        )? {
+            if owned_spaces.insert(space_id, floor_id).is_some() {
+                return Err(phase4_error("公共空间所属楼层重复"));
+            }
+        }
+        floor_records.insert(floor_id, (use_id, template_id));
         for raw_room in phase4_array(phase4_field(floor, "rooms", "客房")?, "客房")? {
+            room_count += 1;
+            if room_count > 240 {
+                return Err(phase4_error("客房最多保留240间"));
+            }
             let room = phase4_object(raw_room, "客房")?;
             let room_id = phase4_stable_id(phase4_field(room, "id", "客房编号")?, "客房编号")?;
             if !room_ids.insert(room_id) {
@@ -1030,6 +1411,26 @@ fn validate_phase4(value: &Value) -> Result<(), String> {
                 )?,
                 floor_id,
             ));
+            let placement_id = phase4_stable_id(
+                phase4_field(room, "localPlacementId", "客房放置编号")?,
+                "客房放置编号",
+            )?;
+            let master_id = phase4_stable_id(
+                phase4_field(room, "roomBlueprintId", "客房母版编号")?,
+                "客房母版编号",
+            )?;
+            let variant_id = room
+                .get("variantId")
+                .map(|value| phase4_stable_id(value, "客房变体编号"))
+                .transpose()?;
+            if template_placements
+                .get(template_id)
+                .and_then(|placements| placements.get(placement_id))
+                .copied()
+                != Some((master_id, variant_id))
+            {
+                return Err(phase4_error("客房放置或设计引用无效"));
+            }
             validate_phase4_money(phase4_field(room, "committedBuildCostCents", "施工金额")?)?;
         }
     }
@@ -1046,25 +1447,436 @@ fn validate_phase4(value: &Value) -> Result<(), String> {
         return Err(phase4_error("客房必须属于所在楼层"));
     }
 
-    let public_spaces = phase4_object(
-        phase4_field(phase4, "publicSpaces", "公共空间")?,
-        "公共空间",
-    )?;
-    for raw_space in public_spaces.values() {
-        let space = phase4_object(raw_space, "公共空间")?;
-        validate_phase4_money(phase4_field(space, "committedBuildCostCents", "施工金额")?)?;
+    let building = phase4_object(phase4_field(phase4, "building", "建筑")?, "建筑")?;
+    if phase4_stable_id(
+        phase4_field(building, "templateId", "建筑模板编号")?,
+        "建筑模板编号",
+    )? != "building-template:first-tower"
+    {
+        return Err(phase4_error("目录引用无效"));
     }
+    let entrance_id = phase4_stable_id(
+        phase4_field(building, "entranceFloorId", "入口楼层编号")?,
+        "入口楼层编号",
+    )?;
+    if floor_records.get(entrance_id).map(|record| record.0) != Some("entrance") {
+        return Err(phase4_error("入口楼层引用无效"));
+    }
+    for floor_id in phase4_unique_ids(
+        phase4_field(building, "skyLobbyFloorIds", "空中大堂楼层")?,
+        "空中大堂楼层",
+    )? {
+        if floor_records.get(floor_id).map(|record| record.0) != Some("sky-lobby") {
+            return Err(phase4_error("空中大堂楼层引用无效"));
+        }
+    }
+    for floor_id in phase4_unique_ids(
+        phase4_field(building, "purchasedFloorIds", "已购买楼层")?,
+        "已购买楼层",
+    )? {
+        if !floor_ids.contains(floor_id) {
+            return Err(phase4_error("已购买楼层引用无效"));
+        }
+    }
+    let mut expansion_numbers = HashSet::new();
+    for raw_number in phase4_array(
+        phase4_field(building, "availableExpansionFloorNumbers", "可扩建楼层")?,
+        "可扩建楼层",
+    )? {
+        let number = phase4_int(raw_number, "可扩建楼层号", 1, 64)?;
+        if !expansion_numbers.insert(number) || floor_numbers.contains(&number) {
+            return Err(phase4_error("可扩建楼层引用无效"));
+        }
+    }
+
     let blueprints = phase4_object(
         phase4_field(phase4, "spaceBlueprints", "公共空间蓝图")?,
         "公共空间蓝图",
     )?;
+    if blueprints.len() > 32 {
+        return Err(phase4_error("公共空间蓝图最多保留32项"));
+    }
+    let public_spaces = phase4_object(
+        phase4_field(phase4, "publicSpaces", "公共空间")?,
+        "公共空间",
+    )?;
+    if public_spaces.len() > 32 {
+        return Err(phase4_error("公共空间最多保留32项"));
+    }
+    for (space_id, raw_space) in public_spaces {
+        let space = phase4_object(raw_space, "公共空间")?;
+        let type_id = phase4_type(phase4_field(space, "type", "公共空间类型")?, "公共空间类型")?;
+        let floor_id = phase4_stable_id(
+            phase4_field(space, "floorId", "公共空间楼层编号")?,
+            "公共空间楼层编号",
+        )?;
+        if !floor_ids.contains(floor_id) {
+            return Err(phase4_error("公共空间楼层引用无效"));
+        }
+        if owned_spaces.get(space_id.as_str()).copied() != Some(floor_id) {
+            return Err(phase4_error("公共空间楼层引用无效"));
+        }
+        let slot_id = phase4_stable_id(
+            phase4_field(space, "localPlacementId", "公共空间槽位编号")?,
+            "公共空间槽位编号",
+        )?;
+        let template_id = floor_records
+            .get(floor_id)
+            .map(|record| record.1)
+            .ok_or_else(|| phase4_error("公共空间楼层引用无效"))?;
+        if !template_slots
+            .get(template_id)
+            .and_then(|slots| slots.get(slot_id))
+            .is_some_and(|types| types.contains(type_id))
+        {
+            return Err(phase4_error("公共空间槽位或类型引用无效"));
+        }
+        let blueprint_id = phase4_stable_id(
+            phase4_field(space, "blueprintId", "公共空间蓝图编号")?,
+            "公共空间蓝图编号",
+        )?;
+        if blueprints
+            .get(blueprint_id)
+            .and_then(|blueprint| blueprint.get("type"))
+            .and_then(Value::as_str)
+            != Some(type_id)
+        {
+            return Err(phase4_error("公共空间蓝图引用无效"));
+        }
+        validate_phase4_money(phase4_field(space, "committedBuildCostCents", "施工金额")?)?;
+    }
+    if owned_spaces.len() != public_spaces.len() {
+        return Err(phase4_error("楼层公共空间反向引用不完整"));
+    }
     for raw_blueprint in blueprints.values() {
         let blueprint = phase4_object(raw_blueprint, "公共空间蓝图")?;
+        phase4_type(
+            phase4_field(blueprint, "type", "公共空间类型")?,
+            "公共空间类型",
+        )?;
+        let cells = phase4_array(
+            phase4_field(blueprint, "cells", "公共空间蓝图格子")?,
+            "公共空间蓝图格子",
+        )?;
+        if cells.len() > 8_192 {
+            return Err(phase4_error("公共空间蓝图格子最多保留8192项"));
+        }
+        let columns = phase4_int(
+            phase4_field(blueprint, "columns", "公共空间列数")?,
+            "公共空间列数",
+            1,
+            512,
+        )?;
+        let rows = phase4_int(
+            phase4_field(blueprint, "rows", "公共空间行数")?,
+            "公共空间行数",
+            1,
+            512,
+        )?;
+        let mut coordinates = HashSet::new();
+        for raw_cell in cells {
+            let cell = phase4_object(raw_cell, "公共空间格子")?;
+            let x = phase4_int(
+                phase4_field(cell, "x", "公共空间格子横坐标")?,
+                "公共空间格子横坐标",
+                0,
+                columns - 1,
+            )?;
+            let y = phase4_int(
+                phase4_field(cell, "y", "公共空间格子纵坐标")?,
+                "公共空间格子纵坐标",
+                0,
+                rows - 1,
+            )?;
+            if !coordinates.insert((x, y)) {
+                return Err(phase4_error("公共空间格子坐标重复"));
+            }
+            phase4_zone(phase4_field(cell, "zoneId", "分区编号")?)?;
+        }
+        let items = phase4_array(
+            phase4_field(blueprint, "placedItems", "公共空间蓝图物品")?,
+            "公共空间蓝图物品",
+        )?;
+        if items.len() > 256 {
+            return Err(phase4_error("公共空间蓝图物品最多保留256项"));
+        }
+        let mut item_ids = HashSet::new();
+        for raw_item in items {
+            let item = phase4_object(raw_item, "公共空间物品")?;
+            let id = phase4_stable_id(
+                phase4_field(item, "id", "公共空间物品编号")?,
+                "公共空间物品编号",
+            )?;
+            if !item_ids.insert(id) {
+                return Err(phase4_error("公共空间物品编号重复"));
+            }
+            phase4_item(phase4_field(item, "catalogItemId", "物品目录编号")?)?;
+            phase4_int(
+                phase4_field(item, "x", "物品横坐标")?,
+                "物品横坐标",
+                0,
+                columns - 1,
+            )?;
+            phase4_int(
+                phase4_field(item, "y", "物品纵坐标")?,
+                "物品纵坐标",
+                0,
+                rows - 1,
+            )?;
+            phase4_int(
+                phase4_field(item, "width", "物品宽度")?,
+                "物品宽度",
+                1,
+                columns,
+            )?;
+            phase4_int(
+                phase4_field(item, "height", "物品高度")?,
+                "物品高度",
+                1,
+                rows,
+            )?;
+            let rotation = phase4_int(
+                phase4_field(item, "rotation", "物品旋转")?,
+                "物品旋转",
+                0,
+                270,
+            )?;
+            if ![0, 90, 180, 270].contains(&rotation) {
+                return Err(phase4_error("物品旋转无效"));
+            }
+        }
         validate_phase4_money(phase4_field(
             blueprint,
             "committedBuildCostCents",
             "施工金额",
         )?)?;
+    }
+    let facilities = phase4_object(phase4_field(phase4, "facilities", "设施")?, "设施")?;
+    if facilities.len() > 32 {
+        return Err(phase4_error("设施最多保留32项"));
+    }
+    for raw_facility in facilities.values() {
+        let facility = phase4_object(raw_facility, "设施")?;
+        let type_id = phase4_type(phase4_field(facility, "type", "设施类型")?, "设施类型")?;
+        let instance_id = phase4_stable_id(
+            phase4_field(facility, "publicSpaceInstanceId", "设施公共空间编号")?,
+            "设施公共空间编号",
+        )?;
+        if public_spaces
+            .get(instance_id)
+            .and_then(|space| space.get("type"))
+            .and_then(Value::as_str)
+            != Some(type_id)
+        {
+            return Err(phase4_error("设施公共空间引用无效"));
+        }
+        phase4_one_of(
+            phase4_field(facility, "status", "设施状态")?,
+            &["planned", "operating", "closed"],
+            "设施状态",
+        )?;
+        phase4_bool(
+            phase4_field(facility, "enabled", "设施启用状态")?,
+            "设施启用状态",
+        )?;
+        validate_phase4_money(phase4_field(
+            facility,
+            "dailyOperatingCostCents",
+            "设施每日成本",
+        )?)?;
+        let inputs = phase4_object(
+            phase4_field(facility, "segmentInputs", "设施客群输入")?,
+            "设施客群输入",
+        )?;
+        if inputs.len() != OPERATIONS_SEGMENTS.len()
+            || OPERATIONS_SEGMENTS
+                .iter()
+                .any(|id| !inputs.contains_key(*id))
+        {
+            return Err(phase4_error("设施客群目录不完整"));
+        }
+        for input in inputs.values() {
+            let input = phase4_object(input, "设施客群输入")?;
+            phase4_int(
+                phase4_field(input, "appealBps", "客群吸引力")?,
+                "客群吸引力",
+                0,
+                10_000,
+            )?;
+            phase4_int(
+                phase4_field(input, "satisfactionBps", "客群满意度")?,
+                "客群满意度",
+                0,
+                10_000,
+            )?;
+            phase4_int(
+                phase4_field(input, "dailyDemand", "客群每日需求")?,
+                "客群每日需求",
+                0,
+                JS_MAX_SAFE_INTEGER,
+            )?;
+        }
+        let developed = phase4_unique_ids(
+            phase4_field(facility, "developedOfferingIds", "已开发产品")?,
+            "已开发产品",
+        )?;
+        if let Some(policy) = facility.get("policy").filter(|value| !value.is_null()) {
+            let policy = phase4_object(policy, "设施策略")?;
+            for key in ["positioningId", "priceBandId", "openingPolicyId"] {
+                phase4_stable_id(phase4_field(policy, key, "设施策略编号")?, "设施策略编号")?;
+            }
+            phase4_int(
+                phase4_field(policy, "capacity", "设施容量")?,
+                "设施容量",
+                1,
+                10_000,
+            )?;
+            validate_phase4_money(phase4_field(policy, "serviceBudgetCents", "设施服务预算")?)?;
+            if let Some(offering) = policy.get("signatureOfferingId") {
+                let offering = phase4_stable_id(offering, "招牌产品编号")?;
+                if !developed.contains(&offering) {
+                    return Err(phase4_error("目录引用无效"));
+                }
+            }
+        }
+        if let Some(menu) = facility
+            .get("menuSelection")
+            .filter(|value| !value.is_null())
+        {
+            let menu = phase4_object(menu, "菜单选择")?;
+            phase4_stable_id(
+                phase4_field(menu, "menuStructureId", "菜单编号")?,
+                "菜单编号",
+            )?;
+            phase4_unique_ids(
+                phase4_field(menu, "selectedItemIds", "菜单条目")?,
+                "菜单条目",
+            )?;
+        }
+        let history = phase4_array(
+            phase4_field(facility, "dailyResults", "设施历史")?,
+            "设施历史",
+        )?;
+        if history.len() > 30 {
+            return Err(phase4_error("设施历史最多保留30天"));
+        }
+        let mut previous_day = 0;
+        for result in history {
+            let result = phase4_object(result, "设施历史")?;
+            let day = phase4_int(
+                phase4_field(result, "day", "设施历史日期")?,
+                "设施历史日期",
+                1,
+                30,
+            )?;
+            if day <= previous_day {
+                return Err(phase4_error("设施历史日期无效"));
+            }
+            previous_day = day;
+            for (key, label) in [
+                ("visits", "设施到访量"),
+                ("revenueCents", "设施收入"),
+                ("operatingCostCents", "设施经营成本"),
+            ] {
+                phase4_int(
+                    phase4_field(result, key, label)?,
+                    label,
+                    0,
+                    JS_MAX_SAFE_INTEGER,
+                )?;
+            }
+            phase4_int(
+                phase4_field(result, "utilizationBps", "设施利用率")?,
+                "设施利用率",
+                0,
+                10_000,
+            )?;
+            phase4_int(
+                phase4_field(result, "satisfactionDeltaBps", "设施满意度变化")?,
+                "设施满意度变化",
+                -200,
+                200,
+            )?;
+            phase4_int(
+                phase4_field(result, "appealDeltaBps", "设施吸引力变化")?,
+                "设施吸引力变化",
+                -200,
+                200,
+            )?;
+            phase4_unique_ids(phase4_field(result, "reasonCodes", "设施原因")?, "设施原因")?;
+        }
+    }
+    let progress = phase4_object(
+        phase4_field(phase4, "catalogProgress", "目录进度")?,
+        "目录进度",
+    )?;
+    let facility_catalog = PHASE4_PUBLIC_SPACE_TYPES
+        .iter()
+        .map(|kind| format!("facility:{kind}"))
+        .collect::<HashSet<_>>();
+    phase4_unique_catalog_ids(
+        phase4_field(progress, "unlockedIds", "内容解锁")?,
+        &facility_catalog,
+    )?;
+    let market_catalog = OPERATIONS_SEGMENTS
+        .iter()
+        .map(|segment| format!("market:{segment}"))
+        .collect::<HashSet<_>>();
+    phase4_unique_catalog_ids(
+        phase4_field(progress, "discoveredMarketEntryIds", "市场目录")?,
+        &market_catalog,
+    )?;
+    if let Some(snapshot) = phase4
+        .get("recentFlowSnapshot")
+        .filter(|item| !item.is_null())
+    {
+        let snapshot = phase4_object(snapshot, "近期流动快照")?;
+        phase4_int(
+            phase4_field(snapshot, "day", "流动快照日期")?,
+            "流动快照日期",
+            0,
+            30,
+        )?;
+        let visible_floor_id = phase4_stable_id(
+            phase4_field(snapshot, "visibleFloorId", "可见楼层编号")?,
+            "可见楼层编号",
+        )?;
+        if !floor_ids.contains(visible_floor_id) {
+            return Err(phase4_error("流动楼层引用无效"));
+        }
+        let events = phase4_array(phase4_field(snapshot, "events", "流动事件")?, "流动事件")?;
+        if events.len() > 150 {
+            return Err(phase4_error("流动事件最多保留150项"));
+        }
+        let mut ids = HashSet::new();
+        let mut graph_ids = floor_ids.clone();
+        graph_ids.extend(public_spaces.keys().map(String::as_str));
+        graph_ids.extend(facilities.keys().map(String::as_str));
+        graph_ids.insert("flow:hotel-residents");
+        for raw_event in events {
+            let event = phase4_object(raw_event, "流动事件")?;
+            let id = phase4_stable_id(phase4_field(event, "id", "流动事件编号")?, "流动事件编号")?;
+            if !ids.insert(id) {
+                return Err(phase4_error("流动事件编号重复"));
+            }
+            phase4_one_of(
+                phase4_field(event, "kind", "流动事件类型")?,
+                &["guest", "staff", "service"],
+                "流动事件类型",
+            )?;
+            for (key, label) in [("fromId", "流动起点编号"), ("toId", "流动终点编号")] {
+                let reference = phase4_stable_id(phase4_field(event, key, label)?, label)?;
+                if !graph_ids.contains(reference) {
+                    return Err(phase4_error("流动引用无效"));
+                }
+            }
+            phase4_int(
+                phase4_field(event, "count", "流动数量")?,
+                "流动数量",
+                1,
+                JS_MAX_SAFE_INTEGER,
+            )?;
+        }
     }
     Ok(())
 }
@@ -1310,6 +2122,27 @@ struct OperationsDailyTotals {
     available: i64,
     sold: i64,
     occupancy: i64,
+    category_version: u8,
+    room_revenue: i64,
+    public_space_revenue: i64,
+    department_cost: i64,
+    facility_operating_cost: i64,
+}
+
+fn operations_report_category_version(value: &Value) -> Result<u8, String> {
+    let present = [
+        "roomRevenueCents",
+        "publicSpaceRevenueCents",
+        "departmentCostCents",
+        "facilityOperatingCostCents",
+    ]
+    .map(|key| value.get(key).is_some());
+    match present {
+        [false, false, false, false] => Ok(0),
+        [true, false, true, false] => Ok(1),
+        [true, true, true, true] => Ok(2),
+        _ => Err("经营存档数据损坏".into()),
+    }
 }
 
 fn validate_operations_daily(
@@ -1359,12 +2192,31 @@ fn validate_operations_daily(
     )?;
     let cash = operations_int(value, "endingCashCents", 0, JS_MAX_SAFE_INTEGER)?;
     let reputation = operations_bps(value, "reputationBps")?;
-    if checked_sum(segment_revenue)? != revenue
+    let category_version = operations_report_category_version(value)?;
+    let room_revenue = if category_version > 0 {
+        operations_int(value, "roomRevenueCents", 0, JS_MAX_SAFE_INTEGER)?
+    } else {
+        revenue
+    };
+    let public_space_revenue = if category_version == 2 {
+        operations_int(value, "publicSpaceRevenueCents", 0, JS_MAX_SAFE_INTEGER)?
+    } else {
+        0
+    };
+    let department_cost = if category_version > 0 {
+        operations_int(value, "departmentCostCents", 0, JS_MAX_SAFE_INTEGER)?
+    } else {
+        operating
+    };
+    let facility_operating_cost = if category_version == 2 {
+        operations_int(value, "facilityOperatingCostCents", 0, JS_MAX_SAFE_INTEGER)?
+    } else {
+        0
+    };
+    if checked_sum(segment_revenue)? != room_revenue
+        || checked_sum([room_revenue, public_space_revenue])? != revenue
+        || checked_sum([department_cost, facility_operating_cost])? != operating
         || checked_sum([revenue, -operating, -finance])? != net
-        || operations_optional_int(value, "roomRevenueCents", 0, JS_MAX_SAFE_INTEGER)?
-            .is_some_and(|stored| stored != revenue)
-        || operations_optional_int(value, "departmentCostCents", 0, JS_MAX_SAFE_INTEGER)?
-            .is_some_and(|stored| stored != operating)
         || operations_optional_int(value, "loanInterestCents", 0, JS_MAX_SAFE_INTEGER)?
             .is_some_and(|stored| stored != finance)
     {
@@ -1461,6 +2313,11 @@ fn validate_operations_daily(
         available,
         sold,
         occupancy,
+        category_version,
+        room_revenue,
+        public_space_revenue,
+        department_cost,
+        facility_operating_cost,
     })
 }
 
@@ -1486,6 +2343,18 @@ fn validate_operations_aggregate(
         checked_sum(reports.iter().map(|report| report.occupancy))? / reports.len() as i64;
     let reputation =
         checked_sum(reports.iter().map(|report| report.reputation))? / reports.len() as i64;
+    let aggregate_version = operations_report_category_version(value)?;
+    let expected_version = if reports.iter().any(|report| report.category_version == 2) {
+        2
+    } else {
+        0
+    };
+    let room_revenue = checked_sum(reports.iter().map(|report| report.room_revenue))?;
+    let public_space_revenue =
+        checked_sum(reports.iter().map(|report| report.public_space_revenue))?;
+    let department_cost = checked_sum(reports.iter().map(|report| report.department_cost))?;
+    let facility_operating_cost =
+        checked_sum(reports.iter().map(|report| report.facility_operating_cost))?;
     if operations_int(value, number_key, 1, 4)? != number
         || operations_int(value, "startDay", 1, 30)? != first.day
         || operations_int(value, "endDay", 1, 30)? != last.day
@@ -1508,6 +2377,15 @@ fn validate_operations_aggregate(
             .is_some_and(|stored| stored != occupancy)
         || operations_optional_int(value, "reputationBps", 0, 10_000)?
             .is_some_and(|stored| stored != reputation)
+        || aggregate_version != expected_version
+        || (aggregate_version == 2
+            && (operations_int(value, "roomRevenueCents", 0, JS_MAX_SAFE_INTEGER)? != room_revenue
+                || operations_int(value, "publicSpaceRevenueCents", 0, JS_MAX_SAFE_INTEGER)?
+                    != public_space_revenue
+                || operations_int(value, "departmentCostCents", 0, JS_MAX_SAFE_INTEGER)?
+                    != department_cost
+                || operations_int(value, "facilityOperatingCostCents", 0, JS_MAX_SAFE_INTEGER)?
+                    != facility_operating_cost))
     {
         return Err("经营存档数据损坏".into());
     }
@@ -3167,6 +4045,126 @@ mod tests {
         phase4_fixture(&phase4_fixture_json_with_money_token(token))
     }
 
+    const PHASE4_INVALID_FIXTURES: [(&str, &str); 10] = [
+        ("bad-report-arithmetic.json", "经营报告算术不一致"),
+        ("excessive-cells.json", "公共空间蓝图格子最多保留8192项"),
+        ("excessive-floors.json", "楼层最多保留64层"),
+        ("excessive-flow-events.json", "流动事件最多保留150项"),
+        ("excessive-history.json", "设施历史最多保留30天"),
+        ("excessive-items.json", "公共空间蓝图物品最多保留256项"),
+        ("excessive-rooms.json", "客房最多保留240间"),
+        ("forbidden-base64.json", "禁止持久化Base64数据"),
+        ("forbidden-credential.json", "禁止持久化凭据"),
+        ("unknown-catalog-reference.json", "目录引用无效"),
+    ];
+
+    #[test]
+    fn phase4_shared_fixture_manifest_is_exact() {
+        let directory =
+            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/phase4-invalid");
+        let mut actual = fs::read_dir(directory)
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name().into_string().unwrap())
+            .collect::<Vec<_>>();
+        actual.sort();
+        assert_eq!(
+            actual,
+            PHASE4_INVALID_FIXTURES
+                .iter()
+                .map(|(name, _)| name.to_string())
+                .collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn phase4_shared_invalid_fixtures_have_stable_error_classes() {
+        let directory =
+            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/phase4-invalid");
+        for (name, expected) in PHASE4_INVALID_FIXTURES {
+            let mut invalid = phase4_fixture(&fs::read_to_string(directory.join(name)).unwrap());
+            invalid["revision"] = json!(1);
+            let repository = SaveRepository::new(root(&format!("phase4-task8-{name}")));
+            let error = match repository.commit_game(0, invalid) {
+                Err(error) => error,
+                Ok(()) => panic!("{name} unexpectedly accepted"),
+            };
+            assert!(
+                error.contains(expected),
+                "{name} expected {expected}, got {error}"
+            );
+        }
+    }
+
+    #[test]
+    fn phase4_retains_task2_validation_regressions() {
+        type Phase4Mutation = (&'static str, Box<dyn Fn(&mut Value)>);
+        let cases: Vec<Phase4Mutation> = vec![
+            (
+                "duplicate-floor-id",
+                Box::new(|value| value["phase4"]["floors"][1]["id"] = json!("floor:01")),
+            ),
+            (
+                "unknown-room-floor",
+                Box::new(|value| {
+                    value["phase4"]["floors"][4]["rooms"][0]["floorId"] = json!("floor:unknown")
+                }),
+            ),
+            (
+                "unsafe-money",
+                Box::new(|value| {
+                    value["phase4"]["floors"][4]["rooms"][0]["committedBuildCostCents"] =
+                        json!(JS_MAX_SAFE_INTEGER + 1)
+                }),
+            ),
+            (
+                "wrong-containing-floor",
+                Box::new(|value| {
+                    value["phase4"]["floors"][4]["rooms"][0]["floorId"] = json!("floor:06")
+                }),
+            ),
+            (
+                "malformed-record-key",
+                Box::new(|value| {
+                    let record = value["phase4"]["publicSpaces"].as_object_mut().unwrap();
+                    let first = record.values().next().unwrap().clone();
+                    record.insert("Bad Key".into(), first);
+                }),
+            ),
+            (
+                "non-object-record-value",
+                Box::new(|value| {
+                    let record = value["phase4"]["spaceBlueprints"].as_object_mut().unwrap();
+                    let key = record.keys().next().unwrap().clone();
+                    record.insert(key, json!("bad"));
+                }),
+            ),
+            (
+                "record-key-id-mismatch",
+                Box::new(|value| {
+                    let record = value["phase4"]["facilities"].as_object_mut().unwrap();
+                    record.values_mut().next().unwrap()["id"] = json!("facility:mismatch");
+                }),
+            ),
+            (
+                "duplicate-record-value-id",
+                Box::new(|value| {
+                    let record = value["phase4"]["publicSpaces"].as_object_mut().unwrap();
+                    let keys = record.keys().take(2).cloned().collect::<Vec<_>>();
+                    let first_id = record[&keys[0]]["id"].clone();
+                    record.get_mut(&keys[1]).unwrap()["id"] = first_id;
+                }),
+            ),
+        ];
+        for (name, mutate) in cases {
+            let mut invalid = phase4_fixture(include_str!("../tests/fixtures/phase4-valid.json"));
+            mutate(&mut invalid);
+            assert!(
+                validate_game(&invalid).is_err(),
+                "{name} unexpectedly accepted"
+            );
+        }
+    }
+
     #[test]
     fn phase4_minimal_commits_and_reopens_shared_fixture() {
         let repository = SaveRepository::new(root("phase4-shared"));
@@ -3178,58 +4176,6 @@ mod tests {
 
         let loaded = repository.load_game("phase4-shared").unwrap().unwrap();
         assert_eq!(loaded["phase4"], expected_phase4);
-    }
-
-    #[test]
-    fn phase4_minimal_rejects_shared_invalid_fixtures() {
-        for (name, raw, expected) in [
-            (
-                "duplicate-floor-id",
-                include_str!("../tests/fixtures/phase4-invalid/duplicate-floor-id.json"),
-                "楼层编号重复",
-            ),
-            (
-                "unknown-room-floor",
-                include_str!("../tests/fixtures/phase4-invalid/unknown-room-floor.json"),
-                "客房楼层引用无效",
-            ),
-            (
-                "unsafe-money",
-                include_str!("../tests/fixtures/phase4-invalid/unsafe-money.json"),
-                "施工金额必须是安全整数",
-            ),
-            (
-                "wrong-containing-floor",
-                include_str!("../tests/fixtures/phase4-invalid/wrong-containing-floor.json"),
-                "客房必须属于所在楼层",
-            ),
-            (
-                "malformed-record-key",
-                include_str!("../tests/fixtures/phase4-invalid/malformed-record-key.json"),
-                "记录键必须是稳定 ID",
-            ),
-            (
-                "non-object-record-value",
-                include_str!("../tests/fixtures/phase4-invalid/non-object-record-value.json"),
-                "公共空间蓝图结构无效",
-            ),
-            (
-                "record-key-id-mismatch",
-                include_str!("../tests/fixtures/phase4-invalid/record-key-id-mismatch.json"),
-                "记录键与编号不一致",
-            ),
-            (
-                "duplicate-record-value-id",
-                include_str!("../tests/fixtures/phase4-invalid/duplicate-record-value-id.json"),
-                "公共空间编号重复",
-            ),
-        ] {
-            let repository = SaveRepository::new(root(&format!("phase4-invalid-{name}")));
-            let mut invalid = phase4_fixture(raw);
-            invalid["revision"] = json!(1);
-            let error = repository.commit_game(0, invalid).unwrap_err();
-            assert!(error.contains(expected), "unexpected error: {error}");
-        }
     }
 
     #[test]
@@ -3284,31 +4230,31 @@ mod tests {
     }
 
     #[test]
-    fn phase4_minimal_invalid_update_leaves_prior_revision_unchanged() {
+    fn phase4_invalid_update_leaves_prior_revision_unchanged() {
         let repository = SaveRepository::new(root("phase4-rollback"));
         let mut valid = phase4_fixture(include_str!("../tests/fixtures/phase4-valid.json"));
         valid["revision"] = json!(1);
         repository.commit_game(0, valid.clone()).unwrap();
 
         let mut invalid = phase4_fixture(include_str!(
-            "../tests/fixtures/phase4-invalid/unsafe-money.json"
+            "../tests/fixtures/phase4-invalid/excessive-flow-events.json"
         ));
         invalid["revision"] = json!(2);
         let error = repository.commit_game(1, invalid).unwrap_err();
 
-        assert!(error.contains("施工金额必须是安全整数"));
+        assert!(error.contains("流动事件最多保留150项"));
         assert_eq!(
             repository.load_game("phase4-shared").unwrap(),
             Some(valid.clone())
         );
 
-        let mut wrong_owner = phase4_fixture(include_str!(
-            "../tests/fixtures/phase4-invalid/wrong-containing-floor.json"
+        let mut forbidden = phase4_fixture(include_str!(
+            "../tests/fixtures/phase4-invalid/forbidden-credential.json"
         ));
-        wrong_owner["revision"] = json!(2);
-        let error = repository.commit_game(1, wrong_owner).unwrap_err();
+        forbidden["revision"] = json!(2);
+        let error = repository.commit_game(1, forbidden).unwrap_err();
 
-        assert!(error.contains("客房必须属于所在楼层"));
+        assert!(error.contains("禁止持久化凭据"));
         assert_eq!(repository.load_game("phase4-shared").unwrap(), Some(valid));
     }
 
