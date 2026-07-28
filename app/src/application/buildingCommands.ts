@@ -5,9 +5,10 @@ import {
 } from "../domain/building/hotelInventory";
 import {
   applyExpansion,
+  applyFloorCopy,
   applyTemplateSync,
-  copyGuestFloor,
   previewExpansion,
+  previewFloorCopy,
   upgradeLegacyToPhase4,
 } from "../domain/building/towerHotel";
 import {
@@ -258,17 +259,16 @@ export function createBuildingCommands(savePort: SavePort) {
       const currentCashCents = assertSafeMoney(state.cashCents);
       const phase4 = state.phase4;
       if (!phase4) throw new Error("内容规模系统尚未初始化");
-      const preview = previewExpansion(state, floorNumber);
+      const preview = previewFloorCopy(phase4, sourceFloorId, floorNumber);
       if (!preview.available) throw new Error(`该楼层不可扩建：${preview.reason}`);
       if (currentCashCents < preview.costCents) throw new Error("现金不足以购买楼层");
-      const expansion = applyExpansion(phase4, floorNumber);
-      if (expansion.costCents !== preview.costCents) {
+      const copied = applyFloorCopy(phase4, sourceFloorId, floorNumber);
+      if (copied.costCents !== preview.costCents) {
         throw new Error("楼层购买预览已过期");
       }
-      const copied = copyGuestFloor(phase4, sourceFloorId, floorNumber);
       return persist(state, completeBuildingState({
         ...state,
-        cashCents: assertSafeMoney(currentCashCents - expansion.costCents),
+        cashCents: assertSafeMoney(currentCashCents - copied.costCents),
         phase4: copied.phase4,
       }));
     },

@@ -40,6 +40,10 @@ export interface FloorCopyResult {
   floor: HotelFloor;
 }
 
+export interface FloorCopyApplication extends FloorCopyResult {
+  costCents: number;
+}
+
 export interface TemplateSyncPreview {
   floorId: StableId;
   templateId: StableId;
@@ -176,6 +180,32 @@ function projectedExpansionRoomCount(
 ): number {
   return state.floors.reduce((total, floor) => total + floor.rooms.length, 0) +
     source.rooms.length;
+}
+
+function expansionPreviewForSource(
+  state: Readonly<ContentScaleState> | undefined,
+  source: Readonly<HotelFloor> | undefined,
+  floorNumber: number,
+): ExpansionPreview {
+  if (!state) {
+    return { floorNumber, costCents: EXPANSION_COST_CENTS, available: false, reason: "phase4-required" };
+  }
+  if (state.floors.some((floor) => floor.floorNumber === floorNumber)) {
+    return { floorNumber, costCents: EXPANSION_COST_CENTS, available: false, reason: "already-purchased" };
+  }
+  if (!state.building.availableExpansionFloorNumbers.includes(floorNumber)) {
+    return { floorNumber, costCents: EXPANSION_COST_CENTS, available: false, reason: "not-offered" };
+  }
+  if (!source) {
+    return { floorNumber, costCents: EXPANSION_COST_CENTS, available: false, reason: "no-guest-template" };
+  }
+  const available = projectedExpansionRoomCount(state, source) <= MAXIMUM_ROOM_COUNT;
+  return {
+    floorNumber,
+    costCents: EXPANSION_COST_CENTS,
+    available,
+    reason: available ? "available" : "capacity-limit",
+  };
 }
 
 function roomId(targetFloorId: StableId, localPlacementId: StableId): StableId {
@@ -463,27 +493,24 @@ export function previewExpansion(
   floorNumber: number,
 ): ExpansionPreview {
   assertFloorNumber(floorNumber);
-  if (!state.phase4) {
-    return { floorNumber, costCents: EXPANSION_COST_CENTS, available: false, reason: "phase4-required" };
-  }
-  if (state.phase4.floors.some((floor) => floor.floorNumber === floorNumber)) {
-    return { floorNumber, costCents: EXPANSION_COST_CENTS, available: false, reason: "already-purchased" };
-  }
-  const offered = state.phase4.building.availableExpansionFloorNumbers.includes(floorNumber);
-  if (!offered) {
-    return { floorNumber, costCents: EXPANSION_COST_CENTS, available: false, reason: "not-offered" };
-  }
-  const source = firstGuestFloor(state.phase4);
-  if (!source) {
-    return { floorNumber, costCents: EXPANSION_COST_CENTS, available: false, reason: "no-guest-template" };
-  }
-  const available = projectedExpansionRoomCount(state.phase4, source) <= MAXIMUM_ROOM_COUNT;
-  return {
+  return expansionPreviewForSource(
+    state.phase4,
+    state.phase4 ? firstGuestFloor(state.phase4) : undefined,
     floorNumber,
-    costCents: EXPANSION_COST_CENTS,
-    available,
-    reason: available ? "available" : "capacity-limit",
-  };
+  );
+}
+
+export function previewFloorCopy(
+  state: Readonly<ContentScaleState>,
+  sourceFloorId: string,
+  floorNumber: number,
+): ExpansionPreview {
+  assertFloorNumber(floorNumber);
+  const stableSourceFloorId = assertStableId(sourceFloorId);
+  const source = state.floors.find(
+    (floor) => floor.id === stableSourceFloorId && floor.use === "guest",
+  );
+  return expansionPreviewForSource(state, source, floorNumber);
 }
 
 export function copyGuestFloor(
@@ -564,6 +591,19 @@ export function applyExpansion(
   return {
     phase4: copyGuestFloor(state, source.id, floorNumber).phase4,
     costCents: EXPANSION_COST_CENTS,
+  };
+}
+
+export function applyFloorCopy(
+  state: Readonly<ContentScaleState>,
+  sourceFloorId: string,
+  floorNumber: number,
+): FloorCopyApplication {
+  const preview = previewFloorCopy(state, sourceFloorId, floorNumber);
+  if (!preview.available) throw new Error(`该楼层不可扩建：${preview.reason}`);
+  return {
+    ...copyGuestFloor(state, sourceFloorId, floorNumber),
+    costCents: preview.costCents,
   };
 }
 

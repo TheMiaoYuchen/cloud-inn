@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 
+import { assertStableId } from "../domain/building/buildingTypes";
 import {
   projectHotelInventory,
   projectHotelRoomOffers,
@@ -50,7 +51,85 @@ async function masterOnlyOperationsCommands(saveId: string) {
   return { store, commands, state };
 }
 
+function asymmetricCapacityState(
+  saveId: string,
+  firstRoomCount: number,
+  selectedRoomCount: number,
+): { state: GameState; selectedFloorId: string } {
+  const state = createPhase4AcceptanceState(saveId);
+  state.phase4!.building.availableExpansionFloorNumbers = [17];
+  const guestFloors = state.phase4!.floors.filter(({ use }) => use === "guest");
+  const resizeFloor = (floor: typeof guestFloors[number], roomCount: number) => {
+    const canonical = state.phase4!.floorTemplates[floor.templateId];
+    const placements = Array.from({ length: roomCount }, (_, index) => ({
+      ...canonical.roomPlacements[index % canonical.roomPlacements.length],
+      id: assertStableId(`placement:capacity:${floor.id}:${index + 1}`),
+    }));
+    floor.rooms = placements.map((placement) => ({
+      id: assertStableId(`room:${floor.id}:${placement.id}`),
+      floorId: floor.id,
+      localPlacementId: placement.id,
+      roomBlueprintId: placement.roomBlueprintId,
+      committedBuildCostCents: 2_500_000,
+    }));
+    const snapshotId = assertStableId(`template-snapshot:${floor.id}`);
+    state.phase4!.floorTemplates[snapshotId] = {
+      ...structuredClone(canonical),
+      id: snapshotId,
+      roomPlacements: placements,
+    };
+  };
+  resizeFloor(guestFloors[0], firstRoomCount);
+  resizeFloor(guestFloors[1], selectedRoomCount);
+  const untouchedRoomCount = guestFloors
+    .slice(3)
+    .reduce((total, floor) => total + floor.rooms.length, 0);
+  resizeFloor(
+    guestFloors[2],
+    220 - untouchedRoomCount - firstRoomCount - selectedRoomCount,
+  );
+  return { state, selectedFloorId: guestFloors[1].id };
+}
+
 describe("atomic building commands", () => {
+  it("allows a floor copy when the selected source fits even if the first guest floor does not", async () => {
+    const store = new RecordingSavePort();
+    const commands = createGameCommands(store);
+    const { state, selectedFloorId } = asymmetricCapacityState(
+      "building-copy-selected-capacity-fits",
+      30,
+      10,
+    );
+
+    expect(projectHotelRoomOffers(state)).toHaveLength(220);
+
+    const copied = await commands.copyFloor(state, selectedFloorId, 17);
+
+    expect(projectHotelRoomOffers(copied)).toHaveLength(230);
+    expect(copied.phase4!.floors.find(({ floorNumber }) => floorNumber === 17)!.rooms)
+      .toHaveLength(10);
+    expect(store.commits).toBe(1);
+  });
+
+  it("rejects a floor copy with capacity-limit when only the selected source overflows", async () => {
+    const store = new RecordingSavePort();
+    const commands = createGameCommands(store);
+    const { state, selectedFloorId } = asymmetricCapacityState(
+      "building-copy-selected-capacity-overflow",
+      10,
+      30,
+    );
+    const snapshot = structuredClone(state);
+
+    expect(projectHotelRoomOffers(state)).toHaveLength(220);
+
+    await expect(commands.copyFloor(state, selectedFloorId, 17))
+      .rejects.toThrow("capacity-limit");
+    expect(state).toEqual(snapshot);
+    expect(store.commits).toBe(0);
+    expect(await store.load(state.saveId)).toBeNull();
+  });
+
   it("validates authoritative inventory without an operations state before copying", async () => {
     const store = new RecordingSavePort();
     const commands = createGameCommands(store);
