@@ -1,5 +1,7 @@
 import { describe, expect, it } from "vitest";
 
+import { createGameCommands } from "../../application/gameCommands";
+import { InMemorySavePort } from "../../infrastructure/memory/InMemorySavePort";
 import { createOperationsState } from "../operations/createOperationsState";
 import { createRoomMaster, createRoomVariants } from "../design/roomSeries";
 import { CONTEMPORARY_ORIENTAL } from "../design/stylePresets";
@@ -124,7 +126,7 @@ describe("tower hotel", () => {
     legacy.floor.rooms = corridorTemplate.slots.map((slot, index) => ({
       id: `room-${slot.id}`,
       slotId: slot.id,
-      roomBlueprintId: master.id,
+      roomBlueprintId: legacy.roomBlueprint!.id,
       committedBuildCostCents: variant.metrics.buildCostCents + index,
     }));
     legacy.operations!.reputationBps = 7_123;
@@ -183,6 +185,83 @@ describe("tower hotel", () => {
     expect(upgraded.operations?.reputationBps).toBe(7_123);
     expect(upgraded.reports).toBe(reports);
     expect(upgraded.latestReport).toBe(legacy.latestReport);
+  });
+
+  it("migrates the real command-produced blueprint and independent room series references", async () => {
+    const store = new InMemorySavePort();
+    const commands = createGameCommands(store);
+    const cells = [
+      ...createRectangle(0, 0, 8, 9, "bedroom"),
+      ...createRectangle(0, 9, 8, 3, "bathroom"),
+    ];
+    let legacy = await commands.saveRoomSeries(
+      createNewGame("real-phase3-upgrade"),
+      {
+        id: "room-master:independent",
+        name: "独立客房系列",
+        cells,
+        gene: CONTEMPORARY_ORIENTAL.gene,
+      },
+    );
+    legacy = await commands.saveRoomBlueprint(legacy, "基础房型", cells);
+    legacy = await commands.chooseCorridorTemplate(
+      legacy,
+      createCorridorTemplate("complete-ring"),
+    );
+    const variant = legacy.phase2!.roomVariants.find(
+      ({ variantKind }) => variantKind === "twin",
+    )!;
+    const inputs = [
+      { slotId: "north-west", rotation: 0 as const, mirrored: true },
+      { slotId: "north-east", rotation: 90 as const, mirrored: false },
+    ];
+    for (const input of inputs) {
+      legacy = await commands.placeRoomVariant(legacy, {
+        ...input,
+        variantId: variant.id,
+      });
+    }
+    legacy = {
+      ...legacy,
+      operations: {
+        ...createOperationsState(),
+        reputationBps: 7_123,
+        maximumReputationBps: 7_123,
+      },
+    };
+    const snapshot = structuredClone(legacy);
+    const cash = legacy.cashCents;
+    const reports = legacy.reports;
+
+    expect(legacy.roomBlueprint!.id).toBe("room-type-1");
+    expect(legacy.phase2!.roomMaster!.id).toBe("room-master:independent");
+    expect(variant.masterId).toBe("room-master:independent");
+    expect(legacy.floor.rooms.every(
+      ({ roomBlueprintId }) => roomBlueprintId === "room-type-1",
+    )).toBe(true);
+
+    const upgraded = upgradeLegacyToPhase4(legacy);
+    const guestFloor = upgraded.phase4!.floors.find(({ use }) => use === "guest")!;
+    const guestTemplate = upgraded.phase4!.floorTemplates[guestFloor.templateId];
+
+    for (const input of inputs) {
+      expect(guestTemplate.roomPlacements.find(({ id }) => id === input.slotId)).toMatchObject({
+        roomBlueprintId: "room-master:independent",
+        variantId: variant.id,
+        width: input.rotation === 0 ? 4 : 6,
+        height: input.rotation === 0 ? 6 : 4,
+        rotation: input.rotation,
+        mirrored: input.mirrored,
+      });
+      expect(guestFloor.rooms.find(({ localPlacementId }) => localPlacementId === input.slotId)).toMatchObject({
+        roomBlueprintId: "room-master:independent",
+        variantId: variant.id,
+      });
+    }
+    expect(upgraded.cashCents).toBe(cash);
+    expect(upgraded.operations?.reputationBps).toBe(7_123);
+    expect(upgraded.reports).toBe(reports);
+    expect(legacy).toEqual(snapshot);
   });
 
   it("rejects a partial Phase 3 placement join instead of inventing missing transforms", () => {
@@ -258,7 +337,7 @@ describe("tower hotel", () => {
     legacy.floor.rooms = corridorTemplate.slots.map((slot) => ({
       id: `room-${slot.id}`,
       slotId: slot.id,
-      roomBlueprintId: master.id,
+      roomBlueprintId: legacy.roomBlueprint!.id,
       committedBuildCostCents: variants[0].metrics!.buildCostCents,
     }));
 
@@ -299,7 +378,7 @@ describe("tower hotel", () => {
     legacy.floor.rooms = corridorTemplate.slots.map((slot) => ({
       id: `room-${slot.id}`,
       slotId: slot.id,
-      roomBlueprintId: master.id,
+      roomBlueprintId: legacy.roomBlueprint!.id,
       committedBuildCostCents: variants[0].metrics!.buildCostCents,
     }));
 

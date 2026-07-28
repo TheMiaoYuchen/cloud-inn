@@ -258,7 +258,14 @@ function createLegacyGuestTemplate(state: Readonly<GameState>): ScaleFloorTempla
         ({ id }) => id === phase2Placement.variantId,
       );
       if (!slot || !variant) throw new Error(`旧酒店客房 ${room.id} 的二期放置引用无效`);
-      if (variant.masterId !== room.roomBlueprintId || !variant.metrics) {
+      const roomMaster = state.phase2?.roomMaster;
+      if (
+        !roomMaster ||
+        variant.masterId !== roomMaster.id ||
+        !state.roomBlueprint ||
+        room.roomBlueprintId !== state.roomBlueprint.id ||
+        !variant.metrics
+      ) {
         throw new Error(`旧酒店客房 ${room.id} 的二期设计引用无效`);
       }
       const dimensions = phase3VariantDimensions(
@@ -271,7 +278,7 @@ function createLegacyGuestTemplate(state: Readonly<GameState>): ScaleFloorTempla
       }
       return {
         id: stableSlotId,
-        roomBlueprintId: assertStableId(room.roomBlueprintId),
+        roomBlueprintId: assertStableId(roomMaster.id),
         variantId: assertStableId(phase2Placement.variantId),
         anchorX: slot.anchor.x,
         anchorY: slot.anchor.y,
