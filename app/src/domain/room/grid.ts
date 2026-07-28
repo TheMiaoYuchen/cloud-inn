@@ -1,5 +1,10 @@
 import { prototypeConfig } from "../config/prototypeConfig";
 import type { Cell, ZoneKind } from "../game/state";
+import {
+  createSpaceRectangleCells,
+  removeSpaceCellAt,
+  replaceSpaceCell,
+} from "../spaces/spaceEditor";
 
 export type RoomValidation =
   | { ok: true; areaSquareMeters: number }
@@ -18,13 +23,14 @@ function compareCells(a: Cell, b: Cell): number {
 }
 
 function normalizeCells(cells: Cell[]): Cell[] {
-  const cellsByCoordinate = new Map<string, Cell>();
-
-  for (const cell of cells) {
-    cellsByCoordinate.set(coordinateKey(cell.x, cell.y), { ...cell });
-  }
-
-  return [...cellsByCoordinate.values()].sort(compareCells);
+  return cells.reduce(
+    (normalized, cell) => replaceSpaceCell(normalized, {
+      x: cell.x,
+      y: cell.y,
+      zoneId: cell.zone,
+    }),
+    [] as Array<{ x: number; y: number; zoneId: string }>,
+  ).map(({ x, y, zoneId }) => ({ x, y, zone: zoneId as ZoneKind })).sort(compareCells);
 }
 
 export function createRectangle(
@@ -45,15 +51,23 @@ export function createRectangle(
     throw new Error("矩形参数必须是有限整数，宽高不能为负数");
   }
 
-  const cells: Cell[] = [];
-
-  for (let cellY = y; cellY < y + height; cellY += 1) {
-    for (let cellX = x; cellX < x + width; cellX += 1) {
-      cells.push({ x: cellX, y: cellY, zone });
+  try {
+    return createSpaceRectangleCells(
+      { x, y, width, height },
+      zone,
+      Number.MAX_SAFE_INTEGER,
+    )
+      .map(({ x: cellX, y: cellY, zoneId }) => ({
+        x: cellX,
+        y: cellY,
+        zone: zoneId as ZoneKind,
+      }));
+  } catch (error) {
+    if (error instanceof Error && error.message === "矩形参数必须是有限整数且宽高不能为负数") {
+      throw new Error("矩形参数必须是有限整数，宽高不能为负数");
     }
+    throw error;
   }
-
-  return cells;
 }
 
 export function addCell(cells: Cell[], cell: Cell): Cell[] {
@@ -61,9 +75,19 @@ export function addCell(cells: Cell[], cell: Cell): Cell[] {
 }
 
 export function eraseCell(cells: Cell[], x: number, y: number): Cell[] {
-  return normalizeCells(
-    cells.filter((cell) => cell.x !== x || cell.y !== y),
-  );
+  return removeSpaceCellAt(
+    normalizeCells(cells).map(({ x: cellX, y: cellY, zone }) => ({
+      x: cellX,
+      y: cellY,
+      zoneId: zone,
+    })),
+    x,
+    y,
+  ).map(({ x: cellX, y: cellY, zoneId }) => ({
+    x: cellX,
+    y: cellY,
+    zone: zoneId as ZoneKind,
+  }));
 }
 
 export function validateRoomCells(

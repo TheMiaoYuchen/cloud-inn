@@ -1,4 +1,6 @@
-import type { FacilityCatalogEntry } from "../content/contentCatalog";
+import type {
+  SpaceTypeDefinition as CatalogSpaceTypeDefinition,
+} from "../content/contentCatalog";
 import type {
   PublicSpaceBlueprint as CatalogPublicSpaceBlueprint,
   PublicSpaceType,
@@ -6,6 +8,7 @@ import type {
 
 export const SPACE_EDITOR_MAX_CELLS = 4_096;
 export const SPACE_EDITOR_MAX_ITEMS = 512;
+export const SPACE_EDITOR_MAX_OPENINGS = 1_024;
 export const SPACE_EDITOR_HISTORY_LIMIT = 100;
 
 export type SpaceSide = "north" | "east" | "south" | "west";
@@ -55,7 +58,7 @@ export interface SpaceHistory {
 
 export type PublicSpaceBlueprint = CatalogPublicSpaceBlueprint & SpaceOpenings;
 
-export type SpaceTypeDefinition = FacilityCatalogEntry;
+export type SpaceTypeDefinition = CatalogSpaceTypeDefinition;
 
 export interface PlanningIssue {
   code: string;

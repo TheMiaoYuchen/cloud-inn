@@ -4,17 +4,21 @@ import type { Cell } from "../game/state";
 import { createRoomDraft, validateRoomDraft } from "../room/editRoom";
 import {
   addSpaceDoor,
+  addSpaceOpening,
   addSpaceWall,
   addSpaceWindow,
   alignPlacedItems,
   commitSpaceEdit,
   createSpaceDraft,
+  createSpaceRectangleCells,
   createSpaceHistory,
   eraseSpaceCell,
   paintSpaceRectangle,
   paintSpaceCell,
   placeSpaceItem,
   redoSpaceEdit,
+  removeSpaceCellAt,
+  replaceSpaceCell,
   rotatePlacedItem,
   spaceSelectionBounds,
   snapPlacedItem,
@@ -27,6 +31,7 @@ import {
   SPACE_EDITOR_HISTORY_LIMIT,
   SPACE_EDITOR_MAX_CELLS,
   SPACE_EDITOR_MAX_ITEMS,
+  SPACE_EDITOR_MAX_OPENINGS,
 } from "./spaceTypes";
 
 function legacyValidRoomDraft() {
@@ -72,6 +77,28 @@ function diningDraftWithServiceRoute() {
 }
 
 describe("shared space editor compatibility", () => {
+  it("provides neutral geometry kernels for legacy adapters", () => {
+    const rectangle = createSpaceRectangleCells(
+      { x: 1, y: 2, width: 2, height: 2 },
+      "legacy-zone",
+    );
+    const replaced = replaceSpaceCell(rectangle, {
+      x: 1, y: 2, zoneId: "replacement",
+    });
+    expect(replaced).toContainEqual({ x: 1, y: 2, zoneId: "replacement" });
+    expect(removeSpaceCellAt(replaced, 1, 2)).not.toContainEqual(
+      expect.objectContaining({ x: 1, y: 2 }),
+    );
+
+    const draft = paintSpaceRectangle(
+      createSpaceDraft("sky-lobby", 2, 2),
+      { x: 0, y: 0, width: 2, height: 2 },
+      "zone:arrival",
+    );
+    expect(addSpaceOpening(draft, { x: 0, y: 0, side: "north" }, "doors").doors)
+      .toEqual([{ x: 0, y: 0, side: "north" }]);
+  });
+
   it("edits arbitrary zone IDs without weakening room validation", () => {
     const lobby = createSpaceDraft("sky-lobby", 40, 30);
     const next = paintSpaceRectangle(
@@ -133,6 +160,12 @@ describe("shared space editor boundaries", () => {
     expect(() => paintSpaceRectangle(draft, { x: 0, y: 0, width: 1.5, height: 1 }, "zone:fitness")).toThrow(
       "矩形参数必须是有限整数且宽高不能为负数",
     );
+    expect(() => createSpaceRectangleCells({
+      x: Number.MAX_SAFE_INTEGER,
+      y: 0,
+      width: 2,
+      height: 0,
+    }, "zone:fitness")).toThrow("矩形范围超出安全整数边界");
     const full = paintSpaceRectangle(
       draft,
       { x: 0, y: 0, width: SPACE_EDITOR_MAX_CELLS, height: 1 },
@@ -248,6 +281,28 @@ describe("shared space editor boundaries", () => {
     });
   });
 
+  it("treats an absent service route as disconnected", () => {
+    const draft = paintSpaceRectangle(
+      createSpaceDraft("all-day-dining", 4, 4),
+      { x: 0, y: 0, width: 4, height: 4 },
+      "zone:seating",
+    );
+    expect(validateSpaceConnectivity(draft).serviceRouteConnected).toBe(false);
+  });
+
+  it("treats placed-item footprints as blocked service-route cells", () => {
+    let draft = paintSpaceRectangle(
+      createSpaceDraft("all-day-dining", 5, 1),
+      { x: 0, y: 0, width: 5, height: 1 },
+      "zone:service-route",
+    );
+    draft = placeSpaceItem(draft, {
+      id: "table:blocker", catalogItemId: "item:dining-table",
+      x: 2, y: 0, width: 1, height: 1, rotation: 0,
+    });
+    expect(validateSpaceConnectivity(draft).serviceRouteConnected).toBe(false);
+  });
+
   it("collects bounds, collision, duplicate ID, and opening errors from imported drafts", () => {
     const draft = paintSpaceRectangle(
       createSpaceDraft("gym", 2, 2),
@@ -295,11 +350,36 @@ describe("shared space editor boundaries", () => {
     });
   });
 
+  it("bounds imported and newly added openings", () => {
+    const draft = paintSpaceCell(createSpaceDraft("gym", 2, 2), {
+      x: 0, y: 0, zoneId: "zone:fitness",
+    });
+    const openings = Array.from(
+      { length: SPACE_EDITOR_MAX_OPENINGS + 1 },
+      () => ({ x: 0, y: 0, side: "north" as const }),
+    );
+    expect(validateSpaceDraft({ ...draft, walls: openings })).toEqual(expect.objectContaining({
+      ok: false,
+      reasons: expect.arrayContaining(["空间开口数量超过上限"]),
+    }));
+    expect(() => addSpaceOpening(
+      { ...draft, walls: openings.slice(0, SPACE_EDITOR_MAX_OPENINGS) },
+      { x: 0, y: 0, side: "west" },
+      "doors",
+    )).toThrow("空间开口数量超过上限");
+  });
+
   it("bounds history, clears redo on commit, and safely handles empty undo/redo", () => {
     const initial = createSpaceDraft("gym", SPACE_EDITOR_HISTORY_LIMIT + 2, 1);
     let history = createSpaceHistory(initial);
-    expect(undoSpaceEdit(history)).toBe(history);
-    expect(redoSpaceEdit(history)).toBe(history);
+    const emptyUndo = undoSpaceEdit(history);
+    const emptyRedo = redoSpaceEdit(history);
+    expect(emptyUndo).not.toBe(history);
+    expect(emptyRedo).not.toBe(history);
+    emptyUndo.present.cells.push({ x: 0, y: 0, zoneId: "mutated" });
+    emptyRedo.present.doors.push({ x: 0, y: 0, side: "north" });
+    expect(history.present.cells).toEqual([]);
+    expect(history.present.doors).toEqual([]);
     for (let index = 0; index < SPACE_EDITOR_HISTORY_LIMIT + 2; index += 1) {
       history = commitSpaceEdit(history, paintSpaceCell(history.present, {
         x: index, y: 0, zoneId: "zone:fitness",
@@ -311,5 +391,46 @@ describe("shared space editor boundaries", () => {
     expect(branched.future).toEqual([]);
     branched.present.cells[0].zoneId = "mutated";
     expect(branched.past[branched.past.length - 1]?.cells[0]?.zoneId).not.toBe("mutated");
+  });
+
+  it.each([0, -1, 101, 1.5, Number.NaN, Number.POSITIVE_INFINITY])(
+    "rejects invalid history limit %s",
+    (limit) => {
+      expect(() => createSpaceHistory(createSpaceDraft("gym", 2, 2), [], limit)).toThrow(
+        "历史上限必须是 1-100 的安全整数",
+      );
+    },
+  );
+
+  it("slices history to its bound before cloning discarded snapshots", () => {
+    const initial = createSpaceDraft("gym", 2, 2);
+    const discarded = createSpaceDraft("gym", 2, 2);
+    Object.defineProperty(discarded.cells, "map", {
+      value: () => { throw new Error("discarded snapshot was cloned"); },
+    });
+    const retained = Array.from(
+      { length: SPACE_EDITOR_HISTORY_LIMIT + 1 },
+      () => createSpaceDraft("gym", 2, 2),
+    );
+    expect(() => createSpaceHistory(initial, [discarded, ...retained])).not.toThrow();
+  });
+
+  it("bounds selection input and rejects non-safe coordinates before calculating", () => {
+    expect(() => spaceSelectionBounds([{ x: Number.NaN, y: 0 }])).toThrow(
+      "选择坐标必须是安全整数",
+    );
+    expect(() => spaceSelectionBounds(Array.from(
+      { length: SPACE_EDITOR_MAX_CELLS + 1 },
+      (_, x) => ({ x, y: 0 }),
+    ))).toThrow("选择单元数量超过上限");
+  });
+
+  it("rejects unknown runtime alignments", () => {
+    const draft = diningDraftWithServiceRoute();
+    expect(() => alignPlacedItems(
+      draft,
+      ["table:1", "table:2"],
+      "diagonal" as never,
+    )).toThrow("物件对齐方式无效");
   });
 });

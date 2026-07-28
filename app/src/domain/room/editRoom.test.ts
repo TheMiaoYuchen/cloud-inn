@@ -153,6 +153,18 @@ describe("room editing primitives", () => {
     expect(undoRoomEdit(history).present.cells).toHaveLength(5);
     expect(redoRoomEdit(undoRoomEdit(history)).present.cells).toHaveLength(6);
   });
+
+  it("returns deep-independent room histories for empty undo and redo", () => {
+    const history = createRoomHistory(createRoomDraft(cells, 8, 12));
+    const undone = undoRoomEdit(history);
+    const redone = redoRoomEdit(history);
+    expect(undone).not.toBe(history);
+    expect(redone).not.toBe(history);
+    undone.present.cells[0].zone = "bathroom";
+    redone.present.doors.push({ x: 0, y: 0, side: "north" });
+    expect(history.present.cells[0].zone).toBe("bedroom");
+    expect(history.present.doors).toEqual([]);
+  });
 });
 
 describe("room transforms", () => {

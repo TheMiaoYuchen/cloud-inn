@@ -30,7 +30,23 @@ describe("content catalog", () => {
     for (const facility of FACILITY_CATALOG) {
       expect(facility.name.length).toBeGreaterThan(0);
       expect(facility.requiredZoneIds.length).toBeGreaterThan(0);
+      expect(facility.allowedZoneIds.length).toBeGreaterThanOrEqual(
+        facility.requiredZoneIds.length,
+      );
+      expect(facility.requiredItemIds.length).toBeGreaterThan(0);
       expect(facility.permittedItemIds.length).toBeGreaterThan(0);
+      expect(facility.itemRules.map(({ id }) => id)).toEqual(
+        facility.permittedItemIds,
+      );
+      for (const itemRule of facility.itemRules) {
+        expect(itemRule.allowedZoneIds.length).toBeGreaterThan(0);
+        expect(itemRule.allowedZoneIds.every((zoneId) =>
+          facility.allowedZoneIds.includes(zoneId))).toBe(true);
+      }
+      expect(facility.metrics.constructionCellCostCents).toBeGreaterThan(0);
+      expect(facility.metrics.constructionItemCostCents).toBeGreaterThan(0);
+      expect(facility.metrics.baseAppealBps).toBeGreaterThanOrEqual(0);
+      expect(facility.metrics.basePrivacyBps).toBeGreaterThanOrEqual(0);
       expect(facility.constructionCostCents.minimum).toBeGreaterThanOrEqual(0);
       expect(facility.constructionCostCents.maximum).toBeGreaterThanOrEqual(
         facility.constructionCostCents.minimum,
@@ -71,7 +87,10 @@ describe("content catalog", () => {
 
     for (const facility of FACILITY_CATALOG) {
       expect(facility.requiredZoneIds.every((id) => zoneIds.has(id))).toBe(true);
+      expect(facility.allowedZoneIds.every((id) => zoneIds.has(id))).toBe(true);
+      expect(facility.requiredZoneIds.every((id) => facility.allowedZoneIds.includes(id))).toBe(true);
       expect(facility.permittedItemIds.every((id) => itemIds.has(id))).toBe(true);
+      expect(facility.requiredItemIds.every((id) => facility.permittedItemIds.includes(id))).toBe(true);
       for (const prerequisite of facility.unlockRule.all) {
         expect(CONTENT_PROGRESS_SOURCES).toContain(prerequisite.source);
       }
@@ -83,6 +102,10 @@ describe("content catalog", () => {
     expect(Object.isFrozen(FACILITY_CATALOG[0])).toBe(true);
     expect(Object.isFrozen(FACILITY_CATALOG[0].constructionCostCents)).toBe(true);
     expect(Object.isFrozen(FACILITY_CATALOG[0].requiredZoneIds)).toBe(true);
+    expect(Object.isFrozen(FACILITY_CATALOG[0].allowedZoneIds)).toBe(true);
+    expect(Object.isFrozen(FACILITY_CATALOG[0].requiredItemIds)).toBe(true);
+    expect(Object.isFrozen(FACILITY_CATALOG[0].itemRules)).toBe(true);
+    expect(Object.isFrozen(FACILITY_CATALOG[0].metrics)).toBe(true);
     expect(Object.isFrozen(FACILITY_CATALOG[0].unlockRule)).toBe(true);
     expect(Object.isFrozen(FACILITY_CATALOG[0].unlockRule.all)).toBe(true);
     expect(Object.isFrozen(APPROVED_PUBLIC_SPACE_TYPES)).toBe(true);
@@ -207,6 +230,42 @@ describe("content catalog", () => {
     const catalog = structuredClone(FACILITY_CATALOG) as FacilityCatalogEntry[];
     mutate(catalog);
 
+    expect(() => validateContentCatalog(catalog)).toThrow();
+  });
+
+  it("defines every editor and strategy zone in the single reference catalog", () => {
+    expect(ZONE_CATALOG.map(({ id }) => id)).toEqual(expect.arrayContaining([
+      "zone:deck",
+      "zone:service-route",
+      "zone:entrance",
+      "zone:reception",
+      "zone:waiting",
+      "zone:luggage",
+      "zone:elevator-lobby",
+      "zone:treatment",
+      "zone:wet-route",
+      "zone:stage",
+      "zone:meeting-setup",
+      "zone:partition",
+    ]));
+  });
+
+  it.each([
+    ["unknown allowed zone", (entry: any) => { entry.allowedZoneIds = ["zone:missing"]; }],
+    ["required zone outside allowed set", (entry: any) => { entry.allowedZoneIds = ["zone:arrival"]; entry.requiredZoneIds = ["zone:waiting"]; }],
+    ["duplicate allowed zone", (entry: any) => { entry.allowedZoneIds = ["zone:arrival", "zone:arrival"]; }],
+    ["unknown required item", (entry: any) => { entry.requiredItemIds = ["item:missing"]; }],
+    ["required item outside permitted set", (entry: any) => { entry.requiredItemIds = ["item:lounge-seat"]; entry.permittedItemIds = ["item:reception-desk"]; }],
+    ["duplicate required item", (entry: any) => { entry.requiredItemIds = ["item:reception-desk", "item:reception-desk"]; }],
+    ["invalid strategy", (entry: any) => { entry.strategy = "unknown"; }],
+    ["unsafe metric", (entry: any) => { entry.metrics = { constructionCellCostCents: Number.MAX_SAFE_INTEGER + 1, constructionItemCostCents: 1, baseAppealBps: 1, appealPerCellBps: 1, basePrivacyBps: 1, quietZonePrivacyBps: 1 }; }],
+    ["negative item capacity", (entry: any) => { entry.itemRules = [{ id: "item:reception-desk", capacity: -1, appealBps: 1, role: "service" }]; }],
+    ["duplicate item rule", (entry: any) => { const rule = { id: "item:reception-desk", capacity: 0, appealBps: 1, role: "service" }; entry.itemRules = [rule, rule]; }],
+    ["unknown item placement zone", (entry: any) => { entry.itemRules[0].allowedZoneIds = ["zone:missing"]; }],
+    ["item placement zone outside facility", (entry: any) => { entry.itemRules[0].allowedZoneIds = ["zone:retail"]; }],
+  ])("rejects invalid space definition rule: %s", (_label, mutate) => {
+    const catalog = structuredClone(FACILITY_CATALOG) as any[];
+    mutate(catalog[0]);
     expect(() => validateContentCatalog(catalog)).toThrow();
   });
 });

@@ -1,13 +1,19 @@
 import type { Cell, ZoneKind } from "../game/state";
 import {
-  cloneSpaceDraft,
+  addSpaceOpening,
   createSpaceHistory,
+  eraseSpaceCellUnchecked,
   redoSpaceEdit,
+  replaceSpaceCell,
   spaceSelectionBounds,
   undoSpaceEdit,
 } from "../spaces/spaceEditor";
-import type { SpaceDraft, SpaceHistory } from "../spaces/spaceTypes";
-import { addCell, eraseCell, validateRoomCells } from "./grid";
+import {
+  SPACE_EDITOR_HISTORY_LIMIT,
+  type SpaceDraft,
+  type SpaceHistory,
+} from "../spaces/spaceTypes";
+import { validateRoomCells } from "./grid";
 
 export type RoomSide = "north" | "east" | "south" | "west";
 export type Opening = { x: number; y: number; side: RoomSide };
@@ -25,10 +31,6 @@ export type RoomHistory = {
   present: RoomDraft;
   future: RoomDraft[];
 };
-
-function cloneDraft(draft: RoomDraft): RoomDraft {
-  return spaceDraftToRoomDraft(cloneSpaceDraft(roomDraftToSpaceDraft(draft)));
-}
 
 export function roomDraftToSpaceDraft(draft: RoomDraft): SpaceDraft {
   return {
@@ -61,47 +63,23 @@ export function spaceDraftToRoomDraft(draft: SpaceDraft): RoomDraft {
   };
 }
 
-function openingKey(opening: Opening): string {
-  return `${opening.x},${opening.y},${opening.side}`;
-}
-
-function hasCell(draft: RoomDraft, x: number, y: number): boolean {
-  return draft.cells.some((cell) => cell.x === x && cell.y === y);
-}
-
-function boundaryCells(draft: RoomDraft, opening: Opening): boolean {
-  if (!hasCell(draft, opening.x, opening.y)) return false;
-  const neighbors: Record<RoomSide, [number, number]> = {
-    north: [opening.x, opening.y - 1],
-    east: [opening.x + 1, opening.y],
-    south: [opening.x, opening.y + 1],
-    west: [opening.x - 1, opening.y],
-  };
-  const [neighborX, neighborY] = neighbors[opening.side];
-  return !hasCell(draft, neighborX, neighborY);
-}
-
 function addOpening(
   draft: RoomDraft,
   opening: Opening,
   property: "walls" | "doors" | "windows",
 ): RoomDraft {
-  if (!boundaryCells(draft, opening)) {
-    throw new Error("开口必须位于房间边界");
+  try {
+    return spaceDraftToRoomDraft(addSpaceOpening(
+      roomDraftToSpaceDraft(draft),
+      opening,
+      property,
+    ));
+  } catch (error) {
+    if (error instanceof Error && error.message === "开口必须位于空间边界") {
+      throw new Error("开口必须位于房间边界");
+    }
+    throw error;
   }
-  const key = openingKey(opening);
-  const hasOtherOpening = (["walls", "doors", "windows"] as const)
-    .filter((candidate) => candidate !== property)
-    .some((candidate) =>
-      draft[candidate].some((entry) => openingKey(entry) === key),
-    );
-  if (hasOtherOpening) {
-    throw new Error("这条边已有其他开口");
-  }
-  if (draft[property].some((entry) => openingKey(entry) === openingKey(opening))) {
-    return cloneDraft(draft);
-  }
-  return { ...cloneDraft(draft), [property]: [...draft[property], { ...opening }] };
 }
 
 export function createRoomDraft(
@@ -120,16 +98,21 @@ export function createRoomDraft(
 }
 
 export function paintRoomCell(draft: RoomDraft, cell: Cell): RoomDraft {
-  return { ...cloneDraft(draft), cells: addCell(draft.cells, { ...cell }) };
+  const space = roomDraftToSpaceDraft(draft);
+  space.cells = replaceSpaceCell(space.cells, {
+    x: cell.x,
+    y: cell.y,
+    zoneId: cell.zone,
+  });
+  return spaceDraftToRoomDraft(space);
 }
 
 export function eraseRoomCell(draft: RoomDraft, x: number, y: number): RoomDraft {
-  const next = cloneDraft(draft);
-  next.cells = eraseCell(draft.cells, x, y);
-  for (const property of ["walls", "doors", "windows"] as const) {
-    next[property] = next[property].filter((opening) => opening.x !== x || opening.y !== y);
-  }
-  return next;
+  return spaceDraftToRoomDraft(eraseSpaceCellUnchecked(
+    roomDraftToSpaceDraft(draft),
+    x,
+    y,
+  ));
 }
 
 export function addWall(draft: RoomDraft, opening: Opening): RoomDraft {
@@ -156,12 +139,18 @@ export function validateRoomDraft(draft: RoomDraft) {
   const openings = [...draft.walls, ...draft.doors, ...draft.windows];
   const openingKeys = new Set<string>();
   for (const opening of openings) {
-    const key = openingKey(opening);
+    const key = `${opening.x},${opening.y},${opening.side}`;
     if (openingKeys.has(key)) {
       return { ok: false as const, reason: "同一房间边只能设置一个开口" };
     }
     openingKeys.add(key);
-    if (!boundaryCells(draft, opening)) {
+    try {
+      addSpaceOpening(
+        { ...roomDraftToSpaceDraft(draft), walls: [], doors: [], windows: [] },
+        opening,
+        "doors",
+      );
+    } catch {
       return { ok: false as const, reason: "开口必须位于房间边界" };
     }
   }
@@ -169,26 +158,22 @@ export function validateRoomDraft(draft: RoomDraft) {
 }
 
 export function createRoomHistory(initial: RoomDraft, edits: RoomDraft[] = []): RoomHistory {
+  const boundedEdits = edits.slice(-(SPACE_EDITOR_HISTORY_LIMIT + 1));
   return spaceHistoryToRoomHistory(createSpaceHistory(
     roomDraftToSpaceDraft(initial),
-    edits.map(roomDraftToSpaceDraft),
-    Number.MAX_SAFE_INTEGER,
+    boundedEdits.map(roomDraftToSpaceDraft),
   ));
 }
 
 export function undoRoomEdit(history: RoomHistory): RoomHistory {
-  if (history.past.length === 0) return history;
   return spaceHistoryToRoomHistory(undoSpaceEdit(
     roomHistoryToSpaceHistory(history),
-    Number.MAX_SAFE_INTEGER,
   ));
 }
 
 export function redoRoomEdit(history: RoomHistory): RoomHistory {
-  if (history.future.length === 0) return history;
   return spaceHistoryToRoomHistory(redoSpaceEdit(
     roomHistoryToSpaceHistory(history),
-    Number.MAX_SAFE_INTEGER,
   ));
 }
 
