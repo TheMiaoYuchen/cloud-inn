@@ -995,7 +995,7 @@ The smoke config uses product name `Cloud Inn Phase 4 Smoke` and bundle identifi
 
 Create a temporary owned worktree at the Phase 3 final commit. Because that old commit does not contain the new smoke config, invoke its build with the absolute path to `app/src-tauri/tauri.phase4-smoke.conf.json` in the owned Phase 4 worktree as a read-only configuration input. Build and launch the Phase 3 debug app with that smoke bundle identifier and produce a real Phase 3 `save-1` SQLite database under the isolated smoke app-data path. Quit, record its revision and SHA-256, and copy that one database to a timestamped `/tmp/cloud-inn-phase3-save-*` backup. Remove only this owned temporary worktree after verification. Then launch the final Phase 4 smoke app against the same isolated row, initialize Phase 4, quit/reopen, and verify the old room/operations history plus new `phase4` state and revision. Verify 120-room tower navigation, facility operations, flow rendering or static fallback, one settlement, quit/reopen restoration and the required RSS memory delta. Rust tests separately prove failed legacy upgrade/commit leaves the old SQLite row and revision unchanged. Accurately mark any unperformed check rather than inferring it.
 
-- [ ] **Step 6: Request final independent reviews**
+- [x] **Step 6: Request final independent reviews**
 
 Dispatch one specification reviewer against the approved Phase 4 design and this plan, then one whole-diff code-quality reviewer. Resolve every Critical/Important finding with a new RED -> GREEN regression, re-run focused gates, rebuild native bundles and re-run the production-preview performance spec after the last code fix, then repeat review until both approve.
 

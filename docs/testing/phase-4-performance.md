@@ -12,11 +12,11 @@ Measured on 2026-07-29 on the local macOS development machine. Budgets are fixed
 | Browser save | < 1,000 ms | 4.64 ms |
 | Browser load | < 1,000 ms | 1.15 ms |
 | Projected sprites | <= 150 | 41 |
-| RAF delta p95 after warmup | <= 33 ms | 9.80 ms (1,142 samples) |
-| Pixi animation evidence | Positive traveled distance | 1,204 ticks; 68,154.13 world units; `107.44,288.69` to `105.38,286.84` |
-| WebKit process RSS delta | < 200 MB | Pending Task 13 native smoke |
+| RAF delta p95 after warmup | <= 33 ms | 9.20 ms (1,141 samples) |
+| Pixi animation evidence | Positive traveled distance | 1,202 ticks; 68,163.28 world units; `107.46,288.71` to `105.78,287.20` |
+| WebKit process RSS delta | < 200 MB | 1.30 MiB (Task 13); final-build maximum RSS 118.89 MiB |
 
-Playwright does not expose a reliable WebKit renderer-process RSS metric. The browser gate therefore does not substitute JavaScript heap estimates for process RSS; the native measurement remains explicitly pending for Task 13.
+Playwright does not expose a reliable WebKit renderer-process RSS metric, so the Task 13 native smoke measured the main process directly: 114,496 KB at the four-room baseline and 115,824 KB at the 120-room fixture, a 1.30 MiB delta. After the final-review fixes, the exact-SHA rebuild was reopened on the same 120-room fixture and measured 121,744 KB (118.89 MiB) total RSS. Because the entire final-build process remained below the 200 MB delta budget, the final rebuild also passes without rewriting the isolated database to recreate the baseline.
 
 ## Reproduction
 
