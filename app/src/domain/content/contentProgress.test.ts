@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { FACILITY_CATALOG, ITEM_CATALOG } from "./contentCatalog";
-import { FACILITY_OFFERINGS, MENU_STRUCTURES } from "../facilities/facilityOperations";
+import { MENU_STRUCTURES } from "../facilities/facilityOperations";
 import { createPhase4AcceptanceState } from "../../testing/phase4Fixtures";
 import { projectContentProgress } from "./contentProgress";
 
@@ -56,22 +56,6 @@ describe("content compendium progress", () => {
       .toBe(true);
     expect(projection.menus.find(({ id }) => id === "menu:bar-classics")?.unlocked)
       .toBe(false);
-  });
-
-  it("projects signature offerings in catalog order with facility-backed availability", () => {
-    const state = createPhase4AcceptanceState("content-offerings");
-    state.phase4!.catalogProgress.unlockedIds = [
-      FACILITY_CATALOG.find(({ type }) => type === "spa")!.id,
-    ];
-
-    const projection = projectContentProgress(state);
-
-    expect(projection.offerings.map(({ id }) => id)).toEqual(
-      FACILITY_OFFERINGS.map(({ id }) => id),
-    );
-    expect(projection.offerings.find(({ id }) => id === "service:cloud-restoration")?.unlocked)
-      .toBe(true);
-    expect(projection.offerings.find(({ id }) => id === "drink:cloud-negroni")?.unlocked)
-      .toBe(false);
+    expect(Object.keys(projection)).toEqual(["facilities", "items", "menus"]);
   });
 });

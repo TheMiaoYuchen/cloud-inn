@@ -21,7 +21,7 @@ const EXPANSION_REASON_LABELS: Record<string, string> = {
   "no-guest-template": "请先准备一个客房标准楼层",
 };
 
-export function BuildingOverviewPage() {
+export function BuildingOverviewPage({ requestedFloorId = null }: { requestedFloorId?: string | null }) {
   const { state, building, loading, commandPending, error, commands } = useGame();
   const saveId = state?.saveId;
   const [selectedFloorEvidence, setSelectedFloorEvidence] = useState<{ saveId: string; floorId: string }>();
@@ -44,10 +44,19 @@ export function BuildingOverviewPage() {
       setSelectedFloorEvidence(undefined);
       return;
     }
-    if (!selectedFloorId || !building.floorById.has(selectedFloorId)) {
-      setSelectedFloorEvidence({ saveId, floorId: building.floors[0].floor.id });
+    const selectedFloor = selectedFloorId ? building.floorById.get(selectedFloorId) : undefined;
+    if (!selectedFloor?.floor.purchased) {
+      const requestedFloor = requestedFloorId
+        ? building.floorById.get(requestedFloorId)
+        : undefined;
+      const fallbackFloor = requestedFloor?.floor.purchased
+        ? requestedFloor
+        : building.floors.find(({ floor }) => floor.purchased);
+      setSelectedFloorEvidence(fallbackFloor
+        ? { saveId, floorId: fallbackFloor.floor.id }
+        : undefined);
     }
-  }, [building, saveId, selectedFloorId]);
+  }, [building, requestedFloorId, saveId, selectedFloorId]);
 
   useEffect(() => {
     setExpansionEvidence(undefined);

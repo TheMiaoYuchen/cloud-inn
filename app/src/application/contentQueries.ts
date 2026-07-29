@@ -58,19 +58,16 @@ export function projectDesignLibrary(state: Readonly<GameState>): DesignLibraryP
   ).filter(({ blueprintId: candidate }) => candidate === blueprintId).map(({ floorId }) => floorId));
 
   const entries: DesignLibraryEntry[] = [];
+  const designIds = new Set<string>();
+  const addRoomDesign = (design: { id: string; name: string }, kind: DesignLibraryEntry["kind"]) => {
+    if (designIds.has(design.id)) return;
+    designIds.add(design.id);
+    entries.push({ id: design.id, name: design.name, kind, usageFloorIds: roomUsage(design.id) });
+  };
   const master = state.phase2?.roomMaster;
-  if (master) entries.push({
-    id: master.id,
-    name: master.name,
-    kind: "room-series",
-    usageFloorIds: roomUsage(master.id),
-  });
-  for (const variant of state.phase2?.roomVariants ?? []) entries.push({
-    id: variant.id,
-    name: variant.name,
-    kind: "room-variant",
-    usageFloorIds: roomUsage(variant.id),
-  });
+  if (master) addRoomDesign(master, "room-series");
+  for (const variant of state.phase2?.roomVariants ?? []) addRoomDesign(variant, "room-variant");
+  if (state.roomBlueprint) addRoomDesign(state.roomBlueprint, "room-series");
   for (const blueprint of Object.values(state.phase4.spaceBlueprints)) entries.push({
     id: blueprint.id,
     name: blueprint.name,
@@ -99,14 +96,22 @@ export function projectMarketCompendium(state: Readonly<GameState>): MarketCompe
   return {
     entries: GUEST_SEGMENTS.map((segment): MarketEntryProjection => {
       const discovered = discoveredIds.has(`market:${segment.id}` as StableId);
-      const facilityInterests = FACILITY_CATALOG.map((facility) => {
+      const discoveredNeeds = (state.operations?.discoveredNeeds ?? [])
+        .filter(({ segmentId }) => segmentId === segment.id)
+        .map(({ kind, discoveredDay, strengthBps }) => ({ kind, discoveredDay, strengthBps }));
+      const hasReportEvidence = reports.some((report) =>
+        report.segments.some(({ segmentId }) => segmentId === segment.id)
+        || (report.lostBookings ?? []).some(({ segmentId }) => segmentId === segment.id)
+        || (report.reviews ?? []).some(({ segmentId }) => segmentId === segment.id));
+      const facilityInterests = discovered || discoveredNeeds.length > 0 || hasReportEvidence
+        ? FACILITY_CATALOG.map((facility) => {
         const values = Object.values(state.phase4?.facilities ?? {})
           .filter(({ type }) => type === facility.type)
           .map(({ segmentInputs }) => segmentInputs[segment.id]?.appealBps ?? 0);
         return { type: facility.type, name: facility.name, appealBps: Math.max(0, ...values) };
       }).filter(({ appealBps }) => appealBps > 0)
         .sort((left, right) => right.appealBps - left.appealBps)
-        .slice(0, 3);
+        .slice(0, 3) : [];
       const evidence = reports.flatMap((report): MarketEvidence[] => {
         const result = report.segments.find(({ segmentId }) => segmentId === segment.id);
         return [
@@ -130,9 +135,7 @@ export function projectMarketCompendium(state: Readonly<GameState>): MarketCompe
           .filter(([, weight]) => weight >= 1_000)
           .sort((left, right) => right[1] - left[1])
           .map(([key, weight]) => `${PREFERENCE_LABELS[key] ?? key} ${weight / 100}%`) : [],
-        discoveredNeeds: (state.operations?.discoveredNeeds ?? [])
-          .filter(({ segmentId }) => segmentId === segment.id)
-          .map(({ kind, discoveredDay, strengthBps }) => ({ kind, discoveredDay, strengthBps })),
+        discoveredNeeds,
         facilityInterests,
         evidence,
       };

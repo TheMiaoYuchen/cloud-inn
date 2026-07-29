@@ -1,4 +1,4 @@
-import { createHashRouter, Navigate } from "react-router-dom";
+import { createHashRouter, Navigate, useSearchParams } from "react-router-dom";
 import type { ReactNode } from "react";
 import { CanvasPage } from "../pages/CanvasPage";
 import { HotelOverviewPage } from "../pages/HotelOverviewPage";
@@ -26,6 +26,11 @@ function Phase4Route({ children }: { children: ReactNode }) {
   return children;
 }
 
+function BuildingOverviewRoute() {
+  const [searchParams] = useSearchParams();
+  return <BuildingOverviewPage requestedFloorId={searchParams.get("floorId")} />;
+}
+
 export function createAppRouter() {
   return createHashRouter([
     {
@@ -38,7 +43,7 @@ export function createAppRouter() {
         { path: "design/variants", element: <LegacyDesignRoute><RoomVariantPage /></LegacyDesignRoute> },
         { path: "floor-plan", element: <LegacyDesignRoute><FloorPlanningPage /></LegacyDesignRoute> },
         { path: "floor", element: <LegacyDesignRoute><FloorPlanningPage /></LegacyDesignRoute> },
-        { path: "building", element: <BuildingOverviewPage /> },
+        { path: "building", element: <BuildingOverviewRoute /> },
         { path: "tower", element: <Navigate to="/building" replace /> },
         { path: "public-spaces/design", element: <Phase4Route><PublicSpaceDesignPage /></Phase4Route> },
         { path: "compendium", element: <Phase4Route><ContentCompendiumPage /></Phase4Route> },

@@ -15,9 +15,8 @@ function ContentPanel({ projection }: { projection: ReturnType<typeof projectCom
       <h3>{entry.name}</h3><p>{entry.unlocked ? "已解锁" : `尚未解锁：${entry.lockedReasons.join("；")}`}</p>
       <ul>{entry.effects.map((effect) => <li key={effect}>{effect}</li>)}</ul>
     </article>)}</section>
-    <section><h2>物件目录</h2>{projection.items.map((entry) => <article key={entry.id}><h3>{entry.name}</h3><p>{entry.unlocked ? "可用" : `尚未解锁：${entry.lockedReasons.join("；")}`}</p></article>)}</section>
-    <section><h2>菜单目录</h2>{projection.menus.map((entry) => <article key={entry.id}><h3>{entry.name}</h3><p>{entry.unlocked ? "可用" : `尚未解锁：${entry.lockedReasons.join("；")}`}</p></article>)}</section>
-    <section><h2>特色产品</h2>{projection.offerings.map((entry) => <article key={entry.id}><h3>{entry.name}</h3><p>{entry.unlocked ? "可开发" : `尚未解锁：${entry.lockedReasons.join("；")}`}</p><p>{entry.effects.join("；")}</p></article>)}</section>
+    <section><h2>物件目录</h2>{projection.items.map((entry) => <article key={entry.id}><h3>{entry.name}</h3><p>{entry.unlocked ? "可用" : `尚未解锁：${entry.lockedReasons.join("；")}`}</p><p>{entry.effects.join("；")}</p></article>)}</section>
+    <section><h2>菜单目录</h2>{projection.menus.map((entry) => <article key={entry.id}><h3>{entry.name}</h3><p>{entry.unlocked ? "可用" : `尚未解锁：${entry.lockedReasons.join("；")}`}</p><p>{entry.effects.join("；")}</p></article>)}</section>
   </div>;
 }
 
@@ -64,7 +63,12 @@ export function ContentCompendiumPage() {
     <div role="tablist" aria-label="酒店百科分类">{TABS.map(({ id, label: tabLabel }) => <button
       key={id} type="button" role="tab" aria-selected={tab === id}
       aria-controls={`compendium-panel-${id}`} id={`compendium-tab-${id}`}
-      onClick={() => setParams(id === "content" ? {} : { tab: id })}
+      onClick={() => setParams((current) => {
+        const next = new URLSearchParams(current);
+        if (id === "content") next.delete("tab");
+        else next.set("tab", id);
+        return next;
+      })}
     >{tabLabel}</button>)}</div>
     <section role="tabpanel" aria-label={label} id={`compendium-panel-${tab}`} aria-labelledby={`compendium-tab-${tab}`}>
       {tab === "content" ? <ContentPanel projection={projection.content} />

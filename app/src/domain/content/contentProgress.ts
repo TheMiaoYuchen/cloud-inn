@@ -6,9 +6,7 @@ import {
   type FacilityCatalogEntry,
 } from "./contentCatalog";
 import {
-  FACILITY_OFFERINGS,
   MENU_STRUCTURES,
-  type CatalogFacilityOffering,
   type FacilityMenuStructure,
 } from "../facilities/facilityOperations";
 import { GUEST_SEGMENTS } from "../operations/segmentCatalog";
@@ -30,7 +28,6 @@ export interface ContentProgressProjection {
   facilities: readonly FacilityProgressEntry[];
   items: readonly ContentProgressEntry[];
   menus: readonly ContentProgressEntry[];
-  offerings: readonly ContentProgressEntry[];
 }
 
 function prerequisiteReason(prerequisite: ContentUnlockPrerequisite): string {
@@ -94,12 +91,6 @@ function supportingFacilitiesForMenu(
   return FACILITY_CATALOG.filter(({ type }) => menu.facilityTypes.includes(type));
 }
 
-function supportingFacilitiesForOffering(
-  offering: Readonly<CatalogFacilityOffering>,
-): readonly Readonly<FacilityCatalogEntry>[] {
-  return FACILITY_CATALOG.filter(({ type }) => offering.facilityTypes.includes(type));
-}
-
 function dependentEntry(
   id: string,
   name: string,
@@ -155,12 +146,5 @@ export function projectContentProgress(
     unlockedTypes,
     "为适用餐饮设施提供菜单结构",
   ));
-  const offerings = FACILITY_OFFERINGS.map((entry) => dependentEntry(
-    entry.id,
-    entry.name,
-    supportingFacilitiesForOffering(entry),
-    unlockedTypes,
-    `开发成本 ¥${entry.developmentCostCents / 100}，可提升目标客群吸引力与声誉`,
-  ));
-  return { facilities, items, menus, offerings };
+  return { facilities, items, menus };
 }

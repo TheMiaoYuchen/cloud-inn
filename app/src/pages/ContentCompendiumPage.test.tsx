@@ -29,6 +29,11 @@ describe("content compendium page", () => {
       "内容目录", "设计系列", "市场洞察",
     ]);
     expect(screen.getAllByText(/尚未解锁/).length).toBeGreaterThan(0);
+    expect(screen.getAllByText("用于公共空间布置，并参与容量或体验评估").length)
+      .toBeGreaterThan(0);
+    expect(screen.getAllByText("为适用餐饮设施提供菜单结构").length)
+      .toBeGreaterThan(0);
+    expect(screen.queryByRole("heading", { name: "特色产品" })).not.toBeInTheDocument();
 
     await user.click(screen.getByRole("tab", { name: "设计系列" }));
     expect(window.location.hash).toBe("#/compendium?tab=design");
@@ -52,6 +57,35 @@ describe("content compendium page", () => {
     expect(screen.getByRole("link", { name: "酒店百科" })).toHaveAttribute(
       "aria-current", "page",
     );
+  });
+
+  it("preserves unrelated URL parameters while changing only the selected tab", async () => {
+    window.location.hash = "#/compendium?source=report&tab=market";
+    const user = userEvent.setup();
+    render(<App savePort={new ReadOnlyPort(createPhase4AcceptanceState("url-preservation"))} />);
+    await screen.findByRole("heading", { name: "酒店百科" });
+
+    await user.click(screen.getByRole("tab", { name: "设计系列" }));
+    expect(window.location.hash).toBe("#/compendium?source=report&tab=design");
+
+    await user.click(screen.getByRole("tab", { name: "内容目录" }));
+    expect(window.location.hash).toBe("#/compendium?source=report");
+  });
+
+  it("opens the exact production floor linked from a saved design", async () => {
+    const state = createPhase4AcceptanceState("usage-floor-link");
+    const targetFloor = state.phase4!.floors.find(({ rooms }) => rooms.length > 0)!;
+    window.location.hash = "#/compendium?tab=design";
+    const user = userEvent.setup();
+    render(<App savePort={new ReadOnlyPort(state)} />);
+
+    await user.click(await screen.findByRole("link", {
+      name: `查看${targetFloor.floorNumber}层`,
+    }));
+
+    expect(await screen.findByRole("region", {
+      name: `${targetFloor.floorNumber}层平面工作区`,
+    })).toBeInTheDocument();
   });
 
   it("guards the compendium route for legacy saves", async () => {

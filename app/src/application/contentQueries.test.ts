@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { FACILITY_CATALOG } from "../domain/content/contentCatalog";
+import { assertStableId } from "../domain/building/buildingTypes";
 import { createOperationsState } from "../domain/operations/createOperationsState";
 import { GUEST_SEGMENT_IDS } from "../domain/operations/operationsTypes";
 import { createPhase4AcceptanceState } from "../testing/phase4Fixtures";
@@ -34,6 +35,30 @@ describe("read-only content compendium queries", () => {
       expect.objectContaining({ kind: "room-series", id: state.phase2!.roomMaster!.id }),
       expect.objectContaining({ kind: "public-space" }),
     ]));
+  });
+
+  it("includes an independently authoritative room blueprint once with exact usages", () => {
+    const state = createPhase4AcceptanceState("independent-room-blueprint");
+    const floor = state.phase4!.floors.find(({ rooms }) => rooms.length > 0)!;
+    state.roomBlueprint = {
+      ...structuredClone(state.phase2!.roomMaster!),
+      id: assertStableId("room-blueprint:independent"),
+      name: "Independent Room",
+    };
+    floor.rooms[0].roomBlueprintId = assertStableId(state.roomBlueprint.id);
+
+    const library = projectDesignLibrary(state);
+
+    expect(library.entries.filter(({ id }) => id === state.roomBlueprint!.id)).toEqual([{
+      id: state.roomBlueprint.id,
+      name: "Independent Room",
+      kind: "room-series",
+      usageFloorIds: [floor.id],
+    }]);
+
+    state.roomBlueprint = structuredClone(state.phase2!.roomMaster!);
+    expect(projectDesignLibrary(state).entries.filter(({ id }) =>
+      id === state.phase2!.roomMaster!.id)).toHaveLength(1);
   });
 
   it("keeps facilities in catalog order and reports real unlock state", () => {
@@ -102,11 +127,15 @@ describe("read-only content compendium queries", () => {
   it("keeps undiscovered market details explicitly incomplete", () => {
     const state = createPhase4AcceptanceState("market-locked");
     state.phase4!.catalogProgress.discoveredMarketEntryIds = [];
+    state.operations = createOperationsState("casual");
+    state.operations.discoveredNeeds = [];
+    state.operations.dailyReports = [];
 
     const market = projectMarketCompendium(state);
 
     expect(market.entries).toHaveLength(6);
-    expect(market.entries.every(({ discovered, hardNeeds, preferences }) =>
-      !discovered && hardNeeds.length === 0 && preferences.length === 0)).toBe(true);
+    expect(market.entries.every(({ discovered, hardNeeds, preferences, facilityInterests }) =>
+      !discovered && hardNeeds.length === 0 && preferences.length === 0
+      && facilityInterests.length === 0)).toBe(true);
   });
 });
