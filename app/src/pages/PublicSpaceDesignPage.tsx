@@ -1,7 +1,8 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { Navigate } from "react-router-dom";
 import { FACILITY_CATALOG, ITEM_CATALOG, ZONE_CATALOG } from "../domain/content/contentCatalog";
 import type { PublicSpaceType } from "../domain/facilities/facilityTypes";
+import { projectPublicSpacePlacement } from "../application/publicSpaceGraph";
 import {
   addSpaceDoor,
   addSpaceWall,
@@ -14,6 +15,10 @@ import {
   paintSpaceRectangle,
   placeSpaceItem,
   redoSpaceEdit,
+  removePlacedItem,
+  removeSpaceOpening,
+  resizePlacedItem,
+  rotatePlacedItem,
   undoSpaceEdit,
 } from "../domain/spaces/spaceEditor";
 import type { SpaceDraft, SpaceOpening, SpaceSide } from "../domain/spaces/spaceTypes";
@@ -39,6 +44,39 @@ function blueprintFor(draft: SpaceDraft, id: string, name: string, cost: number)
   };
 }
 
+function SelectedItemInspector({ draft, itemId, edit, remove }: {
+  draft: SpaceDraft;
+  itemId: string;
+  edit: (operation: () => SpaceDraft) => void;
+  remove: () => void;
+}) {
+  const item = draft.items.find(({ id }) => id === itemId);
+  const [width, setWidth] = useState(item ? String(item.width) : "");
+  const [height, setHeight] = useState(item ? String(item.height) : "");
+  useEffect(() => {
+    setWidth(item ? String(item.width) : "");
+    setHeight(item ? String(item.height) : "");
+  }, [item?.id, item?.width, item?.height]);
+  if (!item) return null;
+  const resize = (nextWidth: string, nextHeight: string) => {
+    const numericWidth = Number(nextWidth);
+    const numericHeight = Number(nextHeight);
+    if (Number.isSafeInteger(numericWidth) && numericWidth > 0 &&
+        Number.isSafeInteger(numericHeight) && numericHeight > 0) {
+      edit(() => resizePlacedItem(draft, item.id, numericWidth, numericHeight));
+    }
+  };
+  return <section className="space-selected-object" aria-label="所选物件属性"><h3>所选物件</h3>
+    <label>物件目录<input aria-label="物件目录" readOnly value={item.catalogItemId} /></label>
+    <label>物件类型<input aria-label="物件类型" readOnly value={ITEM_CATALOG.find(({ id }) => id === item.catalogItemId)?.name ?? item.catalogItemId} /></label>
+    <label>物件位置<input aria-label="物件位置" readOnly value={`${item.x},${item.y}`} /></label>
+    <label>物件宽度<input aria-label="物件宽度" type="number" min="1" value={width} onChange={(event) => { setWidth(event.target.value); resize(event.target.value, height); }} /></label>
+    <label>物件高度<input aria-label="物件高度" type="number" min="1" value={height} onChange={(event) => { setHeight(event.target.value); resize(width, event.target.value); }} /></label>
+    <label>物件旋转<select aria-label="物件旋转" value={item.rotation} onChange={(event) => edit(() => rotatePlacedItem(draft, item.id, Number(event.target.value) as 0 | 90 | 180 | 270))}>{([0, 90, 180, 270] as const).map((rotation) => <option key={rotation} value={rotation}>{rotation}°</option>)}</select></label>
+    <button type="button" onClick={remove}>删除所选物件</button>
+  </section>;
+}
+
 export function PublicSpaceDesignPage() {
   const { state, loading, commandPending, error, commands } = useGame();
   const initialType = FACILITY_CATALOG[0].type;
@@ -55,21 +93,25 @@ export function PublicSpaceDesignPage() {
   const [notice, setNotice] = useState("");
   const [editorError, setEditorError] = useState("");
   const [rectangleAnchor, setRectangleAnchor] = useState<{ x: number; y: number }>();
+  const [selectedItemId, setSelectedItemId] = useState("");
+  const [selectedOpening, setSelectedOpening] = useState<{
+    property: "walls" | "doors" | "windows";
+    opening: SpaceOpening;
+  }>();
   const draft = history.present;
   const definition = FACILITY_CATALOG.find(({ type }) => type === draft.type)!;
   const validation = useMemo(() => validatePublicSpace(draft), [draft]);
-  const eligibleFloors = state?.phase4?.floors.filter((floor) => {
-    if (!floor.purchased || (floor.use !== "facility" && !(floor.use === "sky-lobby" && draft.type === "sky-lobby"))) return false;
-    const template = state.phase4!.floorTemplates[`template-snapshot:${floor.id}`] ?? state.phase4!.floorTemplates[floor.templateId];
-    return template?.publicSpaceSlots.some(({ permittedTypes }) => permittedTypes.includes(draft.type));
-  }) ?? [];
-  const selectedFloor = eligibleFloors.find(({ id }) => id === floorId);
-  const selectedTemplate = selectedFloor
-    ? state?.phase4?.floorTemplates[`template-snapshot:${selectedFloor.id}`] ?? state?.phase4?.floorTemplates[selectedFloor.templateId]
-    : undefined;
-  const placementSlots = selectedTemplate?.publicSpaceSlots
-    .filter(({ permittedTypes }) => permittedTypes.includes(draft.type))
-    .sort((left, right) => left.id.localeCompare(right.id)) ?? [];
+  const placementOptions = useMemo(() => {
+    if (!state?.phase4) return [];
+    return state.phase4.floors.flatMap((floor) => {
+      try {
+        return [projectPublicSpacePlacement(state.phase4!, floor.id, draft.type)];
+      } catch {
+        return [];
+      }
+    });
+  }, [state, draft.type]);
+  const selectedPlacement = placementOptions.find(({ floor }) => floor.id === floorId);
 
   if (loading) return <main className="page"><p role="status">正在加载公共空间…</p></main>;
   if (!state?.phase4) return <Navigate to="/" replace />;
@@ -85,12 +127,21 @@ export function PublicSpaceDesignPage() {
     setNotice("");
     setEditorError("");
     setRectangleAnchor(undefined);
+    setSelectedItemId("");
+    setSelectedOpening(undefined);
   };
   const edit = (next: SpaceDraft) => {
     setHistory((current) => commitSpaceEdit(current, next));
     setShowIssues(false);
     setNotice("");
     setEditorError("");
+  };
+  const editSafely = (operation: () => SpaceDraft) => {
+    try {
+      edit(operation());
+    } catch (failure) {
+      setEditorError(failure instanceof Error ? failure.message : "空间编辑未完成");
+    }
   };
   const applyCell = (x: number, y: number) => {
     try {
@@ -109,18 +160,41 @@ export function PublicSpaceDesignPage() {
         }, zoneId));
         setRectangleAnchor(undefined);
       }
-      else if (tool === "item" && itemId) edit(placeSpaceItem(draft, {
-        id: `placed-item:${draft.items.length + 1}`,
+      else if (tool === "item" && itemId) {
+        let nextIndex = draft.items.length + 1;
+        while (draft.items.some(({ id }) => id === `placed-item:${nextIndex}`)) nextIndex += 1;
+        const placedId = `placed-item:${nextIndex}`;
+        edit(placeSpaceItem(draft, {
+        id: placedId,
         catalogItemId: itemId,
         x, y, width: 1, height: 1, rotation: 0,
-      }));
+        }));
+        setSelectedItemId(placedId);
+        setSelectedOpening(undefined);
+      }
       else if (tool === "opening") {
         const opening: SpaceOpening = { x, y, side: openingSide };
         edit(openingType === "walls" ? addSpaceWall(draft, opening) : openingType === "windows" ? addSpaceWindow(draft, opening) : addSpaceDoor(draft, opening));
+        setSelectedOpening({ property: openingType, opening });
+        setSelectedItemId("");
       }
     } catch (failure) {
       setEditorError(failure instanceof Error ? failure.message : "空间编辑未完成");
       setShowIssues(true);
+    }
+  };
+  const chooseFloor = (nextFloorId: string) => {
+    setFloorId(nextFloorId);
+    setSelectedItemId("");
+    setSelectedOpening(undefined);
+    setEditorError("");
+    const placement = placementOptions.find(({ floor }) => floor.id === nextFloorId);
+    const { width, height } = placement?.slot ?? {};
+    if (width !== undefined && height !== undefined &&
+        (width !== draft.columns || height !== draft.rows)) {
+      setHistory(createSpaceHistory(createSpaceDraft(draft.type, width, height)));
+      setShowIssues(false);
+      setNotice("");
     }
   };
   const save = async (place: boolean) => {
@@ -146,7 +220,7 @@ export function PublicSpaceDesignPage() {
         <label>开口朝向<select aria-label="开口朝向" value={openingSide} onChange={(event) => setOpeningSide(event.target.value as SpaceSide)}>{(["north", "east", "south", "west"] as const).map((side) => <option key={side} value={side}>{side}</option>)}</select></label>
       </aside>
       <section className="public-space-canvas" aria-label="公共空间画布">
-        <div className="canvas-toolbar"><span>{definition.name} · {draft.columns} × {draft.rows} 格</span><span><button type="button" aria-label="撤销" disabled={!history.past.length} onClick={() => setHistory((value) => undoSpaceEdit(value))}>撤销</button><button type="button" aria-label="重做" disabled={!history.future.length} onClick={() => setHistory((value) => redoSpaceEdit(value))}>重做</button></span></div>
+        <div className="canvas-toolbar"><span>{definition.name} · {draft.columns} × {draft.rows} 格</span><span><button type="button" aria-label="撤销" disabled={!history.past.length} onClick={() => { setHistory((value) => undoSpaceEdit(value)); setSelectedItemId(""); setSelectedOpening(undefined); }}>撤销</button><button type="button" aria-label="重做" disabled={!history.future.length} onClick={() => { setHistory((value) => redoSpaceEdit(value)); setSelectedItemId(""); setSelectedOpening(undefined); }}>重做</button></span></div>
         <div className="space-grid" role="grid" aria-label="一平方米空间网格" style={{ gridTemplateColumns: `repeat(${draft.columns}, 1fr)` }}>
           {Array.from({ length: draft.columns * draft.rows }, (_, index) => {
             const x = index % draft.columns;
@@ -161,12 +235,17 @@ export function PublicSpaceDesignPage() {
         <h2>空间属性</h2>
         <label>蓝图编号<input aria-label="蓝图编号" value={blueprintId} onChange={(event) => setBlueprintId(event.target.value)} /></label>
         <label>空间名称<input aria-label="空间名称" value={name} onChange={(event) => setName(event.target.value)} /></label>
+        <section className="space-object-list" aria-label="已放置物件"><h3>已放置物件</h3>{draft.items.length ? draft.items.map((item) => <button type="button" key={item.id} aria-pressed={selectedItemId === item.id} onClick={() => { setSelectedItemId(item.id); setSelectedOpening(undefined); }}>选择物件 {item.id}</button>) : <p>尚未放置物件</p>}</section>
+        {selectedItemId && <SelectedItemInspector draft={draft} itemId={selectedItemId} edit={editSafely} remove={() => { editSafely(() => removePlacedItem(draft, selectedItemId)); setSelectedItemId(""); }} />}
+        <section className="space-object-list" aria-label="空间开口列表"><h3>空间开口</h3>{(["walls", "doors", "windows"] as const).flatMap((property) => draft[property].map((opening) => <button type="button" key={`${property}:${opening.x}:${opening.y}:${opening.side}`} aria-pressed={selectedOpening?.property === property && selectedOpening.opening.x === opening.x && selectedOpening.opening.y === opening.y && selectedOpening.opening.side === opening.side} onClick={() => { setSelectedOpening({ property, opening }); setSelectedItemId(""); }}>选择开口 {property} · {opening.x},{opening.y} · {opening.side}</button>))}</section>
+        {selectedOpening && <section aria-label="所选开口属性"><h3>所选开口</h3><p>{selectedOpening.property} · {selectedOpening.opening.x},{selectedOpening.opening.y} · {selectedOpening.opening.side}</p><button type="button" onClick={() => { editSafely(() => removeSpaceOpening(draft, selectedOpening.property, selectedOpening.opening)); setSelectedOpening(undefined); }}>删除所选开口</button></section>}
         <section role="region" aria-label="空间指标" className="space-metrics"><h3>空间指标</h3><p>建造成本 <strong>¥{money(validation.metrics.constructionCostCents)}</strong></p><p>接待容量 <strong>{validation.metrics.capacity} 人</strong></p><p>宾客吸引力 <strong>{validation.metrics.guestAppealBps / 100}%</strong></p><p>服务距离 <strong>{validation.metrics.serviceDistance} 格</strong></p></section>
         <section aria-label="规划问题"><h3>规划检查</h3>{showIssues && validation.blocking.length > 0 && <div role="alert"><strong>必须调整</strong><ul>{validation.blocking.map((issue) => <li key={issue.code}>{issue.message}</li>)}</ul></div>}{validation.advisory.length > 0 && <div><strong>优化建议</strong><ul>{validation.advisory.map((issue) => <li key={issue.code}>{issue.message}</li>)}</ul></div>}</section>
         <button type="button" onClick={() => setShowIssues(true)}>验证空间</button>
         <button type="button" disabled={commandPending || validation.blocking.length > 0 || !name.trim()} onClick={() => void save(false)}>保存公共空间</button>
-        <label>放置楼层<select aria-label="放置楼层" value={floorId} onChange={(event) => setFloorId(event.target.value)}><option value="">选择设施楼层</option>{eligibleFloors.map((floor) => <option key={floor.id} value={floor.id}>{floor.floorNumber}层 · {floor.use}</option>)}</select></label>
-        <label>放置槽位<select aria-label="放置槽位" value={placementSlots[0]?.id ?? ""} disabled><option value="">选择楼层后自动匹配</option>{placementSlots.map((slot) => <option key={slot.id} value={slot.id}>{slot.id}</option>)}</select></label>
+        <label>放置楼层<select aria-label="放置楼层" value={floorId} onChange={(event) => chooseFloor(event.target.value)}><option value="">选择设施楼层</option>{placementOptions.map(({ floor }) => <option key={floor.id} value={floor.id}>{floor.floorNumber}层 · {floor.use}</option>)}</select></label>
+        <label>放置槽位<select aria-label="放置槽位" value={selectedPlacement?.slot.id ?? ""} disabled><option value="">选择楼层后自动匹配</option>{selectedPlacement && <option value={selectedPlacement.slot.id}>{selectedPlacement.slot.id}</option>}</select></label>
+        {selectedPlacement && <p className="muted">锚点 {selectedPlacement.slot.anchorX ?? "旧版"},{selectedPlacement.slot.anchorY ?? "旧版"} · 容量 {selectedPlacement.slot.width ?? "沿用蓝图"}×{selectedPlacement.slot.height ?? "沿用蓝图"}㎡</p>}
         <button type="button" disabled={commandPending || validation.blocking.length > 0 || !floorId || !name.trim()} onClick={() => void save(true)}>保存并放置</button>
         {notice && <p role="status" className="success-note">{notice}</p>}
         {editorError && <p role="alert" className="command-error">{editorError}</p>}

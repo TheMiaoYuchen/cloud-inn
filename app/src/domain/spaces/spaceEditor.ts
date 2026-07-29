@@ -573,6 +573,26 @@ export function rotatePlacedItem(
   });
 }
 
+export function resizePlacedItem(
+  draft: SpaceDraft,
+  itemId: string,
+  width: number,
+  height: number,
+): SpaceDraft {
+  const item = draft.items.find(({ id }) => id === itemId);
+  if (!item) throw new Error("找不到要调整的物件");
+  return replaceItem(draft, { ...item, width, height });
+}
+
+export function removePlacedItem(draft: SpaceDraft, itemId: string): SpaceDraft {
+  if (!draft.items.some(({ id }) => id === itemId)) {
+    throw new Error("找不到要删除的物件");
+  }
+  const next = cloneSpaceDraft(draft);
+  next.items = next.items.filter(({ id }) => id !== itemId);
+  return next;
+}
+
 export function alignPlacedItems(
   draft: SpaceDraft,
   itemIds: string[],
@@ -613,6 +633,19 @@ export function addSpaceDoor(draft: SpaceDraft, opening: SpaceOpening): SpaceDra
 
 export function addSpaceWindow(draft: SpaceDraft, opening: SpaceOpening): SpaceDraft {
   return addSpaceOpening(draft, opening, "windows");
+}
+
+export function removeSpaceOpening(
+  draft: SpaceDraft,
+  property: "walls" | "doors" | "windows",
+  opening: SpaceOpening,
+): SpaceDraft {
+  const index = draft[property].findIndex((entry) =>
+    entry.x === opening.x && entry.y === opening.y && entry.side === opening.side);
+  if (index < 0) throw new Error("找不到要删除的开口");
+  const next = cloneSpaceDraft(draft);
+  next[property].splice(index, 1);
+  return next;
 }
 
 function connected(cells: SpaceCell[]): boolean {

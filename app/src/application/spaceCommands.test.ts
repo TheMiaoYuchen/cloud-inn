@@ -7,6 +7,7 @@ import { InMemorySavePort } from "../infrastructure/memory/InMemorySavePort";
 import { createPhase4AcceptanceState } from "../testing/phase4Fixtures";
 import { createGameCommands } from "./gameCommands";
 import type { SavePort } from "./ports/SavePort";
+import { projectPublicSpacePlacement } from "./publicSpaceGraph";
 
 class RecordingPort implements SavePort {
   readonly stored = new InMemorySavePort();
@@ -69,6 +70,40 @@ function validBarBlueprint(): PublicSpaceBlueprint {
     ? { ...item, catalogItemId: assertStableId("item:lounge-seat") }
     : { ...item, catalogItemId: assertStableId("item:bar-counter") });
   return bar;
+}
+
+function validCompactDiningBlueprint(
+  columns = 9,
+  rows = 9,
+): PublicSpaceBlueprint {
+  const input = validDiningBlueprint("space-blueprint:compact-dining");
+  input.columns = columns;
+  input.rows = rows;
+  input.cells = [
+    ...Array.from({ length: 5 * 8 }, (_, index) => ({
+      x: index % 5, y: Math.floor(index / 5), zoneId: assertStableId("zone:seating"),
+    })),
+    ...Array.from({ length: 8 }, (_, y) => ({
+      x: 5, y, zoneId: assertStableId("zone:service-route"),
+    })),
+    ...Array.from({ length: 3 * 8 }, (_, index) => ({
+      x: 6 + index % 3, y: Math.floor(index / 3), zoneId: assertStableId("zone:kitchen"),
+    })),
+  ];
+  input.placedItems = [
+    ...Array.from({ length: 8 }, (_, index) => ({
+      id: assertStableId(`table:compact:${index + 1}`),
+      catalogItemId: assertStableId("item:dining-table"),
+      x: index % 4, y: 1 + Math.floor(index / 4),
+      width: 1, height: 1, rotation: 0 as const,
+    })),
+    {
+      id: assertStableId("service:compact:1"),
+      catalogItemId: assertStableId("item:service-counter"),
+      x: 6, y: 1, width: 1, height: 1, rotation: 0 as const,
+    },
+  ];
+  return input;
 }
 
 function scaleCommandFixture(saveId = "space-command") {
@@ -188,6 +223,51 @@ describe("atomic public-space commands", () => {
     expect(next.revision).toBe(state.revision + 1);
     expect(store.commits).toBe(1);
     expect(await store.load(state.saveId)).toEqual(next);
+  });
+
+  it("uses the applied snapshot slot and rejects oversized placement without commit", async () => {
+    const { state, commands, store, floor } = scaleCommandFixture("space-slot-fit");
+    const canonical = state.phase4!.floorTemplates[floor.templateId];
+    const canonicalSlot = canonical.publicSpaceSlots.find(({ id }) => id === "space:99")!;
+    canonicalSlot.anchorX = 2;
+    canonicalSlot.anchorY = 3;
+    canonicalSlot.width = 16;
+    canonicalSlot.height = 12;
+    const snapshotId = assertStableId(`template-snapshot:${floor.id}`);
+    state.phase4!.floorTemplates[snapshotId] = {
+      ...structuredClone(canonical),
+      id: snapshotId,
+      publicSpaceSlots: canonical.publicSpaceSlots.map((slot) => slot.id === "space:99"
+        ? { ...slot, anchorX: 7, anchorY: 8, width: 9, height: 9 }
+        : slot),
+    };
+
+    expect(projectPublicSpacePlacement(state.phase4!, floor.id, "all-day-dining"))
+      .toMatchObject({ slot: { id: "space:99", anchorX: 7, anchorY: 8, width: 9, height: 9 }, templateId: snapshotId });
+    await expect(commands.placePublicSpace(state, validDiningBlueprint(), floor.id))
+      .rejects.toThrow("公共空间尺寸超过目标槽位 9×9");
+    expect(store.commits).toBe(0);
+
+    const next = await commands.placePublicSpace(
+      state,
+      validCompactDiningBlueprint(),
+      floor.id,
+    );
+    expect(next.phase4!.publicSpaces["public-space:floor:03:space:99"]).toBeDefined();
+    expect(store.commits).toBe(1);
+  });
+
+  it("falls back to canonical slot geometry when no floor snapshot exists", () => {
+    const { state, floor } = scaleCommandFixture("space-slot-canonical");
+    const slot = state.phase4!.floorTemplates[floor.templateId].publicSpaceSlots
+      .find(({ id }) => id === "space:99")!;
+    slot.anchorX = 4;
+    slot.anchorY = 5;
+    slot.width = 18;
+    slot.height = 14;
+
+    expect(projectPublicSpacePlacement(state.phase4!, floor.id, "all-day-dining"))
+      .toMatchObject({ slot: { id: "space:99", anchorX: 4, anchorY: 5, width: 18, height: 14 }, templateId: floor.templateId });
   });
 
   it("validates floor slot, unlock, cash and revision before mutation", async () => {
@@ -366,6 +446,8 @@ describe("atomic public-space commands", () => {
     const template = first.phase4!.floorTemplates[floor.templateId];
     const lowerSlot = template.publicSpaceSlots.find(({ id }) => id === "space:04")!;
     lowerSlot.permittedTypes.push("bar");
+    delete lowerSlot.width;
+    delete lowerSlot.height;
     template.publicSpaceSlots.reverse();
     const bar = { ...validBarBlueprint(), id: assertStableId("space-blueprint:ordered-bar") };
 

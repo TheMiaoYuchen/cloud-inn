@@ -23,7 +23,7 @@ import type {
 } from "../domain/spaces/spaceTypes";
 import { validatePublicSpace } from "../domain/spaces/spaceValidation";
 import type { SavePort } from "./ports/SavePort";
-import { assertPublicSpaceGraph, type PublicSpaceGraph } from "./publicSpaceGraph";
+import { assertPublicSpaceGraph, projectPublicSpacePlacement } from "./publicSpaceGraph";
 
 function assertRevision(revision: number): void {
   if (!Number.isSafeInteger(revision) || revision < 0 ||
@@ -129,46 +129,6 @@ function reconcileCandidate(state: GameState): GameState {
   };
 }
 
-function resolvePlacement(
-  phase4: Readonly<ContentScaleState>,
-  graph: PublicSpaceGraph,
-  floorId: string,
-  type: PublicSpaceType,
-): { floorIndex: number; slotId: StableId; previous?: PublicSpaceInstance } {
-  const floorIndex = phase4.floors.findIndex(({ id }) => id === floorId);
-  if (floorIndex < 0) throw new Error("目标楼层不存在");
-  const floor = phase4.floors[floorIndex];
-  if (floor.use !== "facility" && !(floor.use === "sky-lobby" && type === "sky-lobby")) {
-    throw new Error("公共空间只能放置在适用的设施楼层");
-  }
-  if (!floor.purchased) throw new Error("目标设施楼层尚未购买");
-  const template = phase4.floorTemplates[floor.templateId];
-  if (!template || template.use !== floor.use) throw new Error("设施楼层模板引用无效");
-  const compatibleSlots = template.publicSpaceSlots
-    .filter(({ permittedTypes }) => permittedTypes.includes(type))
-    .sort((left, right) => compareIds(left.id, right.id));
-  if (compatibleSlots.length === 0) throw new Error("设施楼层没有允许该类型的公共空间槽位");
-  const bySlot = new Map([...graph.instances.values()]
-    .filter((instance) => instance.floorId === floor.id)
-    .map((instance) => [instance.localPlacementId, instance]));
-  const sameType = [...graph.facilities.values()].filter((facility) =>
-    facility.type === type && graph.instances.get(facility.publicSpaceInstanceId)?.floorId === floor.id);
-  if (sameType.length > 1) throw new Error("同一楼层存在多个同类型设施记录");
-  const sameTypeInstance = sameType.length === 1
-    ? graph.instances.get(sameType[0].publicSpaceInstanceId)
-    : undefined;
-  if (sameType.length === 1 && (!sameTypeInstance ||
-      !compatibleSlots.some(({ id }) => id === sameTypeInstance.localPlacementId))) {
-    throw new Error("同类型设施的公共空间槽位引用无效");
-  }
-  const selected = sameTypeInstance
-    ? compatibleSlots.find(({ id }) => id === sameTypeInstance.localPlacementId)
-    : compatibleSlots.find(({ id }) => !bySlot.has(id)) ??
-      compatibleSlots.find(({ id }) => bySlot.has(id));
-  if (!selected) throw new Error("设施楼层没有可用公共空间槽位");
-  return { floorIndex, slotId: selected.id, previous: bySlot.get(selected.id) };
-}
-
 function assertSharedBlueprintUnchanged(
   phase4: Readonly<ContentScaleState>,
   blueprint: Readonly<PublicSpaceBlueprint>,
@@ -250,8 +210,13 @@ export function createSpaceCommands(savePort: SavePort) {
       if (!current.catalogProgress.unlockedIds.includes(unlockId)) {
         throw new Error("该公共空间类型尚未解锁");
       }
-      const graph = assertPublicSpaceGraph(current);
-      const placement = resolvePlacement(current, graph, floorId, blueprint.type);
+      const placement = projectPublicSpacePlacement(current, floorId, blueprint.type);
+      if (placement.slot.width !== undefined && placement.slot.height !== undefined &&
+          (blueprint.columns > placement.slot.width || blueprint.rows > placement.slot.height)) {
+        throw new Error(
+          `公共空间尺寸超过目标槽位 ${placement.slot.width}×${placement.slot.height}`,
+        );
+      }
       assertSharedBlueprintUnchanged(current, blueprint, placement.previous?.id);
       if (Object.values(current.facilities).some(({ id, type, publicSpaceInstanceId }) =>
         type === blueprint.type && id === `facility:${floorId}:${blueprint.type}` &&
@@ -270,7 +235,7 @@ export function createSpaceCommands(savePort: SavePort) {
         throw new Error("金额超出安全整数范围");
       }
       const instanceId = assertStableId(
-        `public-space:${current.floors[placement.floorIndex].id}:${placement.slotId}`,
+        `public-space:${current.floors[placement.floorIndex].id}:${placement.slot.id}`,
       );
       const facilityId = assertStableId(
         `facility:${current.floors[placement.floorIndex].id}:${blueprint.type}`,
@@ -278,7 +243,7 @@ export function createSpaceCommands(savePort: SavePort) {
       const instance: PublicSpaceInstance = {
         id: instanceId,
         floorId: current.floors[placement.floorIndex].id,
-        localPlacementId: placement.slotId,
+        localPlacementId: placement.slot.id,
         blueprintId: blueprint.id,
         type: blueprint.type,
         committedBuildCostCents: blueprint.committedBuildCostCents,

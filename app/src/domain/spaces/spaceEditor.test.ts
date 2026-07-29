@@ -17,9 +17,12 @@ import {
   paintSpaceCell,
   placeSpaceItem,
   redoSpaceEdit,
+  removePlacedItem,
+  removeSpaceOpening,
   removeSpaceCellAt,
   replaceSpaceCell,
   rotatePlacedItem,
+  resizePlacedItem,
   spaceSelectionBounds,
   snapPlacedItem,
   undoSpaceEdit,
@@ -292,6 +295,48 @@ describe("shared space editor boundaries", () => {
       id: "station:2", catalogItemId: "item:fitness-station",
       x: 7, y: 7, width: 2, height: 1, rotation: 0,
     })).toThrow("物件超出空间边界");
+  });
+
+  it("resizes and removes items through bounded immutable operations", () => {
+    let draft = placeSpaceItem(createSpaceDraft("gym", 6, 6), {
+      id: "station:1", catalogItemId: "item:fitness-station",
+      x: 1, y: 1, width: 1, height: 1, rotation: 0,
+    });
+    draft = placeSpaceItem(draft, {
+      id: "station:2", catalogItemId: "item:fitness-station",
+      x: 4, y: 1, width: 1, height: 1, rotation: 0,
+    });
+
+    const resized = resizePlacedItem(draft, "station:1", 2, 2);
+    expect(resized.items[0]).toMatchObject({ width: 2, height: 2 });
+    expect(draft.items[0]).toMatchObject({ width: 1, height: 1 });
+    expect(() => resizePlacedItem(resized, "station:1", 4, 1)).toThrow(
+      "物件不能互相重叠",
+    );
+    expect(() => resizePlacedItem(draft, "station:1", 0, 1)).toThrow(
+      "物件尺寸和坐标必须是有效整数",
+    );
+    expect(removePlacedItem(resized, "station:1").items.map(({ id }) => id))
+      .toEqual(["station:2"]);
+    expect(() => removePlacedItem(draft, "missing")).toThrow("找不到要删除的物件");
+  });
+
+  it("removes an exact opening without mutating the source", () => {
+    const painted = paintSpaceCell(createSpaceDraft("gym", 2, 2), {
+      x: 0, y: 0, zoneId: "zone:fitness",
+    });
+    const opened = addSpaceDoor(painted, { x: 0, y: 0, side: "north" });
+    const removed = removeSpaceOpening(
+      opened,
+      "doors",
+      { x: 0, y: 0, side: "north" },
+    );
+
+    expect(removed.doors).toEqual([]);
+    expect(opened.doors).toEqual([{ x: 0, y: 0, side: "north" }]);
+    expect(() => removeSpaceOpening(opened, "doors", {
+      x: 0, y: 0, side: "south",
+    })).toThrow("找不到要删除的开口");
   });
 
   it("rejects an alignment that would create an item collision", () => {
