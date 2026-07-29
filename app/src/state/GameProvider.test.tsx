@@ -363,4 +363,44 @@ describe('GameProvider flow', () => {
     expect(maximumActiveCommits).toBe(1);
     expect((await backing.load(initial.saveId))?.revision).toBe(3);
   });
+
+  it('serializes facility and legacy commands while keeping failed facility state atomic', async () => {
+    const initial = createPhase4AcceptanceState('provider-facility');
+    initial.revision = 1;
+    initial.roomBlueprint = structuredClone(initial.phase2!.roomMaster);
+    initial.phase2!.roomMaster = null;
+    const dining = Object.values(initial.phase4!.facilities).find(({ type }) => type === 'all-day-dining')!;
+    const original = structuredClone(dining);
+    const backing = new InMemorySavePort();
+    await backing.commit(0, initial);
+    let activeCommits = 0;
+    let maximumActiveCommits = 0;
+    const port: SavePort = {
+      load: (saveId) => backing.load(saveId),
+      commit: async (revision, next) => {
+        activeCommits += 1;
+        maximumActiveCommits = Math.max(maximumActiveCommits, activeCommits);
+        await Promise.resolve();
+        await backing.commit(revision, next);
+        activeCommits -= 1;
+      },
+    };
+    function Probe() {
+      const { state, error, commandPending, commands } = useGame();
+      const current = state?.phase4?.facilities[dining.id];
+      return <>
+        <output>{`${state?.revision}:${state?.rateCents}:${current?.policy?.priceBandId}:${commandPending ? 'busy' : 'idle'}:${error ?? 'ok'}`}</output>
+        <button onClick={() => {
+          void commands.configureFacility(dining.id, { ...dining.policy!, signatureOfferingId: 'dish:not-developed' });
+          void commands.setRate(123_400);
+        }}>run</button>
+      </>;
+    }
+    render(<GameProvider savePort={port} saveId={initial.saveId}><Probe /></GameProvider>);
+    await screen.findByText(/1:.*:idle:ok/);
+    await userEvent.setup().click(screen.getByRole('button', { name: 'run' }));
+    expect(await screen.findByText(/2:123400:price-band:premium:idle:ok/)).toBeInTheDocument();
+    expect(maximumActiveCommits).toBe(1);
+    expect((await backing.load(initial.saveId))?.phase4?.facilities[dining.id]).toEqual(original);
+  });
 });

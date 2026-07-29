@@ -8,12 +8,20 @@ import { FloorPlanningPage } from "../pages/FloorPlanningPage";
 import { OperationsPage } from "../pages/OperationsPage";
 import { RoomVariantPage } from "../pages/RoomVariantPage";
 import { BuildingOverviewPage } from "../pages/BuildingOverviewPage";
+import { PublicSpaceDesignPage } from "../pages/PublicSpaceDesignPage";
 import { useGame } from "../state/GameProvider";
 
 function LegacyDesignRoute({ children }: { children: ReactNode }) {
   const { state, loading } = useGame();
   if (loading) return <main className="page"><p role="status">正在加载存档…</p></main>;
   if (state?.phase4) return <Navigate to="/building" replace />;
+  return children;
+}
+
+function Phase4Route({ children }: { children: ReactNode }) {
+  const { state, loading } = useGame();
+  if (loading) return <main className="page"><p role="status">正在加载存档…</p></main>;
+  if (!state?.phase4) return <Navigate to="/" replace />;
   return children;
 }
 
@@ -31,6 +39,7 @@ export function createAppRouter() {
         { path: "floor", element: <LegacyDesignRoute><FloorPlanningPage /></LegacyDesignRoute> },
         { path: "building", element: <BuildingOverviewPage /> },
         { path: "tower", element: <Navigate to="/building" replace /> },
+        { path: "public-spaces/design", element: <Phase4Route><PublicSpaceDesignPage /></Phase4Route> },
         { path: "operations", element: <OperationsPage /> },
         { path: "*", element: <Navigate to="/" replace /> },
       ],

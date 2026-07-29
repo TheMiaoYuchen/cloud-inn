@@ -82,4 +82,20 @@ describe("App", () => {
       expect(screen.queryByRole("heading", { name: "高层酒店楼层规划" })).not.toBeInTheDocument();
     },
   );
+
+  it("routes Phase 4 public-space design and guards legacy saves", async () => {
+    const port = new InMemorySavePort();
+    const state = createPhase4AcceptanceState("save-1");
+    state.revision = 1;
+    await port.commit(0, state);
+    window.location.hash = "#/public-spaces/design";
+    const view = render(<App savePort={port} />);
+    expect(await screen.findByRole("heading", { name: "公共空间设计" })).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "空间设计" })).toHaveAttribute("aria-current", "page");
+
+    view.unmount();
+    window.location.hash = "#/public-spaces/design";
+    render(<App savePort={new InMemorySavePort()} />);
+    expect(await screen.findByRole("heading", { name: "Cloud Inn" })).toBeInTheDocument();
+  });
 });
