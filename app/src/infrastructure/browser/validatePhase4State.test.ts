@@ -253,6 +253,19 @@ describe("complete Phase 4 browser persistence validation", () => {
     expect(() => validateBrowserGameState(boundary, "phase4-shared")).not.toThrow();
   });
 
+  it("rejects a public-space placement excluded by the applied floor snapshot", () => {
+    const value = structuredClone(sharedPhase4Fixture) as any;
+    const snapshotId = "template-snapshot:floor:03";
+    value.phase4.floorTemplates[snapshotId] = {
+      ...structuredClone(value.phase4.floorTemplates["template:facility:standard"]),
+      id: snapshotId,
+    };
+    value.phase4.floorTemplates[snapshotId].publicSpaceSlots[0].permittedTypes = ["spa"];
+
+    expect(() => validateBrowserGameState(value, "phase4-shared"))
+      .toThrow("公共空间槽位或类型引用无效");
+  });
+
   it("accepts extension ID-like metadata without treating it as schema", () => {
     const value = structuredClone(sharedPhase4Fixture) as any;
     value.phase4.persistenceMetadata = { futureId: "Future ID", futureIds: ["Future ID"] };

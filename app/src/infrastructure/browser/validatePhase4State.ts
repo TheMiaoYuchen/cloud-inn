@@ -410,9 +410,16 @@ export function validatePhase4State(value: unknown, gameValue?: unknown): void {
     const placementKey = `${floorId}\u0000${localPlacementId}`;
     if (occupiedPublicSpacePlacements.has(placementKey)) phase4Error("公共空间放置重复");
     occupiedPublicSpacePlacements.add(placementKey);
-    const permitted = templateSlots.get(String(floor.templateId))?.get(localPlacementId);
+    const snapshotTemplateId = `template-snapshot:${floorId}`;
+    const appliedTemplateId = snapshotTemplateId in templates
+      ? snapshotTemplateId
+      : String(floor.templateId);
+    const appliedTemplate = object(templates[appliedTemplateId], "楼层模板");
+    const permitted = templateSlots.get(appliedTemplateId)?.get(localPlacementId);
     const type = oneOf(space.type, PUBLIC_SPACE_TYPES, "公共空间类型");
-    if (!permitted?.includes(type)) phase4Error("公共空间槽位或类型引用无效");
+    if (appliedTemplate.use !== floor.use || !permitted?.includes(type)) {
+      phase4Error("公共空间槽位或类型引用无效");
+    }
     const blueprint = blueprints[stableId(space.blueprintId, "公共空间蓝图编号")];
     if (!blueprint || object(blueprint, "公共空间蓝图").type !== type) phase4Error("公共空间蓝图引用无效");
     integer(space.committedBuildCostCents, "施工金额");

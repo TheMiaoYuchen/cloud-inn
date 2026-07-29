@@ -9,6 +9,8 @@ import { createFacilityPolicy } from "../../domain/facilities/facilityOperations
 import { createApprovedSettlementInput } from "../../domain/operations/operationsFixtures";
 import { settleOperationsDay } from "../../domain/operations/settleOperationsDay";
 import { createRectangle } from "../../domain/room/grid";
+import { assertStableId } from "../../domain/building/buildingTypes";
+import sharedPhase4Fixture from "../../../src-tauri/tests/fixtures/phase4-valid.json";
 
 const storageKey = (saveId: string) => `cloud-inn:save:${saveId}`;
 
@@ -83,6 +85,26 @@ describe("LocalStorageSavePort", () => {
 
     expect(loaded).toEqual(state);
     expect(loaded).not.toBe(state);
+  });
+
+  it("commits and reloads a public space placed in an applied snapshot-only slot", async () => {
+    const state = structuredClone(sharedPhase4Fixture) as unknown as GameState;
+    state.revision = 1;
+    const phase4 = state.phase4!;
+    const snapshotId = assertStableId("template-snapshot:floor:03");
+    phase4.floorTemplates[snapshotId] = {
+      ...structuredClone(phase4.floorTemplates["template:facility:standard"]),
+      id: snapshotId,
+    };
+    const snapshotSlotId = assertStableId("space:snapshot-only");
+    phase4.floorTemplates[snapshotId].publicSpaceSlots[0].id = snapshotSlotId;
+    phase4.publicSpaces["public-space:floor:03:space:01"].localPlacementId =
+      snapshotSlotId;
+    const port = new LocalStorageSavePort(fakeLockManager());
+
+    await port.commit(0, state);
+
+    expect(await port.load(state.saveId)).toEqual(state);
   });
 
   it("loads a classic Phase 3 report snapshot with room and department categories", async () => {

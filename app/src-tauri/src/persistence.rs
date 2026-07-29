@@ -1760,12 +1760,21 @@ fn validate_phase4(value: &Value, game: &Value) -> Result<(), String> {
         if !occupied_space_placements.insert((floor_id, slot_id)) {
             return Err(phase4_error("公共空间放置重复"));
         }
-        let template_id = floor_records
+        let (floor_use, canonical_template_id) = floor_records
             .get(floor_id)
-            .map(|record| record.1)
+            .copied()
             .ok_or_else(|| phase4_error("公共空间楼层引用无效"))?;
+        let snapshot_template_id = format!("template-snapshot:{floor_id}");
+        let applied_template_id = if template_slots.contains_key(snapshot_template_id.as_str()) {
+            snapshot_template_id.as_str()
+        } else {
+            canonical_template_id
+        };
+        if template_uses.get(applied_template_id).copied() != Some(floor_use) {
+            return Err(phase4_error("公共空间槽位或类型引用无效"));
+        }
         if !template_slots
-            .get(template_id)
+            .get(applied_template_id)
             .and_then(|slots| slots.get(slot_id))
             .is_some_and(|types| types.contains(type_id))
         {
@@ -4312,6 +4321,18 @@ mod tests {
         serde_json::from_str(raw).unwrap()
     }
 
+    fn phase4_fixture_with_snapshot_slot(slot_id: &str) -> Value {
+        let mut game = phase4_fixture(include_str!("../tests/fixtures/phase4-valid.json"));
+        let mut snapshot = game["phase4"]["floorTemplates"]["template:facility:standard"].clone();
+        snapshot["id"] = json!("template-snapshot:floor:03");
+        snapshot["publicSpaceSlots"][0]["id"] = json!(slot_id);
+        game["phase4"]["floorTemplates"]
+            .as_object_mut()
+            .unwrap()
+            .insert("template-snapshot:floor:03".into(), snapshot);
+        game
+    }
+
     fn phase4_fixture_json_with_money_token(token: &str) -> String {
         let raw = include_str!("../tests/fixtures/phase4-valid.json");
         let original = "\"committedBuildCostCents\": 2500000";
@@ -5109,6 +5130,31 @@ mod tests {
 
         let loaded = repository.load_game("phase4-shared").unwrap().unwrap();
         assert_eq!(loaded["phase4"], expected_phase4);
+    }
+
+    #[test]
+    fn phase4_commits_and_reopens_public_space_in_snapshot_only_slot() {
+        let repository = SaveRepository::new(root("phase4-snapshot-slot"));
+        let mut game = phase4_fixture_with_snapshot_slot("space:snapshot-only");
+        game["phase4"]["publicSpaces"]["public-space:floor:03:space:01"]["localPlacementId"] =
+            json!("space:snapshot-only");
+        game["revision"] = json!(1);
+
+        repository.commit_game(0, game.clone()).unwrap();
+
+        assert_eq!(repository.load_game("phase4-shared").unwrap(), Some(game));
+    }
+
+    #[test]
+    fn phase4_rejects_public_space_excluded_by_applied_snapshot() {
+        let mut game = phase4_fixture_with_snapshot_slot("space:01");
+        game["phase4"]["floorTemplates"]["template-snapshot:floor:03"]["publicSpaceSlots"][0]
+            ["permittedTypes"] = json!(["spa"]);
+
+        assert!(validate_game(&game)
+            .err()
+            .unwrap()
+            .contains("公共空间槽位或类型引用无效"));
     }
 
     #[test]
