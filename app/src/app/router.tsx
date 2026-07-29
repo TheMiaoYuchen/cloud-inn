@@ -9,6 +9,7 @@ import { OperationsPage } from "../pages/OperationsPage";
 import { RoomVariantPage } from "../pages/RoomVariantPage";
 import { BuildingOverviewPage } from "../pages/BuildingOverviewPage";
 import { PublicSpaceDesignPage } from "../pages/PublicSpaceDesignPage";
+import { ContentCompendiumPage } from "../pages/ContentCompendiumPage";
 import { useGame } from "../state/GameProvider";
 
 function LegacyDesignRoute({ children }: { children: ReactNode }) {
@@ -40,6 +41,7 @@ export function createAppRouter() {
         { path: "building", element: <BuildingOverviewPage /> },
         { path: "tower", element: <Navigate to="/building" replace /> },
         { path: "public-spaces/design", element: <Phase4Route><PublicSpaceDesignPage /></Phase4Route> },
+        { path: "compendium", element: <Phase4Route><ContentCompendiumPage /></Phase4Route> },
         { path: "operations", element: <OperationsPage /> },
         { path: "*", element: <Navigate to="/" replace /> },
       ],

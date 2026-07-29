@@ -17,7 +17,7 @@ export function AppShell() {
         <NavLink to="/">酒店总览</NavLink>
         <NavLink to="/canvas">楼层画布</NavLink>
         {state?.phase4
-          ? <><NavLink to="/building">塔楼</NavLink><NavLink to="/public-spaces/design">空间设计</NavLink></>
+          ? <><NavLink to="/building">塔楼</NavLink><NavLink to="/public-spaces/design">空间设计</NavLink><NavLink to="/compendium">酒店百科</NavLink></>
           : <>{progressLink("/design", "设计", "design")}{progressLink("/floor-plan", "楼层", "floor")}</>}
         {progressLink("/operations", "运营", "ready")}
       </nav>
