@@ -59,6 +59,7 @@ export function projectDesignLibrary(state: Readonly<GameState>): DesignLibraryP
 
   const entries: DesignLibraryEntry[] = [];
   const entryById = new Map<string, DesignLibraryEntry>();
+  const namesById = new Map<string, Set<string>>();
   const addDesign = (
     design: { id: string; name: string },
     kind: Exclude<DesignLibraryEntry["kind"], "mixed">,
@@ -68,14 +69,17 @@ export function projectDesignLibrary(state: Readonly<GameState>): DesignLibraryP
     if (!existing) {
       const entry = { id: design.id, name: design.name, kind, usageFloorIds };
       entryById.set(design.id, entry);
+      namesById.set(design.id, new Set([design.name]));
       entries.push(entry);
       return;
     }
     const crossesPublicSpaceBoundary = (existing.kind === "public-space") !== (kind === "public-space")
       || existing.kind === "mixed";
     existing.kind = crossesPublicSpaceBoundary ? "mixed" : existing.kind;
-    if (!existing.name.split(" / ").includes(design.name)) {
-      existing.name = `${existing.name} / ${design.name}`;
+    const names = namesById.get(design.id)!;
+    if (!names.has(design.name)) {
+      names.add(design.name);
+      existing.name = [...names].join(" / ");
     }
     existing.usageFloorIds = uniqueSortedFloorIds([...existing.usageFloorIds, ...usageFloorIds]);
   };

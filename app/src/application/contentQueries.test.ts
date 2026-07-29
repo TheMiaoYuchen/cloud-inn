@@ -4,6 +4,7 @@ import { assertStableId } from "../domain/building/buildingTypes";
 import { createOperationsState } from "../domain/operations/createOperationsState";
 import { GUEST_SEGMENT_IDS } from "../domain/operations/operationsTypes";
 import { createPhase4AcceptanceState } from "../testing/phase4Fixtures";
+import { validatePhase4State } from "../infrastructure/browser/validatePhase4State";
 import {
   projectCompendia,
   projectDesignLibrary,
@@ -65,11 +66,16 @@ describe("read-only content compendium queries", () => {
     const state = createPhase4AcceptanceState("design-id-collision");
     const roomMaster = state.phase2!.roomMaster!;
     const publicSpace = Object.values(state.phase4!.publicSpaces)[0];
-    const blueprint = state.phase4!.spaceBlueprints[publicSpace.blueprintId];
+    const originalBlueprintId = publicSpace.blueprintId;
+    const blueprint = state.phase4!.spaceBlueprints[originalBlueprintId];
+    roomMaster.name = "Luxury / Suite";
+    state.roomBlueprint = structuredClone(roomMaster);
+    delete state.phase4!.spaceBlueprints[originalBlueprintId];
     blueprint.id = assertStableId(roomMaster.id);
     blueprint.name = "Collision Space";
+    state.phase4!.spaceBlueprints[blueprint.id] = blueprint;
     publicSpace.blueprintId = blueprint.id;
-    state.phase4!.spaceBlueprints["duplicate-record"] = structuredClone(blueprint);
+    validatePhase4State(state.phase4, state);
 
     const library = projectDesignLibrary(state);
     const collisionEntries = library.entries.filter(({ id }) => id === roomMaster.id);
@@ -80,7 +86,7 @@ describe("read-only content compendium queries", () => {
     expect(collisionEntries).toHaveLength(1);
     expect(collisionEntries[0]).toMatchObject({
       kind: "mixed",
-      name: `${roomMaster.name} / Collision Space`,
+      name: "Luxury / Suite / Collision Space",
     });
     expect(collisionEntries[0].usageFloorIds).toEqual(
       [...new Set([...roomFloors, publicSpace.floorId])].sort(),

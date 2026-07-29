@@ -42,9 +42,11 @@ export function BuildingOverviewPage({ requestedFloorId = null }: { requestedFlo
 
   useEffect(() => {
     if (!saveId || !building?.floors.length) {
+      handledFloorRequestRef.current = null;
       setSelectedFloorEvidence(undefined);
       return;
     }
+    if (requestedFloorId === null) handledFloorRequestRef.current = null;
     const requestIsNew = requestedFloorId !== null
       && (handledFloorRequestRef.current?.saveId !== saveId
         || handledFloorRequestRef.current.floorId !== requestedFloorId);

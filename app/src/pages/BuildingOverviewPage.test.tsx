@@ -62,6 +62,33 @@ describe("Phase 4 building overview", () => {
       .toBeInTheDocument();
   });
 
+  it("treats a restored floor request as new after the query was removed", async () => {
+    const state = towerState();
+    state.saveId = "save-1";
+    const requestedFloor = state.phase4!.floors.find(({ floorNumber }) => floorNumber === 28)!;
+    const manualFloor = state.phase4!.floors.find(({ floorNumber }) => floorNumber === 29)!;
+    const port = new InMemorySavePort();
+    await port.commit(0, state);
+    window.location.hash = `#/building?floorId=${encodeURIComponent(requestedFloor.id)}`;
+    const user = userEvent.setup();
+    render(<App savePort={port} />);
+    expect(await screen.findByRole("region", { name: "28层平面工作区" }))
+      .toBeInTheDocument();
+
+    act(() => { window.location.hash = "#/building"; });
+    await user.click(screen.getByRole("button", { name: /^选择29层，客房，/ }));
+    expect(screen.getByRole("region", { name: "29层平面工作区" })).toBeInTheDocument();
+
+    act(() => {
+      window.location.hash = `#/building?floorId=${encodeURIComponent(requestedFloor.id)}`;
+    });
+    expect(await screen.findByRole("region", { name: "28层平面工作区" }))
+      .toBeInTheDocument();
+    expect(screen.queryByRole("region", { name: "29层平面工作区" }))
+      .not.toBeInTheDocument();
+    expect(manualFloor.id).not.toBe(requestedFloor.id);
+  });
+
   it("shows sixteen physical floors highest first and mounts only the selected scene", async () => {
     const { user } = await renderTower();
     const tower = screen.getByRole("region", { name: "酒店垂直楼层" });
