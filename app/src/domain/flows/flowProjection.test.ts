@@ -104,4 +104,26 @@ describe("aggregate hotel flow projection", () => {
     expect(constrainedCleaning.map(({ count }) => count))
       .not.toEqual(supportedCleaning.map(({ count }) => count));
   });
+
+  it("omits zero-visit and zero-utilization facility flows without inventing count one", () => {
+    const state = flowState();
+    const facilityFloor = state.phase4!.floors.find(({ publicSpaceInstanceIds }) =>
+      publicSpaceInstanceIds.length > 0)!;
+    const facilities = facilityFloor.publicSpaceInstanceIds.map((spaceId) =>
+      Object.values(state.phase4!.facilities).find(({ publicSpaceInstanceId }) =>
+        publicSpaceInstanceId === spaceId)!,
+    );
+    facilities[0].dailyResults[0] = {
+      ...facilities[0].dailyResults[0],
+      visits: 0,
+      utilizationBps: 0,
+    };
+
+    const snapshot = projectFlowSnapshot(state, facilityFloor.id);
+
+    expect(snapshot.events.some(({ id }) => id === `flow:guest:${facilities[0].id}`)).toBe(false);
+    expect(snapshot.events.some(({ id }) => id === `flow:staff:${facilities[0].id}`)).toBe(false);
+    expect(snapshot.events.some(({ id, count }) => id === `flow:guest:${facilities[1].id}` && count === 24)).toBe(true);
+    expect(snapshot.events.every(({ count }) => count > 0 && count <= 999)).toBe(true);
+  });
 });

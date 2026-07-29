@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useMemo, useRef, useState } from "react";
 import type { PublicSpaceBlueprint } from "../../domain/facilities/facilityTypes";
 import type { FloorProjection } from "../../state/GameProvider";
 import type { StableId } from "../../domain/building/buildingTypes";
@@ -53,6 +53,7 @@ export function FloorWorkspace({
   }>;
 }) {
   const { state } = useGame();
+  const worldLayerRef = useRef<HTMLDivElement>(null);
   const { floor, template, rooms, facilities, roomStatusByOfferId, roomStatusTotals } = projection;
   const [selectedRoomId, setSelectedRoomId] = useState<string | null>(null);
   const roomByPlacement = useMemo(
@@ -119,10 +120,23 @@ export function FloorWorkspace({
               width: `min(100%, ${(760 * template.columns) / template.rows}px)`,
             } : undefined}
           >
-            <HotelFlowCanvas snapshot={flowSnapshot} />
-            <div className="ring-corridor-visual" style={ringStyle}><span>环形走廊</span></div>
-            <div className="central-core" style={coreStyle}><span>中央核心筒</span><small>电梯 · 楼梯 · 后勤</small></div>
-            {template?.roomPlacements.map((placement) => {
+            <HotelFlowCanvas snapshot={flowSnapshot} worldLayerRef={worldLayerRef} />
+            <div
+              ref={worldLayerRef}
+              data-testid="floor-dom-world"
+              style={{
+                position: "absolute",
+                left: 0,
+                top: 0,
+                zIndex: 2,
+                width: flowSnapshot.width,
+                height: flowSnapshot.height,
+                pointerEvents: "none",
+              }}
+            >
+              <div className="ring-corridor-visual" style={ringStyle}><span>环形走廊</span></div>
+              <div className="central-core" style={coreStyle}><span>中央核心筒</span><small>电梯 · 楼梯 · 后勤</small></div>
+              {template?.roomPlacements.map((placement) => {
               const room = roomByPlacement.get(placement.id);
               if (!room) return null;
               const roomStatus = roomStatusByOfferId.get(room.id) ?? "available";
@@ -142,14 +156,15 @@ export function FloorWorkspace({
                     top: percentage(placement.anchorY, template.rows),
                     width: percentage(placement.width, template.columns),
                     height: percentage(placement.height, template.rows),
+                    pointerEvents: "auto",
                   }}
                 >
                   <span>{room.areaSquareMeters}㎡</span>
                   <small>{roomStatusLabel}</small>
                 </button>
               );
-            })}
-            {facilityBlueprints.map(({ facility, localPlacementId }) => {
+              })}
+              {facilityBlueprints.map(({ facility, localPlacementId }) => {
               const slot = publicSpaceSlotById.get(localPlacementId);
               if (!template || slot?.anchorX === undefined || slot.anchorY === undefined ||
                   slot.width === undefined || slot.height === undefined) return null;
@@ -169,7 +184,8 @@ export function FloorWorkspace({
                   <small>{facility.status === "operating" ? "营业中" : facility.status === "closed" ? "已关闭" : "筹备中"}</small>
                 </div>
               );
-            })}
+              })}
+            </div>
           </div>
         </div>
 

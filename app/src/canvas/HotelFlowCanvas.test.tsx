@@ -1,3 +1,4 @@
+import { createRef } from "react";
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { FlowProjectionSnapshot } from "../domain/flows/flowProjection";
@@ -94,6 +95,40 @@ describe("HotelFlowCanvas", () => {
     expect(pixi.applications[0].destroy).toHaveBeenCalledWith(true, { children: true });
   });
 
+  it("keeps a DOM world layer on the exact same initial, pan, zoom, and resize transform", async () => {
+    const worldLayerRef = createRef<HTMLDivElement>();
+    render(<>
+      <div ref={worldLayerRef} data-testid="dom-world">
+        <button type="button">room</button>
+        <span data-testid="dom-point" style={{ position: "absolute", left: 20, top: 20 }} />
+      </div>
+      <HotelFlowCanvas snapshot={snapshot} worldLayerRef={worldLayerRef} />
+    </>);
+    await screen.findByTestId("hotel-flow-canvas");
+    const host = screen.getByTestId("hotel-flow-host");
+    const layer = screen.getByTestId("dom-world");
+
+    expect(layer.style.width).toBe("240px");
+    expect(layer.style.height).toBe("600px");
+    expect(layer.dataset.viewportTransform).toBe("0,0,1");
+    expect(pixi.containers[0].position.set).toHaveBeenLastCalledWith(0, 0);
+    expect(pixi.containers[0].scale.set).toHaveBeenLastCalledWith(1);
+    expect(pixi.sprites[0].x).toBe(20);
+    expect(screen.getByTestId("dom-point")).toHaveStyle({ left: "20px", top: "20px" });
+
+    fireEvent.wheel(host, { deltaY: -100 });
+    expect(layer.dataset.viewportTransform).toBe("0,0,1.12");
+    expect(pixi.containers[0].position.set).toHaveBeenLastCalledWith(0, 0);
+    expect(pixi.containers[0].scale.set).toHaveBeenLastCalledWith(1.12);
+
+    Object.defineProperty(host, "clientWidth", { configurable: true, value: 120 });
+    Object.defineProperty(host, "clientHeight", { configurable: true, value: 180 });
+    resizeObservers[0].callback([], resizeObservers[0] as unknown as ResizeObserver);
+    expect(layer.dataset.viewportTransform).toBe("0,0,1.12");
+    expect(pixi.containers[0].position.set).toHaveBeenLastCalledWith(0, 0);
+    expect(screen.getByRole("button", { name: "room" })).toBeEnabled();
+  });
+
   it("shows an accessible static fallback when Pixi initialization fails", async () => {
     pixi.fail = true;
     const error = vi.spyOn(console, "error").mockImplementation(() => {});
@@ -159,8 +194,32 @@ describe("HotelFlowCanvas", () => {
     resizeObservers[0].callback([], resizeObservers[0] as unknown as ResizeObserver);
 
     expect(app.renderer.resize).toHaveBeenLastCalledWith(40, 100);
-    expect(pixi.containers[0].position.set).toHaveBeenLastCalledWith(40, 0);
+    expect(pixi.containers[0].position.set).toHaveBeenLastCalledWith(0, 0);
     expect(pixi.sprites[0].visible).toBe(false);
+  });
+
+  it("resets a reused slot for a new event identity while preserving the same event phase", async () => {
+    const view = render(<HotelFlowCanvas snapshot={{ ...snapshot, events: [snapshot.events[0]] }} />);
+    await screen.findByTestId("hotel-flow-canvas");
+    const app = pixi.applications[0];
+    app.ticker.tick(500);
+    expect([pixi.sprites[0].x, pixi.sprites[0].y]).toEqual([60, 60]);
+
+    view.rerender(<HotelFlowCanvas snapshot={{
+      ...snapshot,
+      day: 2,
+      events: [{ ...snapshot.events[0], label: "same identity" }],
+    }} />);
+    app.ticker.tick(250);
+    expect([pixi.sprites[0].x, pixi.sprites[0].y]).toEqual([80, 80]);
+
+    view.rerender(<HotelFlowCanvas snapshot={{
+      ...snapshot,
+      day: 3,
+      events: [{ ...snapshot.events[0], id: "flow:replacement" }],
+    }} />);
+    app.ticker.tick(250);
+    expect([pixi.sprites[0].x, pixi.sprites[0].y]).toEqual([40, 40]);
   });
 
   it("still shows the fallback when a partially initialized Pixi app cannot clean up", async () => {

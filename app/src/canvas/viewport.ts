@@ -21,6 +21,11 @@ export interface ViewportBounds {
 const MIN_FLOW_SCALE = 0.5;
 const MAX_FLOW_SCALE = 3;
 
+function clampAxis(offset: number, viewportSize: number, scaledWorldSize: number): number {
+  if (scaledWorldSize <= viewportSize) return (viewportSize - scaledWorldSize) / 2;
+  return Math.min(0, Math.max(viewportSize - scaledWorldSize, offset));
+}
+
 export function fitViewport(
   width: number,
   height: number,
@@ -40,10 +45,30 @@ export function clampViewportTransform(
 ): ViewportTransform {
   const scale = Math.min(MAX_FLOW_SCALE, Math.max(MIN_FLOW_SCALE, transform.scale));
   return {
-    x: Math.min(viewport.width, Math.max(viewport.width - world.width * scale, transform.x)),
-    y: Math.min(viewport.height, Math.max(viewport.height - world.height * scale, transform.y)),
+    x: clampAxis(transform.x, viewport.width, world.width * scale),
+    y: clampAxis(transform.y, viewport.height, world.height * scale),
     scale,
   };
+}
+
+export function initialViewportTransform(
+  viewport: ViewportBounds,
+  world: ViewportBounds,
+): ViewportTransform {
+  const fitScale = Math.min(
+    viewport.width / Math.max(1, world.width),
+    viewport.height / Math.max(1, world.height),
+  );
+  const scale = Math.min(MAX_FLOW_SCALE, Math.max(MIN_FLOW_SCALE, fitScale));
+  return clampViewportTransform(
+    {
+      x: (viewport.width - world.width * scale) / 2,
+      y: (viewport.height - world.height * scale) / 2,
+      scale,
+    },
+    viewport,
+    world,
+  );
 }
 
 export function pointInViewport(

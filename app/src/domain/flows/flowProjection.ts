@@ -50,7 +50,8 @@ function center(columns: number, rows: number) {
 }
 
 function boundedCount(value: number): number {
-  return Math.max(1, Math.min(999, Math.round(value)));
+  if (value <= 0) return 0;
+  return Math.min(999, Math.max(1, Math.round(value)));
 }
 
 function flowLabel(base: string, bottleneck: ServiceBottleneck | undefined): string {
@@ -154,9 +155,13 @@ export function projectFlowSnapshot(
       x: (slot.anchorX + (slot.width ?? 1) / 2) * WORLD_SCALE,
       y: (slot.anchorY + (slot.height ?? 1) / 2) * WORLD_SCALE,
     };
-    events.push(
-      { id: `flow:guest:${facility.id}`, kind: "guest", label: "设施访客", count: boundedCount(result.visits), ...lift, targetX: destination.x, targetY: destination.y },
-      { id: `flow:staff:${facility.id}`, kind: "staff", label: "设施服务员工", count: boundedCount((facility.policy?.capacity ?? 1) * result.utilizationBps / 10_000), x: destination.x, y: destination.y, targetX: lift.x, targetY: lift.y },
+    const visitorCount = boundedCount(result.visits);
+    const staffCount = boundedCount((facility.policy?.capacity ?? 1) * result.utilizationBps / 10_000);
+    if (visitorCount > 0) events.push(
+      { id: `flow:guest:${facility.id}`, kind: "guest", label: "设施访客", count: visitorCount, ...lift, targetX: destination.x, targetY: destination.y },
+    );
+    if (staffCount > 0) events.push(
+      { id: `flow:staff:${facility.id}`, kind: "staff", label: "设施服务员工", count: staffCount, x: destination.x, y: destination.y, targetX: lift.x, targetY: lift.y },
     );
   }
 

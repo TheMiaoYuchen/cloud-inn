@@ -6,14 +6,14 @@ Measured on 2026-07-29 on the local macOS development machine. Budgets are fixed
 
 | Gate | Budget | Measured |
 | --- | ---: | ---: |
-| Warm one-day settlement | < 100 ms | 2.77 ms |
-| Thirty-day replay | < 2,000 ms | 76.94 ms |
-| Selected-floor flow projection | < 100 ms | 0.60 ms |
-| Browser save | < 1,000 ms | 4.70 ms |
-| Browser load | < 1,000 ms | 1.04 ms |
+| Warm one-day settlement | < 100 ms | 2.82 ms |
+| Thirty-day replay | < 2,000 ms | 78.53 ms |
+| Selected-floor flow projection | < 100 ms | 0.63 ms |
+| Browser save | < 1,000 ms | 4.64 ms |
+| Browser load | < 1,000 ms | 1.15 ms |
 | Projected sprites | <= 150 | 41 |
-| RAF delta p95 after warmup | <= 33 ms | 9.90 ms (1,141 samples) |
-| Pixi animation evidence | Positive traveled distance | 1,203 ticks; 68,193.27 world units; `107.56,288.80` to `104.90,286.41` |
+| RAF delta p95 after warmup | <= 33 ms | 9.80 ms (1,142 samples) |
+| Pixi animation evidence | Positive traveled distance | 1,204 ticks; 68,154.13 world units; `107.44,288.69` to `105.38,286.84` |
 | WebKit process RSS delta | < 200 MB | Pending Task 13 native smoke |
 
 Playwright does not expose a reliable WebKit renderer-process RSS metric. The browser gate therefore does not substitute JavaScript heap estimates for process RSS; the native measurement remains explicitly pending for Task 13.

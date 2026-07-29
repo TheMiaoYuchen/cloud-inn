@@ -1,5 +1,5 @@
 import { Application, Container, Sprite, Texture } from "pixi.js";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, type RefObject } from "react";
 import type {
   FlowProjectionEvent,
   FlowProjectionKind,
@@ -8,6 +8,7 @@ import type {
 import {
   clampViewportTransform,
   fitViewport,
+  initialViewportTransform,
   pointInViewport,
   type ViewportBounds,
   type ViewportTransform,
@@ -53,9 +54,11 @@ function animateSprite(pooled: PooledSprite, deltaMs: number): void {
 export function HotelFlowCanvas({
   snapshot,
   initializeForTest,
+  worldLayerRef,
 }: {
   snapshot: FlowProjectionSnapshot;
   initializeForTest?: (application: Application) => Promise<void>;
+  worldLayerRef?: RefObject<HTMLElement | null>;
 }) {
   const hostRef = useRef<HTMLDivElement>(null);
   const runtimeRef = useRef<{
@@ -90,6 +93,20 @@ export function HotelFlowCanvas({
       host.clientHeight || snapshotRef.current.height,
       window.devicePixelRatio,
     );
+    const applyWorldTransform = (
+      container: Container,
+      transform: ViewportTransform,
+    ) => {
+      container.position.set(transform.x, transform.y);
+      container.scale.set(transform.scale);
+      const layer = worldLayerRef?.current;
+      if (!layer) return;
+      layer.style.width = `${snapshotRef.current.width}px`;
+      layer.style.height = `${snapshotRef.current.height}px`;
+      layer.style.transformOrigin = "0 0";
+      layer.style.transform = `translate(${transform.x}px, ${transform.y}px) scale(${transform.scale})`;
+      layer.dataset.viewportTransform = `${transform.x},${transform.y},${transform.scale}`;
+    };
 
     const start = async () => {
       const app = new Application();
@@ -122,10 +139,9 @@ export function HotelFlowCanvas({
 
       const container = new Container();
       app.stage.addChild(container);
-      const transform = { x: 0, y: 0, scale: 1 };
       const viewport = { width: size.width, height: size.height };
-      container.position.set(transform.x, transform.y);
-      container.scale.set(transform.scale);
+      const transform = initialViewportTransform(viewport, snapshotRef.current);
+      applyWorldTransform(container, transform);
 
       const sprites = snapshotRef.current.events.map((event): PooledSprite => {
         const sprite = new Sprite(Texture.WHITE);
@@ -191,8 +207,7 @@ export function HotelFlowCanvas({
             runtime.viewport,
             { width: snapshotRef.current.width, height: snapshotRef.current.height },
           );
-          runtime.container.position.set(runtime.transform.x, runtime.transform.y);
-          runtime.container.scale.set(runtime.transform.scale);
+          applyWorldTransform(runtime.container, runtime.transform);
           for (const pooled of runtime.sprites) {
             pooled.sprite.visible = pooled.active && pointInViewport(
               pooled.sprite,
@@ -211,7 +226,7 @@ export function HotelFlowCanvas({
       runtimeRef.current = null;
       if (application) destroy(application);
     };
-  }, [initializeForTest]);
+  }, [initializeForTest, worldLayerRef]);
 
   useEffect(() => {
     const runtime = runtimeRef.current;
@@ -224,9 +239,11 @@ export function HotelFlowCanvas({
         pooled = { sprite, event, active: true, elapsedMs: 0 };
         runtime.sprites.push(pooled);
       }
+      if (pooled.event.id !== event.id) pooled.elapsedMs = 0;
       pooled.event = event;
       pooled.active = true;
       configureSprite(pooled.sprite, event);
+      animateSprite(pooled, 0);
       pooled.sprite.visible = pointInViewport(event, runtime.transform, runtime.viewport, 12);
     });
     for (let index = snapshot.events.length; index < runtime.sprites.length; index += 1) {
@@ -246,6 +263,14 @@ export function HotelFlowCanvas({
     runtime.transform = transform;
     runtime.container.position.set(transform.x, transform.y);
     runtime.container.scale.set(transform.scale);
+    const layer = worldLayerRef?.current;
+    if (layer) {
+      layer.style.width = `${snapshot.width}px`;
+      layer.style.height = `${snapshot.height}px`;
+      layer.style.transformOrigin = "0 0";
+      layer.style.transform = `translate(${transform.x}px, ${transform.y}px) scale(${transform.scale})`;
+      layer.dataset.viewportTransform = `${transform.x},${transform.y},${transform.scale}`;
+    }
     for (const { active, sprite } of runtime.sprites) {
       sprite.visible = active && pointInViewport(sprite, transform, runtime.viewport, 12);
     }
