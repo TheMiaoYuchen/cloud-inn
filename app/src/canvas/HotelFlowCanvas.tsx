@@ -29,6 +29,24 @@ type PooledSprite = {
   elapsedMs: number;
 };
 
+type FlowWorld = Pick<FlowProjectionSnapshot, "floorId" | "width" | "height">;
+
+function applyWorldTransform(
+  container: Container,
+  transform: ViewportTransform,
+  world: FlowWorld,
+  layer: HTMLElement | null | undefined,
+): void {
+  container.position.set(transform.x, transform.y);
+  container.scale.set(transform.scale);
+  if (!layer) return;
+  layer.style.width = `${world.width}px`;
+  layer.style.height = `${world.height}px`;
+  layer.style.transformOrigin = "0 0";
+  layer.style.transform = `translate(${transform.x}px, ${transform.y}px) scale(${transform.scale})`;
+  layer.dataset.viewportTransform = `${transform.x},${transform.y},${transform.scale}`;
+}
+
 function configureSprite(sprite: Sprite, event: FlowProjectionEvent): void {
   sprite.anchor.set(0.5);
   sprite.position.set(event.x, event.y);
@@ -66,6 +84,7 @@ export function HotelFlowCanvas({
     sprites: PooledSprite[];
     transform: ViewportTransform;
     viewport: ViewportBounds;
+    world: FlowWorld;
   } | null>(null);
   const snapshotRef = useRef(snapshot);
   snapshotRef.current = snapshot;
@@ -93,21 +112,6 @@ export function HotelFlowCanvas({
       host.clientHeight || snapshotRef.current.height,
       window.devicePixelRatio,
     );
-    const applyWorldTransform = (
-      container: Container,
-      transform: ViewportTransform,
-    ) => {
-      container.position.set(transform.x, transform.y);
-      container.scale.set(transform.scale);
-      const layer = worldLayerRef?.current;
-      if (!layer) return;
-      layer.style.width = `${snapshotRef.current.width}px`;
-      layer.style.height = `${snapshotRef.current.height}px`;
-      layer.style.transformOrigin = "0 0";
-      layer.style.transform = `translate(${transform.x}px, ${transform.y}px) scale(${transform.scale})`;
-      layer.dataset.viewportTransform = `${transform.x},${transform.y},${transform.scale}`;
-    };
-
     const start = async () => {
       const app = new Application();
       application = app;
@@ -140,8 +144,9 @@ export function HotelFlowCanvas({
       const container = new Container();
       app.stage.addChild(container);
       const viewport = { width: size.width, height: size.height };
-      const transform = initialViewportTransform(viewport, snapshotRef.current);
-      applyWorldTransform(container, transform);
+      const world = snapshotRef.current;
+      const transform = initialViewportTransform(viewport, world);
+      applyWorldTransform(container, transform, world, worldLayerRef?.current);
 
       const sprites = snapshotRef.current.events.map((event): PooledSprite => {
         const sprite = new Sprite(Texture.WHITE);
@@ -150,7 +155,13 @@ export function HotelFlowCanvas({
         container.addChild(sprite);
         return { sprite, event, active: true, elapsedMs: 0 };
       });
-      runtimeRef.current = { container, sprites, transform, viewport };
+      runtimeRef.current = {
+        container,
+        sprites,
+        transform,
+        viewport,
+        world: { floorId: world.floorId, width: world.width, height: world.height },
+      };
       let animationTick = 0;
       let animationDistance = 0;
       host.dataset.flowAnimationTick = "0";
@@ -207,7 +218,12 @@ export function HotelFlowCanvas({
             runtime.viewport,
             { width: snapshotRef.current.width, height: snapshotRef.current.height },
           );
-          applyWorldTransform(runtime.container, runtime.transform);
+          applyWorldTransform(
+            runtime.container,
+            runtime.transform,
+            snapshotRef.current,
+            worldLayerRef?.current,
+          );
           for (const pooled of runtime.sprites) {
             pooled.sprite.visible = pooled.active && pointInViewport(
               pooled.sprite,
@@ -231,6 +247,23 @@ export function HotelFlowCanvas({
   useEffect(() => {
     const runtime = runtimeRef.current;
     if (!runtime) return;
+    const worldChanged = runtime.world.floorId !== snapshot.floorId
+      || runtime.world.width !== snapshot.width
+      || runtime.world.height !== snapshot.height;
+    if (worldChanged) {
+      runtime.world = {
+        floorId: snapshot.floorId,
+        width: snapshot.width,
+        height: snapshot.height,
+      };
+      runtime.transform = initialViewportTransform(runtime.viewport, snapshot);
+      applyWorldTransform(
+        runtime.container,
+        runtime.transform,
+        runtime.world,
+        worldLayerRef?.current,
+      );
+    }
     snapshot.events.forEach((event, index) => {
       let pooled = runtime.sprites[index];
       if (!pooled) {
@@ -250,7 +283,7 @@ export function HotelFlowCanvas({
       runtime.sprites[index].active = false;
       runtime.sprites[index].sprite.visible = false;
     }
-  }, [snapshot]);
+  }, [snapshot, worldLayerRef]);
 
   const updateViewport = (next: ViewportTransform) => {
     const runtime = runtimeRef.current;
@@ -261,16 +294,12 @@ export function HotelFlowCanvas({
       { width: snapshot.width, height: snapshot.height },
     );
     runtime.transform = transform;
-    runtime.container.position.set(transform.x, transform.y);
-    runtime.container.scale.set(transform.scale);
-    const layer = worldLayerRef?.current;
-    if (layer) {
-      layer.style.width = `${snapshot.width}px`;
-      layer.style.height = `${snapshot.height}px`;
-      layer.style.transformOrigin = "0 0";
-      layer.style.transform = `translate(${transform.x}px, ${transform.y}px) scale(${transform.scale})`;
-      layer.dataset.viewportTransform = `${transform.x},${transform.y},${transform.scale}`;
-    }
+    applyWorldTransform(
+      runtime.container,
+      transform,
+      runtime.world,
+      worldLayerRef?.current,
+    );
     for (const { active, sprite } of runtime.sprites) {
       sprite.visible = active && pointInViewport(sprite, transform, runtime.viewport, 12);
     }

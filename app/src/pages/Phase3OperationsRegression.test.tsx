@@ -8,6 +8,8 @@ import { InMemorySavePort } from '../infrastructure/memory/InMemorySavePort';
 import type { SavePort } from '../application/ports/SavePort';
 import { GameProvider } from '../state/GameProvider';
 import { useGame } from '../state/GameProvider';
+import { assertStableId } from '../domain/building/buildingTypes';
+import { createPhase4AcceptanceState } from '../testing/phase4Fixtures';
 import { OperationsPage } from './OperationsPage';
 
 const checkpoint = 1_000;
@@ -334,6 +336,60 @@ describe('Phase 3 operations center', () => {
     expect(await within(renovation).findByText('私密性改造 1 级已安排 · 剩余停业 2 天')).toBeInTheDocument();
     await user.selectOptions(within(renovation).getByRole('combobox', { name: '改造项目' }), 'view');
     expect(within(renovation).queryByText(/已安排/)).not.toBeInTheDocument();
+  });
+
+  it('labels same-type facilities by authoritative floors and targets the selected instance', async () => {
+    const state = createPhase4AcceptanceState('operations-facility-labels');
+    state.revision = 1;
+    state.phase = 'open';
+    state.cashCents = 8_000_000;
+    state.operations = createOperationsState('casual');
+    state.operations.lastOfflineCheckpointMs = checkpoint;
+    const first = Object.values(state.phase4!.facilities)
+      .find(({ type }) => type === 'all-day-dining')!;
+    const second = structuredClone(first);
+    second.id = assertStableId('facility:floor:03:all-day-dining');
+    second.publicSpaceInstanceId = assertStableId('public-space:floor:03:space:dining-02');
+    const secondFloorTemplate = state.phase4!.floorTemplates['template:facility:standard'];
+    secondFloorTemplate.columns = 36;
+    secondFloorTemplate.publicSpaceSlots.push({
+      id: assertStableId('space:dining-02'),
+      permittedTypes: ['all-day-dining'],
+      anchorX: 25,
+      anchorY: 2,
+      width: 9,
+      height: 9,
+    });
+    state.phase4!.facilities[second.id] = second;
+    state.phase4!.publicSpaces[second.publicSpaceInstanceId] = {
+      ...structuredClone(state.phase4!.publicSpaces[first.publicSpaceInstanceId]),
+      id: second.publicSpaceInstanceId,
+      floorId: assertStableId('floor:03'),
+      localPlacementId: assertStableId('space:dining-02'),
+    };
+    state.phase4!.floors.find(({ id }) => id === 'floor:03')!
+      .publicSpaceInstanceIds.push(second.publicSpaceInstanceId);
+
+    const port = await portWith(state);
+    const user = userEvent.setup();
+    render(<GameProvider savePort={port} saveId={state.saveId} nowMs={() => checkpoint}><OperationsPage /></GameProvider>);
+
+    const picker = await screen.findByRole('combobox', { name: '经营设施' });
+    expect(within(picker).getByRole('option', { name: '2层 · All-Day Dining' })).toBeInTheDocument();
+    expect(within(picker).getByRole('option', { name: '3层 · All-Day Dining' })).toBeInTheDocument();
+    expect(within(picker).getByRole('option', { name: 'Bar' })).toBeInTheDocument();
+
+    await user.selectOptions(picker, second.id);
+    const capacity = screen.getByRole('spinbutton', { name: '接待容量' });
+    await user.clear(capacity);
+    await user.type(capacity, '77');
+    await user.click(screen.getByRole('button', { name: '保存设施策略' }));
+    expect(await within(screen.getByRole('region', { name: '设施经营' }))
+      .findByRole('status')).toHaveTextContent('已保存');
+
+    const saved = await port.load(state.saveId);
+    expect(saved?.phase4?.facilities[second.id].policy?.capacity).toBe(77);
+    expect(saved?.phase4?.facilities[first.id].policy?.capacity).toBe(first.policy?.capacity);
   });
 
   it('shows timeline, offline checkpoint and deterministic time controls through day thirty', async () => {

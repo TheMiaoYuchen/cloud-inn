@@ -212,6 +212,9 @@ export function createBuildingCommands(savePort: SavePort) {
       assertRevision(state.revision);
       assertSafeMoney(state.cashCents);
       if (state.phase4) return state;
+      if (state.phase !== "ready" && state.phase !== "open") {
+        throw new Error("酒店必须进入待开业或营业阶段，才能初始化内容规模系统");
+      }
       const upgraded = upgradeLegacyToPhase4(state);
       return persist(
         state,

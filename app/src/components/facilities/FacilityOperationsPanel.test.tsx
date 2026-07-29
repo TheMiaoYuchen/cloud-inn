@@ -57,6 +57,45 @@ describe("facility operations panel", () => {
     expect(screen.queryByRole("button", { name: "保存设施策略" })).not.toBeInTheDocument();
   });
 
+  it("distinguishes same-type facilities by authoritative floor labels and targets the selected id", async () => {
+    const first = facilityState().find(({ type }) => type === "all-day-dining")!;
+    const second = structuredClone(first);
+    second.id = assertStableId("facility:floor:03:all-day-dining");
+    second.publicSpaceInstanceId = assertStableId("public-space:floor:03:space:facility:primary");
+    second.dailyResults = [{
+      day: 2,
+      visits: 40,
+      revenueCents: 2_000_000,
+      operatingCostCents: 500_000,
+      utilizationBps: 4_000,
+      satisfactionDeltaBps: 10,
+      appealDeltaBps: 5,
+      reasonCodes: [],
+    }];
+    const configure = vi.fn(async () => true);
+    const user = userEvent.setup();
+    render(<FacilityOperationsPanel
+      facilities={[first, second]}
+      facilityLabelById={new Map([
+        [first.id, "2层 · All-Day Dining"],
+        [second.id, "3层 · All-Day Dining"],
+      ])}
+      pending={false}
+      onConfigure={configure}
+      onDevelop={async () => true}
+      onSelectOffering={async () => true}
+      onSetEnabled={async () => true}
+    />);
+
+    const picker = screen.getByLabelText("经营设施");
+    expect(within(picker).getByRole("option", { name: "2层 · All-Day Dining" })).toBeInTheDocument();
+    expect(within(picker).getByRole("option", { name: "3层 · All-Day Dining" })).toBeInTheDocument();
+    await user.selectOptions(picker, second.id);
+    expect(screen.getByText(/昨日收入/)).toHaveTextContent("20,000");
+    await user.click(screen.getByRole("button", { name: "保存设施策略" }));
+    expect(configure).toHaveBeenCalledWith(second.id, expect.any(Object));
+  });
+
   it("handles no results and disables controls while pending", () => {
     const dining = facilityState().find(({ type }) => type === "all-day-dining")!;
     dining.dailyResults = [];

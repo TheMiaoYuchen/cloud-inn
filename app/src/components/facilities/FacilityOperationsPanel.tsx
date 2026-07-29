@@ -34,6 +34,7 @@ const reasonRank: Record<string, number> = {
 
 type Props = {
   facilities: readonly FacilityState[];
+  facilityLabelById?: ReadonlyMap<string, string>;
   pending: boolean;
   onConfigure: (facilityId: string, policy: FacilityPolicyInput) => Promise<boolean>;
   onDevelop: (facilityId: string, offeringId: string) => Promise<boolean>;
@@ -164,7 +165,7 @@ export function FacilityOperationsPanel(props: Props) {
   return <section className="facility-operations operations-section" role="region" aria-label="设施经营">
     <div className="section-heading"><span>F</span><div><h2>设施经营</h2><p>逐项查看结果、原因与可执行策略</p></div></div>
     <label className="facility-picker">经营设施<select aria-label="经营设施" value={facility.id} onChange={(event) => setSelectedId(event.target.value)}>
-      {facilities.map((entry) => <option key={entry.id} value={entry.id}>{FACILITY_CATALOG.find(({ type }) => type === entry.type)?.name ?? entry.type}</option>)}
+      {facilities.map((entry) => <option key={entry.id} value={entry.id}>{props.facilityLabelById?.get(entry.id) ?? FACILITY_CATALOG.find(({ type }) => type === entry.type)?.name ?? entry.type}</option>)}
     </select></label>
     <div className="facility-journey">
       <section className="action-card"><h3>经营结果</h3>{latest ? <div className="facility-metrics">

@@ -851,6 +851,23 @@ describe("game commands", () => {
     ]);
   });
 
+  it("atomically reconciles Phase 4 reputation unlocks when operations starts", async () => {
+    const store = new InMemorySavePort();
+    const commands = createGameCommands(store);
+    const state = createPhase4AcceptanceState("phase4-operations-unlocks");
+    state.operations = undefined;
+    state.phase4!.catalogProgress.unlockedIds =
+      state.phase4!.catalogProgress.unlockedIds.filter((id) =>
+        id === "facility:sky-lobby" || id === "facility:all-day-dining");
+
+    const initialized = await commands.initializeOperations(state);
+
+    expect(initialized.operations?.reputationBps).toBe(5_000);
+    expect(initialized.phase4?.catalogProgress.unlockedIds)
+      .toContain("facility:gym");
+    await expectSavedRevision(state, initialized, store);
+  });
+
   it("migrates a customized legacy placeholder policy to the first concrete room offer", async () => {
     const store = new InMemorySavePort();
     const commands = createGameCommands(store);

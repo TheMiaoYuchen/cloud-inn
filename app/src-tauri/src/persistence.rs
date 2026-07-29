@@ -289,9 +289,31 @@ fn migrate_phase4(conn: &mut Connection) -> Result<(), String> {
         .exists([])
         .map_err(db_err)?;
     if !has_phase4 {
-        tx.execute("ALTER TABLE saves ADD COLUMN phase4_json TEXT", [])
-            .map_err(db_err)?;
+        tx.execute(
+            "ALTER TABLE saves ADD COLUMN phase4_json TEXT
+             CHECK(phase4_json IS NULL OR
+                   (json_valid(phase4_json) AND json_type(phase4_json) = 'object'))",
+            [],
+        )
+        .map_err(db_err)?;
     }
+    tx.execute_batch(
+        "CREATE TRIGGER IF NOT EXISTS saves_phase4_json_insert_check
+         BEFORE INSERT ON saves
+         WHEN NEW.phase4_json IS NOT NULL
+          AND (NOT json_valid(NEW.phase4_json) OR json_type(NEW.phase4_json) <> 'object')
+         BEGIN
+           SELECT RAISE(ABORT, 'phase4_json must be a valid JSON object');
+         END;
+         CREATE TRIGGER IF NOT EXISTS saves_phase4_json_update_check
+         BEFORE UPDATE OF phase4_json ON saves
+         WHEN NEW.phase4_json IS NOT NULL
+          AND (NOT json_valid(NEW.phase4_json) OR json_type(NEW.phase4_json) <> 'object')
+         BEGIN
+           SELECT RAISE(ABORT, 'phase4_json must be a valid JSON object');
+         END;",
+    )
+    .map_err(db_err)?;
     tx.execute(
         "INSERT OR IGNORE INTO schema_migrations(version,applied_at) VALUES(6,datetime('now'))",
         [],
@@ -730,8 +752,8 @@ fn validate_game(g: &Value) -> Result<Fields, String> {
         Some(Value::Null) | None => None,
         Some(value) => {
             validate_operations(value, current_day).map_err(|error| {
-                if g.get("phase4").is_some() && error == "经营报告算术不一致" {
-                    phase4_error(&error)
+                if g.get("phase4").is_some() && error == OPERATIONS_DAILY_SUMMARY_ERROR {
+                    phase4_error("经营报告算术不一致")
                 } else {
                     error
                 }
@@ -1026,36 +1048,87 @@ fn phase4_is_base64(value: &str) -> bool {
             .all(|byte| *byte == b'=')
 }
 
+fn phase4_is_javascript_whitespace(character: char) -> bool {
+    matches!(
+        character,
+        '\u{0009}'
+            | '\u{000A}'
+            | '\u{000B}'
+            | '\u{000C}'
+            | '\u{000D}'
+            | '\u{0020}'
+            | '\u{00A0}'
+            | '\u{1680}'
+            | '\u{2000}'
+            ..='\u{200A}'
+                | '\u{2028}'
+                | '\u{2029}'
+                | '\u{202F}'
+                | '\u{205F}'
+                | '\u{3000}'
+                | '\u{FEFF}'
+    )
+}
+
+fn phase4_contains_bearer_credential(value: &str, lower: &str) -> bool {
+    lower.match_indices("bearer").any(|(index, _)| {
+        let has_word_boundary = index == 0
+            || !lower.as_bytes()[index - 1].is_ascii_alphanumeric()
+                && lower.as_bytes()[index - 1] != b'_';
+        if !has_word_boundary {
+            return false;
+        }
+        let remainder = &value[index + "bearer".len()..];
+        let mut whitespace_end = 0;
+        let mut has_whitespace = false;
+        for (offset, character) in remainder.char_indices() {
+            if !phase4_is_javascript_whitespace(character) {
+                break;
+            }
+            has_whitespace = true;
+            whitespace_end = offset + character.len_utf8();
+        }
+        if !has_whitespace {
+            return false;
+        }
+        remainder[whitespace_end..]
+            .bytes()
+            .take_while(|byte| {
+                byte.is_ascii_alphanumeric()
+                    || matches!(byte, b'.' | b'_' | b'~' | b'+' | b'/' | b'=' | b'-')
+            })
+            .count()
+            >= 12
+    })
+}
+
 fn phase4_contains_credential(value: &str) -> bool {
     let lower = value.to_ascii_lowercase();
     if lower.contains("-----begin ") && lower.contains("private key-----") {
         return true;
     }
-    if lower.match_indices("bearer ").any(|(index, _)| {
-        let token = &value[index + "bearer ".len()..];
-        token
-            .chars()
-            .take_while(|character| {
-                character.is_ascii_alphanumeric() || matches!(character, '.' | '_' | '~' | '-')
-            })
-            .count()
-            >= 16
-    }) {
+    if phase4_contains_bearer_credential(value, &lower) {
         return true;
     }
     [
         "api_key",
         "api-key",
+        "apikey",
         "access_token",
         "access-token",
+        "accesstoken",
         "refresh_token",
         "refresh-token",
+        "refreshtoken",
         "auth_token",
         "auth-token",
+        "authtoken",
         "private_key",
         "private-key",
+        "privatekey",
         "client_secret",
         "client-secret",
+        "clientsecret",
         "password",
         "secret",
         "credential",
@@ -1107,6 +1180,26 @@ fn validate_phase4_tree(value: &Value) -> Result<(), String> {
                     pending.push((child, depth + 1));
                 }
             }
+            _ => {}
+        }
+    }
+    Ok(())
+}
+
+fn validate_phase4_safe_numbers(value: &Value) -> Result<(), String> {
+    let mut pending = vec![value];
+    while let Some(current) = pending.pop() {
+        match current {
+            Value::Number(number) => {
+                let safe = number.as_f64().is_some_and(|value| {
+                    value.is_finite() && value.abs() <= JS_MAX_SAFE_INTEGER as f64
+                });
+                if !safe {
+                    return Err(phase4_error("数字必须是有限安全 JSON 数字"));
+                }
+            }
+            Value::Array(values) => pending.extend(values),
+            Value::Object(object) => pending.extend(object.values()),
             _ => {}
         }
     }
@@ -1988,54 +2081,61 @@ fn validate_phase4(value: &Value, game: &Value) -> Result<(), String> {
         {
             return Err(phase4_error("目录引用无效"));
         }
-        if let Some(policy) = facility.get("policy").filter(|value| !value.is_null()) {
-            let policy = phase4_object(policy, "设施策略")?;
-            let positioning = phase4_stable_id(
-                phase4_field(policy, "positioningId", "设施策略编号")?,
-                "设施策略编号",
-            )?;
-            let price = phase4_stable_id(
-                phase4_field(policy, "priceBandId", "设施策略编号")?,
-                "设施策略编号",
-            )?;
-            let opening = phase4_stable_id(
-                phase4_field(policy, "openingPolicyId", "设施策略编号")?,
-                "设施策略编号",
-            )?;
-            let group = phase4_policy_group(type_id).ok_or_else(|| phase4_error("目录引用无效"))?;
-            if !phase4_policy_allowed(group, positioning, price, opening) {
-                return Err(phase4_error("目录引用无效"));
-            }
-            phase4_int(
-                phase4_field(policy, "capacity", "设施容量")?,
-                "设施容量",
-                1,
-                10_000,
-            )?;
-            validate_phase4_money(phase4_field(policy, "serviceBudgetCents", "设施服务预算")?)?;
-            if let Some(offering) = policy.get("signatureOfferingId") {
-                let offering = phase4_stable_id(offering, "招牌产品编号")?;
-                if !phase4_offering_allowed(type_id, offering) || !developed.contains(&offering) {
+        match facility.get("policy") {
+            Some(Value::Null) => {}
+            Some(policy) => {
+                let policy = phase4_object(policy, "设施策略")?;
+                let positioning = phase4_stable_id(
+                    phase4_field(policy, "positioningId", "设施策略编号")?,
+                    "设施策略编号",
+                )?;
+                let price = phase4_stable_id(
+                    phase4_field(policy, "priceBandId", "设施策略编号")?,
+                    "设施策略编号",
+                )?;
+                let opening = phase4_stable_id(
+                    phase4_field(policy, "openingPolicyId", "设施策略编号")?,
+                    "设施策略编号",
+                )?;
+                let group =
+                    phase4_policy_group(type_id).ok_or_else(|| phase4_error("目录引用无效"))?;
+                if !phase4_policy_allowed(group, positioning, price, opening) {
                     return Err(phase4_error("目录引用无效"));
                 }
+                phase4_int(
+                    phase4_field(policy, "capacity", "设施容量")?,
+                    "设施容量",
+                    1,
+                    10_000,
+                )?;
+                validate_phase4_money(phase4_field(policy, "serviceBudgetCents", "设施服务预算")?)?;
+                if let Some(offering) = policy.get("signatureOfferingId") {
+                    let offering = phase4_stable_id(offering, "招牌产品编号")?;
+                    if !phase4_offering_allowed(type_id, offering) || !developed.contains(&offering)
+                    {
+                        return Err(phase4_error("目录引用无效"));
+                    }
+                }
             }
+            None => return Err(phase4_error("设施策略结构无效")),
         }
-        if let Some(menu) = facility
-            .get("menuSelection")
-            .filter(|value| !value.is_null())
-        {
-            let menu = phase4_object(menu, "菜单选择")?;
-            let menu_id = phase4_stable_id(
-                phase4_field(menu, "menuStructureId", "菜单编号")?,
-                "菜单编号",
-            )?;
-            if !phase4_menu_allowed(type_id, menu_id) {
-                return Err(phase4_error("目录引用无效"));
+        match facility.get("menuSelection") {
+            Some(Value::Null) => {}
+            Some(menu) => {
+                let menu = phase4_object(menu, "菜单选择")?;
+                let menu_id = phase4_stable_id(
+                    phase4_field(menu, "menuStructureId", "菜单编号")?,
+                    "菜单编号",
+                )?;
+                if !phase4_menu_allowed(type_id, menu_id) {
+                    return Err(phase4_error("目录引用无效"));
+                }
+                phase4_unique_ids(
+                    phase4_field(menu, "selectedItemIds", "菜单条目")?,
+                    "菜单条目",
+                )?;
             }
-            phase4_unique_ids(
-                phase4_field(menu, "selectedItemIds", "菜单条目")?,
-                "菜单条目",
-            )?;
+            None => return Err(phase4_error("菜单选择结构无效")),
         }
         let history = phase4_array(
             phase4_field(facility, "dailyResults", "设施历史")?,
@@ -2088,6 +2188,11 @@ fn validate_phase4(value: &Value, game: &Value) -> Result<(), String> {
                 200,
             )?;
             phase4_unique_ids(phase4_field(result, "reasonCodes", "设施原因")?, "设施原因")?;
+        }
+        for (key, value) in facility {
+            if key.ends_with("Cents") {
+                phase4_int(value, key, 0, JS_MAX_SAFE_INTEGER)?;
+            }
         }
     }
     let progress = phase4_object(
@@ -2162,6 +2267,7 @@ fn validate_phase4(value: &Value, game: &Value) -> Result<(), String> {
             )?;
         }
     }
+    validate_phase4_safe_numbers(value)?;
     Ok(())
 }
 
@@ -2417,6 +2523,8 @@ fn operations_report_error() -> String {
     "经营报告算术不一致".into()
 }
 
+const OPERATIONS_DAILY_SUMMARY_ERROR: &str = "经营日报汇总与客群明细不一致";
+
 fn operations_report_category_version(value: &Value) -> Result<u8, String> {
     let present = [
         "roomRevenueCents",
@@ -2505,10 +2613,13 @@ fn validate_operations_daily(
         || checked_sum([room_revenue, public_space_revenue])? != revenue
         || checked_sum([department_cost, facility_operating_cost])? != operating
         || checked_sum([revenue, -operating, -finance])? != net
-        || operations_optional_int(value, "loanInterestCents", 0, JS_MAX_SAFE_INTEGER)?
-            .is_some_and(|stored| stored != finance)
     {
-        return Err(operations_report_error());
+        return Err(OPERATIONS_DAILY_SUMMARY_ERROR.to_string());
+    }
+    if operations_optional_int(value, "loanInterestCents", 0, JS_MAX_SAFE_INTEGER)?
+        .is_some_and(|stored| stored != finance)
+    {
+        return Err("经营存档贷款利息不一致".into());
     }
     operations_optional_int(value, "cashShortfallCents", 0, JS_MAX_SAFE_INTEGER)?;
     let available =
@@ -5066,6 +5177,104 @@ mod tests {
     }
 
     #[test]
+    fn phase4_extension_numbers_match_browser_safe_range() {
+        for number in [
+            json!(9_007_199_254_740_992_i64),
+            json!(-9_007_199_254_740_992_i64),
+        ] {
+            let mut invalid = phase4_fixture(include_str!("../tests/fixtures/phase4-valid.json"));
+            invalid["phase4"]["persistenceMetadata"] = json!({"futureScore": number});
+            let error = validate_game(&invalid).err().unwrap();
+            assert!(error.contains("数字必须是有限安全 JSON 数字"), "{error}");
+        }
+
+        let mut valid = phase4_fixture(include_str!("../tests/fixtures/phase4-valid.json"));
+        valid["phase4"]["persistenceMetadata"] = json!({
+            "positiveFraction": 0.5,
+            "negativeFraction": -0.5,
+            "maximum": JS_MAX_SAFE_INTEGER,
+            "minimum": -JS_MAX_SAFE_INTEGER,
+        });
+        assert!(validate_game(&valid).is_ok());
+    }
+
+    #[test]
+    fn phase4_compact_credential_values_match_browser() {
+        for credential in [
+            "apiKey=fixture",
+            "apikey: fixture",
+            "accessToken=fixture",
+            "refreshToken: fixture",
+            "authToken=fixture",
+            "privateKey: fixture",
+            "clientSecret=fixture",
+        ] {
+            let mut invalid = phase4_fixture(include_str!("../tests/fixtures/phase4-valid.json"));
+            invalid["phase4"]["persistenceMetadata"] = json!({"description": credential});
+            let error = validate_game(&invalid).err().unwrap();
+            assert!(error.contains("禁止持久化凭据"), "{credential}: {error}");
+        }
+    }
+
+    #[test]
+    fn phase4_bearer_credential_boundaries_match_browser() {
+        for credential in [
+            "Bearer abcdefghijkl",
+            "Bearer\tabcdefghijkl",
+            "Bearer\nabcdefghijkl",
+            "Bearer   abcdefghijkl",
+            "prefix Bearer abcdefghijkl",
+            "Bearer abcdef+/=-xy",
+        ] {
+            let mut invalid = phase4_fixture(include_str!("../tests/fixtures/phase4-valid.json"));
+            invalid["phase4"]["persistenceMetadata"] = json!({"description": credential});
+            let error = validate_game(&invalid).err().unwrap();
+            assert!(error.contains("禁止持久化凭据"), "{credential:?}: {error}");
+        }
+
+        for description in [
+            "xBearer abcdefghijkl",
+            "_Bearer abcdefghijkl",
+            "Bearer abcdefghijk",
+            "Bearer   short",
+        ] {
+            let mut valid = phase4_fixture(include_str!("../tests/fixtures/phase4-valid.json"));
+            valid["phase4"]["persistenceMetadata"] = json!({"description": description});
+            assert!(validate_game(&valid).is_ok(), "{description:?}");
+        }
+    }
+
+    #[test]
+    fn phase4_facility_nullable_fields_and_extension_money_match_browser() {
+        for field in ["policy", "menuSelection"] {
+            let mut invalid = phase4_fixture(include_str!("../tests/fixtures/phase4-valid.json"));
+            invalid["phase4"]["facilities"]
+                .as_object_mut()
+                .unwrap()
+                .values_mut()
+                .next()
+                .unwrap()
+                .as_object_mut()
+                .unwrap()
+                .remove(field);
+            let error = validate_game(&invalid).err().unwrap();
+            assert!(error.contains("结构无效"), "{field}: {error}");
+        }
+
+        for value in [json!(-1), json!(9_007_199_254_740_992_i64), json!(0.5)] {
+            let mut invalid = phase4_fixture(include_str!("../tests/fixtures/phase4-valid.json"));
+            invalid["phase4"]["facilities"]
+                .as_object_mut()
+                .unwrap()
+                .values_mut()
+                .next()
+                .unwrap()["futureCostCents"] = value;
+            let error = validate_game(&invalid).err().unwrap();
+            assert!(error.contains("futureCostCents必须是安全整数"), "{error}");
+        }
+    }
+
+    #[test]
     fn phase4_only_maps_report_errors_to_report_arithmetic() {
         let mut invalid_loan = phase4_fixture(include_str!("../tests/fixtures/phase4-valid.json"));
         invalid_loan["operations"]["loans"] = json!([{
@@ -5097,10 +5306,15 @@ mod tests {
         let mut invalid_aggregate =
             phase4_fixture(include_str!("../tests/fixtures/phase4-valid.json"));
         invalid_aggregate["operations"]["weeklyReports"][0]["revenueCents"] = json!(10_501);
-        assert!(validate_game(&invalid_aggregate)
-            .err()
-            .unwrap()
-            .contains("经营报告算术不一致"));
+        let aggregate_error = validate_game(&invalid_aggregate).err().unwrap();
+        assert!(
+            aggregate_error.contains("经营报告算术不一致"),
+            "{aggregate_error}"
+        );
+        assert!(
+            !aggregate_error.starts_with("内容规模存档"),
+            "{aggregate_error}"
+        );
 
         let mut partial_categories =
             phase4_fixture(include_str!("../tests/fixtures/phase4-valid.json"));
@@ -5108,10 +5322,24 @@ mod tests {
             .as_object_mut()
             .unwrap()
             .remove("publicSpaceRevenueCents");
-        assert!(validate_game(&partial_categories)
-            .err()
-            .unwrap()
-            .contains("经营报告算术不一致"));
+        let category_error = validate_game(&partial_categories).err().unwrap();
+        assert!(
+            category_error.contains("经营报告算术不一致"),
+            "{category_error}"
+        );
+        assert!(
+            !category_error.starts_with("内容规模存档"),
+            "{category_error}"
+        );
+
+        let mut invalid_interest =
+            phase4_fixture(include_str!("../tests/fixtures/phase4-valid.json"));
+        invalid_interest["operations"]["dailyReports"][0]["loanInterestCents"] = json!(11);
+        let interest_error = validate_game(&invalid_interest).err().unwrap();
+        assert!(
+            !interest_error.starts_with("内容规模存档"),
+            "{interest_error}"
+        );
     }
 
     #[test]
@@ -5311,7 +5539,9 @@ mod tests {
         repository.commit_game(0, game()).unwrap();
         let conn = repository.open("save-1").unwrap();
         conn.execute_batch(
-            "ALTER TABLE saves DROP COLUMN phase4_json;
+            "DROP TRIGGER saves_phase4_json_insert_check;
+             DROP TRIGGER saves_phase4_json_update_check;
+             ALTER TABLE saves DROP COLUMN phase4_json;
              DELETE FROM schema_migrations WHERE version=6;",
         )
         .unwrap();
@@ -5330,5 +5560,45 @@ mod tests {
             .unwrap(),
             1
         );
+        let saves_sql = conn
+            .query_row::<String, _, _>(
+                "SELECT sql FROM sqlite_master WHERE type='table' AND name='saves'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert!(saves_sql.contains("json_valid(phase4_json)"), "{saves_sql}");
+        assert!(conn
+            .execute(
+                "UPDATE saves SET phase4_json='[]' WHERE save_id='save-1'",
+                [],
+            )
+            .is_err());
+    }
+
+    #[test]
+    fn phase4_migration_repairs_an_existing_unconstrained_column() {
+        let repository = SaveRepository::new(root("phase4-unconstrained-schema"));
+        repository.commit_game(0, game()).unwrap();
+        let conn = repository.open("save-1").unwrap();
+        conn.execute_batch(
+            "DROP TRIGGER IF EXISTS saves_phase4_json_insert_check;
+             DROP TRIGGER IF EXISTS saves_phase4_json_update_check;
+             ALTER TABLE saves DROP COLUMN phase4_json;
+             ALTER TABLE saves ADD COLUMN phase4_json TEXT;",
+        )
+        .unwrap();
+        drop(conn);
+
+        repository.open("save-1").unwrap();
+
+        let conn = Connection::open(repository.db_path("save-1")).unwrap();
+        assert!(conn
+            .execute(
+                "UPDATE saves SET phase4_json='[]' WHERE save_id='save-1'",
+                [],
+            )
+            .is_err());
+        repository.open("save-1").unwrap();
     }
 }

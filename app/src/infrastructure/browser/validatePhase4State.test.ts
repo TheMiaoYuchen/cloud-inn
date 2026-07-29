@@ -98,6 +98,39 @@ const sharedInvalidFixtures = Object.entries(sharedInvalidModules)
   .sort(([left], [right]) => left.localeCompare(right));
 
 describe("complete Phase 4 browser persistence validation", () => {
+  it.each([
+    ["NaN", Number.NaN],
+    ["positive infinity", Number.POSITIVE_INFINITY],
+    ["negative infinity", Number.NEGATIVE_INFINITY],
+  ])("rejects non-finite Phase 4 JSON number %s", (_label, number) => {
+    const value = structuredClone(sharedPhase4Fixture) as any;
+    value.phase4.persistenceMetadata = { numericEvidence: number };
+
+    expect(() => validateBrowserGameState(value, "phase4-shared"))
+      .toThrow("数字必须是有限安全 JSON 数字");
+  });
+
+  it("accepts finite safe fractional numbers in Phase 4 extension metadata", () => {
+    const value = structuredClone(sharedPhase4Fixture) as any;
+    value.phase4.persistenceMetadata = {
+      fractionalEvidence: 0.125,
+      maximumSafeEvidence: Number.MAX_SAFE_INTEGER,
+    };
+
+    expect(() => validateBrowserGameState(value, "phase4-shared"))
+      .not.toThrow();
+  });
+
+  it("rejects finite Phase 4 numbers outside the safe JSON range", () => {
+    const value = structuredClone(sharedPhase4Fixture) as any;
+    value.phase4.persistenceMetadata = {
+      unsafeEvidence: Number.MAX_SAFE_INTEGER + 1,
+    };
+
+    expect(() => validateBrowserGameState(value, "phase4-shared"))
+      .toThrow("数字必须是有限安全 JSON 数字");
+  });
+
   it("enumerates the exact shared invalid fixture manifest", () => {
     expect(sharedInvalidFixtures.map(([name]) => name)).toEqual(EXPECTED_INVALID_FIXTURES);
   });
@@ -358,7 +391,9 @@ describe("complete Phase 4 browser persistence validation", () => {
 
   it.each([
     "password=hunter2", "secret: fixture", "credential=fixture", "api-key: fixture", "access_token=fixture",
-    "Bearer abcdefghijklmnop", "secret phrase then secret=fixture",
+    "Bearer abcdefghijklmnop", "Bearer abcdefghijkl", "Bearer\tabcdefghijkl",
+    "Bearer\nabcdefghijkl", "Bearer   abcdefghijkl", "prefix Bearer abcdefghijkl",
+    "Bearer abcdef+/=-xy", "secret phrase then secret=fixture",
   ])(
     "rejects forbidden credential value %s",
     (credential) => {
@@ -368,7 +403,14 @@ describe("complete Phase 4 browser persistence validation", () => {
     },
   );
 
-  it.each(["notsecret=fixture", "Bearer short"])("accepts non-credential value %s", (description) => {
+  it.each([
+    "notsecret=fixture",
+    "Bearer short",
+    "Bearer abcdefghijk",
+    "Bearer   short",
+    "xBearer abcdefghijkl",
+    "_Bearer abcdefghijkl",
+  ])("accepts non-credential value %s", (description) => {
     const value = structuredClone(sharedPhase4Fixture) as any;
     value.phase4.persistenceMetadata = { description };
     expect(() => validateBrowserGameState(value, "phase4-shared")).not.toThrow();

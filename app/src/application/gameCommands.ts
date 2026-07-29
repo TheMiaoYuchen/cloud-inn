@@ -66,6 +66,10 @@ import { createBuildingCommands } from "./buildingCommands";
 import { createSpaceCommands } from "./spaceCommands";
 import { createFacilityCommands } from "./facilityCommands";
 import { projectHotelInventory } from "../domain/building/hotelInventory";
+import {
+  projectContentUnlocks,
+  reconcileCatalogProgress,
+} from "../domain/content/contentUnlocks";
 
 export function previewRoomRenovation(
   state: Readonly<GameState>,
@@ -382,10 +386,22 @@ export function createGameCommands(savePort: SavePort) {
           context,
         );
       }
-      return persist(state, {
+      const candidate: GameState = {
         ...state,
         operations: { ...current, pricePolicies },
-      });
+      };
+      return persist(
+        state,
+        candidate.phase4
+          ? {
+              ...candidate,
+              phase4: reconcileCatalogProgress(
+                candidate.phase4,
+                projectContentUnlocks(candidate),
+              ),
+            }
+          : candidate,
+      );
     },
 
     async configureDepartment(

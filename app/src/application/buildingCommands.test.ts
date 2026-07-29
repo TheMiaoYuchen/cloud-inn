@@ -92,6 +92,20 @@ function asymmetricCapacityState(
 }
 
 describe("atomic building commands", () => {
+  it("rejects content-scale initialization while room design can still change legacy inventory", async () => {
+    const store = new RecordingSavePort();
+    const commands = createGameCommands(store);
+    const state = createNewGame("building-initialize-before-construction");
+    const snapshot = structuredClone(state);
+
+    await expect(commands.initializeContentScale(state))
+      .rejects.toThrow("待开业或营业阶段");
+
+    expect(state).toEqual(snapshot);
+    expect(store.commits).toBe(0);
+    expect(await store.load(state.saveId)).toBeNull();
+  });
+
   it("allows a floor copy when the selected source fits even if the first guest floor does not", async () => {
     const store = new RecordingSavePort();
     const commands = createGameCommands(store);

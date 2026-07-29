@@ -126,13 +126,40 @@ test("completes and restores the visible Phase 4 content-scale loop", async ({ p
   }
   await expect(page.getByText("营业日 30 / 30")).toBeVisible();
   const timeline = page.getByRole("region", { name: "经营报告时间线" });
+  const reportTextBeforeReload = new Map<string, string[]>();
   for (const category of ["日报", "周报", "月结"]) {
     const reportGroup = timeline.getByRole("article", { name: category });
     await expect(reportGroup).toContainText("客房收入");
     await expect(reportGroup).toContainText("公共空间收入");
     await expect(reportGroup).toContainText("部门成本");
     await expect(reportGroup).toContainText("设施成本");
+    const entries = reportGroup.locator(".timeline-entry");
+    await expect(entries.first()).toBeVisible();
+    reportTextBeforeReload.set(category, await entries.allInnerTexts());
   }
+  const reportsBeforeReload = await page.evaluate(() => {
+    const raw = localStorage.getItem("cloud-inn:save:save-1");
+    if (!raw) throw new Error("Phase 4 acceptance save is missing");
+    const envelope = JSON.parse(raw) as {
+      game?: {
+        operations?: {
+          dailyReports?: unknown[];
+          weeklyReports?: unknown[];
+          monthlyCloses?: unknown[];
+        };
+      };
+    };
+    const operations = envelope.game?.operations;
+    if (!operations) throw new Error("Phase 4 acceptance reports are missing");
+    return {
+      dailyReports: operations.dailyReports,
+      weeklyReports: operations.weeklyReports,
+      monthlyCloses: operations.monthlyCloses,
+    };
+  });
+  expect(reportsBeforeReload.dailyReports).toHaveLength(30);
+  expect(reportsBeforeReload.weeklyReports).toHaveLength(4);
+  expect(reportsBeforeReload.monthlyCloses).toHaveLength(1);
   await expect(facilityPanel).toContainText("昨日收入");
   await expect(facilityPanel).toContainText("月累计收入");
 
@@ -179,11 +206,34 @@ test("completes and restores the visible Phase 4 content-scale loop", async ({ p
   await expect(restoredFacilityPanel).toContainText("已选服务套餐：Cloud restoration");
   const restoredTimeline = page.getByRole("region", { name: "经营报告时间线" });
   await expect(restoredTimeline).toContainText("日报 30 · 周报 4 · 月结 1");
+  const reportsAfterReload = await page.evaluate(() => {
+    const raw = localStorage.getItem("cloud-inn:save:save-1");
+    if (!raw) throw new Error("Restored Phase 4 acceptance save is missing");
+    const envelope = JSON.parse(raw) as {
+      game?: {
+        operations?: {
+          dailyReports?: unknown[];
+          weeklyReports?: unknown[];
+          monthlyCloses?: unknown[];
+        };
+      };
+    };
+    const operations = envelope.game?.operations;
+    if (!operations) throw new Error("Restored Phase 4 acceptance reports are missing");
+    return {
+      dailyReports: operations.dailyReports,
+      weeklyReports: operations.weeklyReports,
+      monthlyCloses: operations.monthlyCloses,
+    };
+  });
+  expect(reportsAfterReload).toEqual(reportsBeforeReload);
   for (const category of ["日报", "周报", "月结"]) {
     const reportGroup = restoredTimeline.getByRole("article", { name: category });
     await expect(reportGroup).toContainText("客房收入");
     await expect(reportGroup).toContainText("公共空间收入");
     await expect(reportGroup).toContainText("部门成本");
     await expect(reportGroup).toContainText("设施成本");
+    expect(await reportGroup.locator(".timeline-entry").allInnerTexts())
+      .toEqual(reportTextBeforeReload.get(category));
   }
 });

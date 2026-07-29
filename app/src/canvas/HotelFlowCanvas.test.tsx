@@ -97,7 +97,7 @@ describe("HotelFlowCanvas", () => {
 
   it("keeps a DOM world layer on the exact same initial, pan, zoom, and resize transform", async () => {
     const worldLayerRef = createRef<HTMLDivElement>();
-    render(<>
+    const view = render(<>
       <div ref={worldLayerRef} data-testid="dom-world">
         <button type="button">room</button>
         <span data-testid="dom-point" style={{ position: "absolute", left: 20, top: 20 }} />
@@ -121,11 +121,41 @@ describe("HotelFlowCanvas", () => {
     expect(pixi.containers[0].position.set).toHaveBeenLastCalledWith(0, 0);
     expect(pixi.containers[0].scale.set).toHaveBeenLastCalledWith(1.12);
 
+    view.rerender(<>
+      <div ref={worldLayerRef} data-testid="dom-world">
+        <button type="button">room</button>
+        <span data-testid="dom-point" style={{ position: "absolute", left: 20, top: 20 }} />
+      </div>
+      <HotelFlowCanvas
+        snapshot={{
+          ...snapshot,
+          floorId: "floor:29",
+          height: 240,
+          events: [{
+            ...snapshot.events[0],
+            id: "flow:floor-29",
+            x: 20,
+            y: 230,
+            targetX: 100,
+            targetY: 230,
+          }],
+        }}
+        worldLayerRef={worldLayerRef}
+      />
+    </>);
+    expect(layer.style.width).toBe("240px");
+    expect(layer.style.height).toBe("240px");
+    expect(layer.dataset.viewportTransform).toBe("0,180,1");
+    expect(pixi.containers[0].position.set).toHaveBeenLastCalledWith(0, 180);
+    expect(pixi.containers[0].scale.set).toHaveBeenLastCalledWith(1);
+    expect(pixi.sprites[0].visible).toBe(true);
+
     Object.defineProperty(host, "clientWidth", { configurable: true, value: 120 });
     Object.defineProperty(host, "clientHeight", { configurable: true, value: 180 });
     resizeObservers[0].callback([], resizeObservers[0] as unknown as ResizeObserver);
-    expect(layer.dataset.viewportTransform).toBe("0,0,1.12");
+    expect(layer.dataset.viewportTransform).toBe("0,0,1");
     expect(pixi.containers[0].position.set).toHaveBeenLastCalledWith(0, 0);
+    expect(pixi.sprites[0].visible).toBe(false);
     expect(screen.getByRole("button", { name: "room" })).toBeEnabled();
   });
 

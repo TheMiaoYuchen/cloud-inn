@@ -305,6 +305,35 @@ describe("LocalStorageSavePort", () => {
     expect(window.localStorage.getItem(storageKey(original.saveId))).toBe(rawBefore);
   });
 
+  it.each([
+    ["nan", Number.NaN],
+    ["positive-infinity", Number.POSITIVE_INFINITY],
+    ["negative-infinity", Number.NEGATIVE_INFINITY],
+  ])(
+    "rejects Phase 4 %s before JSON serialization without overwriting the save",
+    async (label, number) => {
+      const locks = fakeLockManager();
+      const port = new LocalStorageSavePort(locks);
+      const original = createPhase4AcceptanceState(`phase4-${label}`);
+      original.revision = 1;
+      await port.commit(0, original);
+      const rawBefore = window.localStorage.getItem(storageKey(original.saveId));
+      const invalid = structuredClone(original) as GameState & {
+        phase4: NonNullable<GameState["phase4"]> & {
+          persistenceMetadata?: { numericEvidence: number };
+        };
+      };
+      invalid.revision = 2;
+      invalid.phase4.persistenceMetadata = { numericEvidence: number };
+
+      await expect(port.commit(1, invalid)).rejects.toThrow(
+        "数字必须是有限安全 JSON 数字",
+      );
+      expect(window.localStorage.getItem(storageKey(original.saveId)))
+        .toBe(rawBefore);
+    },
+  );
+
   it("serializes commits across instances so one stale writer is rejected", async () => {
     const locks = fakeLockManager();
     const firstPort = new LocalStorageSavePort(locks);

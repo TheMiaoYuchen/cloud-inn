@@ -66,7 +66,7 @@ const CREDENTIAL_KEYS = new Set([
   "password", "passwd", "secret", "apikey", "accesstoken", "refreshtoken", "authtoken",
   "privatekey", "clientsecret", "credential", "credentials",
 ]);
-const CREDENTIAL_VALUE = /(?:-----BEGIN [A-Z ]*PRIVATE KEY-----|\b(?:api[_-]?key|access[_-]?token|refresh[_-]?token|auth[_-]?token|private[_-]?key|client[_-]?secret|password|secret|credentials?)\s*[:=]|\bBearer\s+[A-Za-z0-9._~-]{16,})/i;
+const CREDENTIAL_VALUE = /(?:-----BEGIN [A-Z ]*PRIVATE KEY-----|\b(?:api[_-]?key|access[_-]?token|refresh[_-]?token|auth[_-]?token|private[_-]?key|client[_-]?secret|password|secret|credentials?)\s*[:=]|\bBearer\s+[A-Za-z0-9._~+/=-]{12,})/i;
 const STRICT_BASE64 = /^[A-Za-z0-9+/]+={0,2}$/;
 const MAX_JSON_BYTES = 8 * 1024 * 1024;
 
@@ -142,6 +142,10 @@ function validateTree(value: unknown): void {
       if (isStrictBase64(current.value)) {
         phase4Error("禁止持久化Base64数据");
       }
+    } else if (typeof current.value === "number") {
+      if (!Number.isFinite(current.value)) {
+        phase4Error("数字必须是有限安全 JSON 数字");
+      }
     } else if (Array.isArray(current.value)) {
       if (seen.has(current.value)) phase4Error("JSON包含循环或重复对象引用");
       seen.add(current.value);
@@ -156,6 +160,22 @@ function validateTree(value: unknown): void {
       }
     } else if (!["number", "boolean"].includes(typeof current.value) && current.value !== null) {
       phase4Error("JSON结构无效");
+    }
+  }
+}
+
+function validateSafeJsonNumbers(value: unknown): void {
+  const pending = [value];
+  while (pending.length > 0) {
+    const current = pending.pop();
+    if (typeof current === "number") {
+      if (Math.abs(current) > Number.MAX_SAFE_INTEGER) {
+        phase4Error("数字必须是有限安全 JSON 数字");
+      }
+    } else if (Array.isArray(current)) {
+      pending.push(...current);
+    } else if (typeof current === "object" && current !== null) {
+      pending.push(...Object.values(current));
     }
   }
 }
@@ -497,4 +517,5 @@ export function validatePhase4State(value: unknown, gameValue?: unknown): void {
       integer(event.count, "流动数量", 1);
     }
   }
+  validateSafeJsonNumbers(value);
 }
