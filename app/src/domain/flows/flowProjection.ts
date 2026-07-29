@@ -1,5 +1,6 @@
 import type { HotelFloor, ScaleFloorTemplate } from "../building/buildingTypes";
 import type { GameState } from "../game/state";
+import { calculateServiceCapacity, type ServiceBottleneck } from "../operations/serviceCapacity";
 
 export type FlowProjectionKind =
   | "guest"
@@ -52,6 +53,20 @@ function boundedCount(value: number): number {
   return Math.max(1, Math.min(999, Math.round(value)));
 }
 
+function flowLabel(base: string, bottleneck: ServiceBottleneck | undefined): string {
+  return bottleneck ? `${base} · 部门瓶颈` : base;
+}
+
+function bottleneckFlowCount(
+  baseline: number,
+  demand: number,
+  bottleneck: ServiceBottleneck | undefined,
+): number {
+  return boundedCount(bottleneck
+    ? Math.ceil(demand * (10_000 - bottleneck.capacityBps) / 10_000)
+    : baseline);
+}
+
 export function projectFlowSnapshot(
   state: Readonly<GameState>,
   floorId: string,
@@ -79,6 +94,20 @@ export function projectFlowSnapshot(
   const housekeeping = state.operations?.departments.housekeeping;
   const foodAndBeverage = state.operations?.departments.foodAndBeverage;
   const frontOffice = state.operations?.departments.frontOffice;
+  const occupiedRooms = Math.max(0, latestReport?.soldRooms ?? bookings.length);
+  const availableRooms = Math.max(
+    occupiedRooms,
+    latestReport?.availableRooms ?? phase4.floors.reduce((total, item) => total + item.rooms.length, 0),
+  );
+  const bottleneckByDepartment = new Map(
+    state.operations
+      ? calculateServiceCapacity(state.operations.departments, { occupiedRooms, availableRooms })
+        .bottlenecks.map((bottleneck) => [bottleneck.departmentId, bottleneck])
+      : [],
+  );
+  const housekeepingBottleneck = bottleneckByDepartment.get("housekeeping");
+  const foodBottleneck = bottleneckByDepartment.get("foodAndBeverage");
+  const frontOfficeBottleneck = bottleneckByDepartment.get("frontOffice");
   const events: FlowProjectionEvent[] = [];
 
   for (const room of floor.rooms) {
@@ -93,8 +122,8 @@ export function projectFlowSnapshot(
     events.push(
       { id: `flow:guest:${suffix}`, kind: "guest", label: "入住宾客", count: 1, ...lift, targetX: roomCenter.x, targetY: roomCenter.y },
       { id: `flow:luggage:${suffix}`, kind: "luggage", label: "抵店行李", count: 1, ...lift, targetX: roomCenter.x, targetY: roomCenter.y },
-      { id: `flow:cleaning:${suffix}`, kind: "cleaning", label: "客房清洁", count: boundedCount((housekeeping?.staffing ?? 1) / Math.max(1, bookings.length)), x: roomCenter.x, y: roomCenter.y, targetX: lift.x, targetY: lift.y },
-      { id: `flow:room-service:${suffix}`, kind: "room-service", label: "客房送餐", count: boundedCount((foodAndBeverage?.staffing ?? 1) / Math.max(1, bookings.length)), ...lift, targetX: roomCenter.x, targetY: roomCenter.y },
+      { id: `flow:cleaning:${suffix}`, kind: "cleaning", label: flowLabel("客房清洁", housekeepingBottleneck), count: bottleneckFlowCount((housekeeping?.staffing ?? 1) / Math.max(1, bookings.length), bookings.length, housekeepingBottleneck), x: roomCenter.x, y: roomCenter.y, targetX: lift.x, targetY: lift.y },
+      { id: `flow:room-service:${suffix}`, kind: "room-service", label: flowLabel("客房送餐", foodBottleneck), count: bottleneckFlowCount((foodAndBeverage?.staffing ?? 1) / Math.max(1, bookings.length), bookings.length, foodBottleneck), ...lift, targetX: roomCenter.x, targetY: roomCenter.y },
     );
   }
 
@@ -102,8 +131,8 @@ export function projectFlowSnapshot(
     events.push({
       id: `flow:staff:${floor.id}`,
       kind: "staff",
-      label: "楼层服务员工",
-      count: boundedCount(frontOffice?.staffing ?? 1),
+      label: flowLabel("楼层服务员工", frontOfficeBottleneck),
+      count: bottleneckFlowCount(frontOffice?.staffing ?? 1, occupiedRooms, frontOfficeBottleneck),
       x: lift.x,
       y: lift.y,
       targetX: Math.min(width, lift.x + WORLD_SCALE),

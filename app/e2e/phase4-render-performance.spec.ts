@@ -46,6 +46,11 @@ test("keeps the maximum selected-floor flow within frame and sprite budgets", as
   const spriteCount = Number(await host.getAttribute("data-flow-sprite-count"));
   expect(spriteCount).toBeGreaterThan(0);
   expect(spriteCount).toBeLessThanOrEqual(150);
+  const animationBefore = await host.evaluate((element) => ({
+    tick: Number(element.dataset.flowAnimationTick),
+    sample: element.dataset.flowAnimationSample,
+    distance: Number(element.dataset.flowAnimationDistance),
+  }));
 
   const frame = await host.evaluate(async (element) => {
     const samples: number[] = [];
@@ -85,14 +90,31 @@ test("keeps the maximum selected-floor flow within frame and sprite budgets", as
       sampleCount: samples.length,
     };
   });
+  const animationAfter = await host.evaluate((element) => ({
+    tick: Number(element.dataset.flowAnimationTick),
+    sample: element.dataset.flowAnimationSample,
+    distance: Number(element.dataset.flowAnimationDistance),
+  }));
+  const animationEvidence = {
+    tickDelta: animationAfter.tick - animationBefore.tick,
+    sampleChanged: animationAfter.sample !== animationBefore.sample,
+    distanceDelta: animationAfter.distance - animationBefore.distance,
+    before: animationBefore.sample,
+    after: animationAfter.sample,
+  };
 
   test.info().annotations.push(
     { type: "phase4-sprites", description: String(spriteCount) },
     { type: "phase4-raf-p95-ms", description: frame.p95Ms.toFixed(2) },
     { type: "phase4-raf-samples", description: String(frame.sampleCount) },
+    { type: "phase4-animation-ticks", description: String(animationEvidence.tickDelta) },
+    { type: "phase4-animation-changed", description: String(animationEvidence.sampleChanged) },
+    { type: "phase4-animation-distance", description: animationEvidence.distanceDelta.toFixed(2) },
     { type: "phase4-rss", description: "pending Task 13 native smoke" },
   );
-  console.log(JSON.stringify({ spriteCount, ...frame, rss: "pending Task 13 native smoke" }));
+  console.log(JSON.stringify({ spriteCount, ...frame, animationEvidence, rss: "pending Task 13 native smoke" }));
   expect(frame.sampleCount).toBeGreaterThan(100);
   expect(frame.p95Ms).toBeLessThanOrEqual(33);
+  expect(animationEvidence.tickDelta).toBeGreaterThan(100);
+  expect(animationEvidence.distanceDelta).toBeGreaterThan(0);
 });

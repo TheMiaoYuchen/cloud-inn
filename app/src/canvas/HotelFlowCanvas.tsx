@@ -21,7 +21,12 @@ const FLOW_COLORS: Record<FlowProjectionKind, number> = {
   "room-service": 0xe49b73,
 };
 
-type PooledSprite = { sprite: Sprite; event: FlowProjectionEvent; active: boolean };
+type PooledSprite = {
+  sprite: Sprite;
+  event: FlowProjectionEvent;
+  active: boolean;
+  elapsedMs: number;
+};
 
 function configureSprite(sprite: Sprite, event: FlowProjectionEvent): void {
   sprite.anchor.set(0.5);
@@ -31,6 +36,18 @@ function configureSprite(sprite: Sprite, event: FlowProjectionEvent): void {
   sprite.width = markerSize;
   sprite.height = markerSize;
   sprite.eventMode = "none";
+}
+
+function animateSprite(pooled: PooledSprite, deltaMs: number): void {
+  if (!pooled.active) return;
+  pooled.elapsedMs = (pooled.elapsedMs + Math.max(0, deltaMs)) % 2_000;
+  const phase = pooled.elapsedMs <= 1_000
+    ? pooled.elapsedMs / 1_000
+    : (2_000 - pooled.elapsedMs) / 1_000;
+  pooled.sprite.position.set(
+    pooled.event.x + (pooled.event.targetX - pooled.event.x) * phase,
+    pooled.event.y + (pooled.event.targetY - pooled.event.y) * phase,
+  );
 }
 
 export function HotelFlowCanvas({
@@ -57,6 +74,7 @@ export function HotelFlowCanvas({
 
     let cancelled = false;
     let application: Application | undefined;
+    let animateCallback: ((ticker: { deltaMS: number }) => void) | undefined;
     let destroyed = false;
     const destroy = (target: Application) => {
       if (destroyed) return;
@@ -114,9 +132,45 @@ export function HotelFlowCanvas({
         configureSprite(sprite, event);
         sprite.visible = pointInViewport(event, transform, viewport, 12);
         container.addChild(sprite);
-        return { sprite, event, active: true };
+        return { sprite, event, active: true, elapsedMs: 0 };
       });
       runtimeRef.current = { container, sprites, transform, viewport };
+      let animationTick = 0;
+      let animationDistance = 0;
+      host.dataset.flowAnimationTick = "0";
+      host.dataset.flowAnimationDistance = "0.00";
+      host.dataset.flowAnimationSample = sprites[0]
+        ? `${sprites[0].sprite.x.toFixed(2)},${sprites[0].sprite.y.toFixed(2)}`
+        : "none";
+      animateCallback = (ticker: { deltaMS: number }) => {
+        const runtime = runtimeRef.current;
+        if (!runtime) return;
+        for (const pooled of runtime.sprites) {
+          const beforeX = pooled.sprite.x;
+          const beforeY = pooled.sprite.y;
+          animateSprite(pooled, ticker.deltaMS);
+          if (pooled.active) {
+            animationDistance += Math.hypot(
+              pooled.sprite.x - beforeX,
+              pooled.sprite.y - beforeY,
+            );
+          }
+          pooled.sprite.visible = pooled.active && pointInViewport(
+            pooled.sprite,
+            runtime.transform,
+            runtime.viewport,
+            12,
+          );
+        }
+        animationTick += 1;
+        host.dataset.flowAnimationTick = String(animationTick);
+        host.dataset.flowAnimationDistance = animationDistance.toFixed(2);
+        const sample = runtime.sprites.find(({ active }) => active)?.sprite;
+        host.dataset.flowAnimationSample = sample
+          ? `${sample.x.toFixed(2)},${sample.y.toFixed(2)}`
+          : "none";
+      };
+      app.ticker.add(animateCallback);
       app.canvas.dataset.testid = "hotel-flow-canvas";
       app.canvas.setAttribute("aria-hidden", "true");
       host.appendChild(app.canvas);
@@ -130,13 +184,30 @@ export function HotelFlowCanvas({
           if (!application || !runtimeRef.current || destroyed) return;
           const size = hostSize();
           application.renderer.resize(size.width, size.height);
-          runtimeRef.current.viewport = { width: size.width, height: size.height };
+          const runtime = runtimeRef.current;
+          runtime.viewport = { width: size.width, height: size.height };
+          runtime.transform = clampViewportTransform(
+            runtime.transform,
+            runtime.viewport,
+            { width: snapshotRef.current.width, height: snapshotRef.current.height },
+          );
+          runtime.container.position.set(runtime.transform.x, runtime.transform.y);
+          runtime.container.scale.set(runtime.transform.scale);
+          for (const pooled of runtime.sprites) {
+            pooled.sprite.visible = pooled.active && pointInViewport(
+              pooled.sprite,
+              runtime.transform,
+              runtime.viewport,
+              12,
+            );
+          }
         });
     observer?.observe(host);
 
     return () => {
       cancelled = true;
       observer?.disconnect();
+      if (application && animateCallback) application.ticker.remove(animateCallback);
       runtimeRef.current = null;
       if (application) destroy(application);
     };
@@ -150,7 +221,7 @@ export function HotelFlowCanvas({
       if (!pooled) {
         const sprite = new Sprite(Texture.WHITE);
         runtime.container.addChild(sprite);
-        pooled = { sprite, event, active: true };
+        pooled = { sprite, event, active: true, elapsedMs: 0 };
         runtime.sprites.push(pooled);
       }
       pooled.event = event;
@@ -175,8 +246,8 @@ export function HotelFlowCanvas({
     runtime.transform = transform;
     runtime.container.position.set(transform.x, transform.y);
     runtime.container.scale.set(transform.scale);
-    for (const { active, event, sprite } of runtime.sprites) {
-      sprite.visible = active && pointInViewport(event, transform, runtime.viewport, 12);
+    for (const { active, sprite } of runtime.sprites) {
+      sprite.visible = active && pointInViewport(sprite, transform, runtime.viewport, 12);
     }
   };
 

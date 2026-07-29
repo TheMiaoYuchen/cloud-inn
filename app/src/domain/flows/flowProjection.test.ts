@@ -71,4 +71,37 @@ describe("aggregate hotel flow projection", () => {
     expect(projectFlowSnapshot(state, "floor:28").events).toEqual([]);
     expect(projectFlowSnapshot(state, "floor:missing").events).toEqual([]);
   });
+
+  it("projects a housekeeping bottleneck from saved quality and budget without changing staffing", () => {
+    const constrained = flowState();
+    const report = constrained.operations!.dailyReports[0];
+    report.availableRooms = 10;
+    report.soldRooms = 8;
+    report.occupancyBps = 8_000;
+    constrained.operations!.departments.housekeeping = {
+      ...constrained.operations!.departments.housekeeping,
+      dailyBudgetCents: 0,
+      trainingBps: 0,
+      serviceStandardBps: 0,
+    };
+    const supported = structuredClone(constrained);
+    supported.operations!.departments.housekeeping = {
+      ...supported.operations!.departments.housekeeping,
+      dailyBudgetCents: 100_000,
+      trainingBps: 10_000,
+      serviceStandardBps: 10_000,
+    };
+
+    const constrainedCleaning = projectFlowSnapshot(constrained, "floor:28").events
+      .filter(({ kind }) => kind === "cleaning");
+    const supportedCleaning = projectFlowSnapshot(supported, "floor:28").events
+      .filter(({ kind }) => kind === "cleaning");
+
+    expect(constrained.operations!.departments.housekeeping.staffing)
+      .toBe(supported.operations!.departments.housekeeping.staffing);
+    expect(new Set(constrainedCleaning.map(({ label }) => label))).toEqual(new Set(["客房清洁 · 部门瓶颈"]));
+    expect(new Set(supportedCleaning.map(({ label }) => label))).toEqual(new Set(["客房清洁"]));
+    expect(constrainedCleaning.map(({ count }) => count))
+      .not.toEqual(supportedCleaning.map(({ count }) => count));
+  });
 });
