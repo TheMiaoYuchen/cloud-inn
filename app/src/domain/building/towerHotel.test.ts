@@ -84,6 +84,12 @@ describe("tower hotel", () => {
       "sky-lobby",
       "service",
       "guest",
+      "facility",
+      "facility",
+      "facility",
+      "facility",
+      "facility",
+      "facility",
     ]);
     expect(guestFloor.rooms.map(({ roomBlueprintId }) => roomBlueprintId)).toEqual(
       Array(8).fill("room-blueprint:standard"),
@@ -91,6 +97,21 @@ describe("tower hotel", () => {
     expect(guestTemplate.cellAreaSquareMeters).toBe(1);
     expect(guestTemplate.roomPlacements).toHaveLength(8);
     expect(guestTemplate.roomPlacements.every(({ width, height }) => width * height === 24)).toBe(true);
+  });
+
+  it("adds six purchased facility floors with one bounded slot each", () => {
+    const upgraded = upgradeLegacyToPhase4(openedLegacyFixture());
+    const facilityFloors = upgraded.phase4!.floors.filter(({ use }) => use === "facility");
+
+    expect(facilityFloors.map(({ floorNumber }) => floorNumber)).toEqual([5, 6, 7, 8, 9, 10]);
+    for (const floor of facilityFloors) {
+      const template = upgraded.phase4!.floorTemplates[floor.templateId];
+      expect(floor.purchased).toBe(true);
+      expect(template.publicSpaceSlots).toEqual([
+        expect.objectContaining({ width: 24, height: 24 }),
+      ]);
+    }
+    expect(upgraded.phase4!.building.availableExpansionFloorNumbers[0]).toBe(11);
   });
 
   it("repacks actual Phase 3 placements while preserving selected transforms and progress", () => {
@@ -552,7 +573,7 @@ describe("tower hotel", () => {
       };
     });
 
-    expect(() => copyGuestFloor(phase4, source.id, 5)).toThrow("客房数量");
+    expect(() => copyGuestFloor(phase4, source.id, 11)).toThrow("客房数量");
   });
 
   it("rejects duplicate template placement IDs before copy or sync", () => {

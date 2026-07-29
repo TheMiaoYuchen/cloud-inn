@@ -80,6 +80,20 @@ describe("public-space design page", () => {
     expect(screen.getByRole("button", { name: "保存并放置" })).toBeInTheDocument();
   });
 
+  it.each(["all-day-dining", "chinese-restaurant", "bar", "spa", "gym", "ballroom"] as const)(
+    "applies a valid recommended %s layout",
+    async (type) => {
+      await renderScaleApp();
+      const user = userEvent.setup();
+      await user.selectOptions(await screen.findByLabelText("公共空间类型"), type);
+
+      await user.click(screen.getByRole("button", { name: "应用推荐布局" }));
+
+      expect(screen.getByRole("button", { name: "保存公共空间" })).toBeEnabled();
+      expect(screen.queryByText("必须调整")).not.toBeInTheDocument();
+    },
+  );
+
   it("persists a valid blueprint without placing it", async () => {
     const { port, state } = await renderScaleApp();
     const user = userEvent.setup();

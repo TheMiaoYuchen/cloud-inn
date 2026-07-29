@@ -179,6 +179,22 @@ describe("Phase 4 building overview", () => {
       .toBe(true);
   });
 
+  it("reports the exact room count and copies the selected guest floor", async () => {
+    const state = towerState();
+    state.phase4!.building.availableExpansionFloorNumbers = [35];
+    const source = state.phase4!.floors.find(({ use }) => use === "guest")!;
+    const expectedRooms = state.phase4!.floors.flatMap(({ rooms }) => rooms).length;
+    const { user, port } = await renderTower(state);
+
+    expect(screen.getByTestId("hotel-room-count")).toHaveAttribute("data-value", String(expectedRooms));
+    await user.click(screen.getByRole("button", { name: `复制${source.floorNumber}层至35层` }));
+
+    expect(await screen.findByText("35层已从23层复制")).toBeInTheDocument();
+    const saved = await port.load(state.saveId);
+    expect(saved?.phase4?.floors.find(({ floorNumber }) => floorNumber === 35)?.rooms)
+      .toHaveLength(source.rooms.length);
+  });
+
   it("projects occupied, renovating, and available room overlays with renovation priority", async () => {
     const state = towerState();
     const offers = projectHotelInventory(state).rooms.filter(

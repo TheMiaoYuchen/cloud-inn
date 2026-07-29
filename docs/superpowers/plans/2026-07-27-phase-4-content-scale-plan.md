@@ -944,7 +944,7 @@ git commit -m "feat: visualize bounded hotel flows"
 - Modify: `app/playwright.config.ts`
 - Modify: `docs/superpowers/plans/2026-07-27-phase-4-content-scale-plan.md`
 
-- [ ] **Step 1: Write the failing browser acceptance**
+- [x] **Step 1: Write the failing browser acceptance**
 
 The test must visibly perform:
 
@@ -957,17 +957,17 @@ The test must visibly perform:
 7. open all three compendia and observe aggregate flows;
 8. reload and restore exact building, cash, facilities, reports and selected content.
 
-- [ ] **Step 2: Run E2E and verify RED**
+- [x] **Step 2: Run E2E and verify RED**
 
 Run: `cd app && npm run test:e2e -- e2e/phase4-content-scale.spec.ts`
 
 Expected: FAIL until final selectors and full integration are present.
 
-- [ ] **Step 3: Add only necessary accessible integration glue**
+- [x] **Step 3: Add only necessary accessible integration glue**
 
 Use visible Chinese roles/names and production routes. Do not add hidden fixture-only controls; use the existing E2E environment boundary only for deterministic time and initial local persistence.
 
-- [ ] **Step 4: Run the complete automated gate**
+- [x] **Step 4: Run the complete automated gate**
 
 ```bash
 cd app
@@ -987,7 +987,7 @@ git diff --check
 
 Expected: zero failures. Record exact Vitest, Playwright and Rust totals.
 
-- [ ] **Step 5: Build and smoke-test the debug macOS application**
+- [x] **Step 5: Build and smoke-test the debug macOS application**
 
 Run: `cd app && npm run tauri -- build --debug --bundles app,dmg --ci --no-sign --config src-tauri/tauri.phase4-smoke.conf.json`
 

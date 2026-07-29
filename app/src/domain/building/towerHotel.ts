@@ -1,5 +1,5 @@
 import { projectContentUnlocks, reconcileCatalogProgress } from "../content/contentUnlocks";
-import { FLOOR_TEMPLATE_CATALOG, TOWER_CATALOG } from "../content/contentCatalog";
+import { FACILITY_CATALOG, FLOOR_TEMPLATE_CATALOG, TOWER_CATALOG } from "../content/contentCatalog";
 import { prototypeConfig } from "../config/prototypeConfig";
 import { createDenseGuestFloorTemplate } from "../floor/corridorTemplate";
 import type { GameState, RoomInstance } from "../game/state";
@@ -71,6 +71,22 @@ function emptyTemplate(id: string, use: ScaleFloorTemplate["use"]): ScaleFloorTe
     cellAreaSquareMeters: 1,
     roomPlacements: [],
     publicSpaceSlots: [],
+  };
+}
+
+function legacyFacilityTemplate(): ScaleFloorTemplate {
+  return {
+    ...emptyTemplate("template:facility:legacy", "facility"),
+    publicSpaceSlots: [{
+      id: assertStableId("space:facility:primary"),
+      permittedTypes: FACILITY_CATALOG
+        .filter(({ type }) => type !== "sky-lobby")
+        .map(({ type }) => type),
+      anchorX: 0,
+      anchorY: 0,
+      width: 24,
+      height: 24,
+    }],
   };
 }
 
@@ -443,6 +459,7 @@ export function upgradeLegacyToPhase4(state: Readonly<GameState>): GameState {
   if (state.phase4) return state as GameState;
   assertRoomCount(state.floor.rooms.length);
   const guestTemplate = createLegacyGuestTemplate(state);
+  const facilityTemplate = legacyFacilityTemplate();
   const entranceTemplate = emptyTemplate("template:entrance:standard", "entrance");
   const skyLobbyTemplate = emptyTemplate("template:sky-lobby:standard", "sky-lobby");
   const serviceTemplate = emptyTemplate("template:service:standard", "service");
@@ -450,11 +467,21 @@ export function upgradeLegacyToPhase4(state: Readonly<GameState>): GameState {
   const skyLobbyFloorId = floorId(2);
   const serviceFloorId = floorId(3);
   const guestFloorId = floorId(4);
+  const facilityFloors: HotelFloor[] = Array.from({ length: 6 }, (_, index) => ({
+    id: floorId(index + 5),
+    floorNumber: index + 5,
+    use: "facility",
+    templateId: facilityTemplate.id,
+    purchased: true,
+    rooms: [],
+    publicSpaceInstanceIds: [],
+  }));
   const floors: HotelFloor[] = [
     { id: entranceFloorId, floorNumber: 1, use: "entrance", templateId: entranceTemplate.id, purchased: true, rooms: [], publicSpaceInstanceIds: [] },
     { id: skyLobbyFloorId, floorNumber: 2, use: "sky-lobby", templateId: skyLobbyTemplate.id, purchased: true, rooms: [], publicSpaceInstanceIds: [] },
     { id: serviceFloorId, floorNumber: 3, use: "service", templateId: serviceTemplate.id, purchased: true, rooms: [], publicSpaceInstanceIds: [] },
     { id: guestFloorId, floorNumber: 4, use: "guest", templateId: guestTemplate.id, purchased: true, rooms: legacyRoomsForFloor(state, guestFloorId, guestTemplate), publicSpaceInstanceIds: [] },
+    ...facilityFloors,
   ];
   assertFloorCount(floors.length);
   const phase4: ContentScaleState = {
@@ -464,10 +491,10 @@ export function upgradeLegacyToPhase4(state: Readonly<GameState>): GameState {
       entranceFloorId,
       skyLobbyFloorIds: [skyLobbyFloorId],
       purchasedFloorIds: floors.map(({ id }) => id),
-      availableExpansionFloorNumbers: availableExpansionFloorNumbers(5),
+      availableExpansionFloorNumbers: availableExpansionFloorNumbers(11),
     },
     floorTemplates: Object.fromEntries(
-      [entranceTemplate, skyLobbyTemplate, serviceTemplate, guestTemplate]
+      [entranceTemplate, skyLobbyTemplate, serviceTemplate, guestTemplate, facilityTemplate]
         .map((template) => [template.id, template]),
     ),
     floors,

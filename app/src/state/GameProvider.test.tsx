@@ -13,6 +13,34 @@ import { createPhase4AcceptanceState } from '../testing/phase4Fixtures';
 afterEach(() => vi.useRealTimers());
 
 describe('GameProvider flow', () => {
+  it('shows string errors returned by native commands', async () => {
+    const initial: GameState = {
+      ...createNewGame('save-native-error'),
+      revision: 1,
+      phase: 'floor',
+      roomBlueprint: {
+        id: 'room-type-1', name: 'Suite', columns: 8, rows: 12, cells: [],
+        metrics: { areaSquareMeters: 24, buildCostCents: 1, suggestedRateCents: 1, businessFitBps: 1 },
+        visual: { status: 'idle' },
+      },
+    };
+    const port: SavePort = {
+      load: async () => initial,
+      commit: async () => { throw '桌面存档校验失败'; },
+    };
+    function Probe() {
+      const { error, commands } = useGame();
+      return <><output>{error}</output><button onClick={() => void commands.setRate(200)}>save</button></>;
+    }
+    const user = userEvent.setup();
+    render(<GameProvider savePort={port} saveId={initial.saveId}><Probe /></GameProvider>);
+    await screen.findByRole('button', { name: 'save' });
+
+    await user.click(screen.getByRole('button', { name: 'save' }));
+
+    expect(await screen.findByText('桌面存档校验失败')).toBeInTheDocument();
+  });
+
   it('exposes visualPending independently while a visual request is queued', async () => {
     const port = new InMemorySavePort();
     const initial: GameState = {

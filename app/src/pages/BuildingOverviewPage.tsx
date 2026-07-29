@@ -122,6 +122,26 @@ export function BuildingOverviewPage({ requestedFloorId = null }: { requestedFlo
       ) purchaseInFlightRef.current = null;
     }
   };
+  const copyFloor = async (sourceFloorId: string, sourceFloorNumber: number, targetFloorNumber: number) => {
+    if (!saveId || commandPending || purchaseInFlightRef.current) return;
+    const purchaseIdentity = { saveId, floorNumber: targetFloorNumber };
+    purchaseInFlightRef.current = purchaseIdentity;
+    setPurchaseNotice(undefined);
+    try {
+      const copied = await commands.copyFloor(sourceFloorId, targetFloorNumber);
+      if (copied && currentSaveIdRef.current === purchaseIdentity.saveId) {
+        setPurchaseNotice({
+          saveId: purchaseIdentity.saveId,
+          message: `${targetFloorNumber}层已从${sourceFloorNumber}层复制`,
+        });
+      }
+    } finally {
+      if (currentSaveIdRef.current === purchaseIdentity.saveId &&
+        purchaseInFlightRef.current?.floorNumber === targetFloorNumber) {
+        purchaseInFlightRef.current = null;
+      }
+    }
+  };
   const roomCount = building.floors.reduce(
     (total, projection) => total + projection.rooms.length,
     0,
@@ -144,9 +164,9 @@ export function BuildingOverviewPage({ requestedFloorId = null }: { requestedFlo
         </div>
         <div className="building-summary" aria-label="酒店规模摘要">
           <span><small>已购楼层</small><strong>{building.floors.length} 层</strong></span>
-          <span><small>真实客房</small><strong>{roomCount} 间</strong></span>
+          <span><small>真实客房</small><strong data-testid="hotel-room-count" data-value={roomCount}>{roomCount} 间</strong></span>
           <span><small>酒店设施</small><strong>{facilityCount} 项</strong></span>
-          <span><small>可用现金</small><strong>¥{formatMoney(state.cashCents)}</strong></span>
+          <span><small>可用现金</small><strong data-testid="hotel-cash-cents" data-value={state.cashCents}>¥{formatMoney(state.cashCents)}</strong></span>
         </div>
       </header>
 
@@ -218,6 +238,23 @@ export function BuildingOverviewPage({ requestedFloorId = null }: { requestedFlo
           )}
         </section>
       )}
+      {building.expansionOffers.length > 0 && (() => {
+        const source = [...building.floors]
+          .filter(({ floor }) => floor.use === "guest")
+          .sort((left, right) => left.floor.floorNumber - right.floor.floorNumber)[0];
+        return source ? <section className="expansion-panel" aria-labelledby="copy-title">
+          <h2 id="copy-title">复制客房楼层</h2>
+          <p>沿用{source.floor.floorNumber}层的客房布局与当前模板快照。</p>
+          <div className="expansion-actions">
+            {building.expansionOffers.filter(({ available }) => available).map(({ floorNumber }) => (
+              <button key={floorNumber} type="button" disabled={commandPending}
+                onClick={() => void copyFloor(source.floor.id, source.floor.floorNumber, floorNumber)}>
+                复制{source.floor.floorNumber}层至{floorNumber}层
+              </button>
+            ))}
+          </div>
+        </section> : null;
+      })()}
       {purchaseNotice && purchaseNotice.saveId === saveId && <p className="success-note" role="status">{purchaseNotice.message}</p>}
       {error && <p className="command-error" role="alert">{error}</p>}
     </main>

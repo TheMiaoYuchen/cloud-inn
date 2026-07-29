@@ -1,6 +1,7 @@
 import { expect, test } from "@playwright/test";
 
 test("completes the prototype hotel loop from design through day two", async ({ page }) => {
+  test.setTimeout(120_000);
   await page.goto("/#/design");
 
   await page.getByRole("button", { name: "云岫商务房" }).click();

@@ -729,7 +729,7 @@ fn validate_game(g: &Value) -> Result<Fields, String> {
     let operations = match g.get("operations") {
         Some(Value::Null) | None => None,
         Some(value) => {
-            validate_operations(value, current_day, cash_cents).map_err(|error| {
+            validate_operations(value, current_day).map_err(|error| {
                 if g.get("phase4").is_some() && error == "经营报告算术不一致" {
                     phase4_error(&error)
                 } else {
@@ -2715,7 +2715,7 @@ fn validate_operations_aggregate(
     Ok(())
 }
 
-fn validate_operations(value: &Value, current_day: i64, cash_cents: i64) -> Result<(), String> {
+fn validate_operations(value: &Value, current_day: i64) -> Result<(), String> {
     operations_object(value)?;
     if operations_string(value, "rulesetVersion")? != "operations-v1" {
         return Err("经营存档数据损坏".into());
@@ -2769,7 +2769,7 @@ fn validate_operations(value: &Value, current_day: i64, cash_cents: i64) -> Resu
         daily.push(totals);
     }
     if let Some(last) = daily.last() {
-        if last.day != current_day || last.cash != cash_cents || last.reputation != reputation {
+        if last.day != current_day || last.reputation != reputation {
             return Err("经营存档数据损坏".into());
         }
     }
@@ -3307,6 +3307,18 @@ mod tests {
     }
 
     #[test]
+    fn operations_allow_cash_spent_after_the_latest_settled_report() {
+        let repository = SaveRepository::new(root("operations-post-settlement-spend"));
+        let mut state = phase4_fixture(include_str!("../tests/fixtures/phase4-valid.json"));
+        state["cashCents"] = json!(750_030);
+        state["revision"] = json!(1);
+
+        repository.commit_game(0, state.clone()).unwrap();
+
+        assert_eq!(repository.load_game("phase4-shared").unwrap(), Some(state));
+    }
+
+    #[test]
     fn operations_day_30_fresh_legacy_initialization_round_trips() {
         let repository = SaveRepository::new(root("operations-day-30-fresh"));
         let mut state = game();
@@ -3418,10 +3430,6 @@ mod tests {
             (
                 "outer day mismatch",
                 Box::new(|g| g["currentDay"] = json!(29)),
-            ),
-            (
-                "outer cash mismatch",
-                Box::new(|g| g["cashCents"] = json!(1_000_031)),
             ),
             (
                 "operations reputation mismatch",

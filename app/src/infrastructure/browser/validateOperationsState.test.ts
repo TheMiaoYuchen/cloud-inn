@@ -158,6 +158,13 @@ describe("browser operations persistence validation", () => {
     expect(loaded).not.toBe(state);
   });
 
+  it("accepts cash spent after the latest settled report", () => {
+    const state = thirtyDayState();
+    state.cashCents -= 250_000;
+
+    expect(validateBrowserGameState(state, state.saveId)).toEqual(state);
+  });
+
   it("accepts classic daily categories with category-free Phase 3 aggregates", () => {
     const state = thirtyDayState();
 
@@ -256,7 +263,6 @@ describe("browser operations persistence validation", () => {
     ["daily room revenue", (g: any) => { g.operations.dailyReports[0].roomRevenueCents += 1; }],
     ["daily department cost", (g: any) => { g.operations.dailyReports[0].departmentCostCents += 1; }],
     ["daily finance cost", (g: any) => { g.operations.dailyReports[0].loanInterestCents += 1; }],
-    ["outer cash mismatch", (g: any) => { g.cashCents += 1; }],
     ["operations reputation mismatch", (g: any) => { g.operations.reputationBps -= 1; }],
     ["invalid review", (g: any) => { g.operations.dailyReports[0].reviews[0].ratingBps = 10_001; }],
     ["invalid booking", (g: any) => { g.operations.dailyReports[0].bookings[0].rateCents = -1; }],

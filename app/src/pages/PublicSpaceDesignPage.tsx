@@ -23,6 +23,7 @@ import {
 } from "../domain/spaces/spaceEditor";
 import type { SpaceDraft, SpaceOpening, SpaceSide } from "../domain/spaces/spaceTypes";
 import { validatePublicSpace } from "../domain/spaces/spaceValidation";
+import { createRecommendedSpace } from "../domain/spaces/recommendedSpace";
 import { useGame } from "../state/GameProvider";
 
 const DEFAULT_SIZE = 12;
@@ -143,6 +144,19 @@ export function PublicSpaceDesignPage() {
       setEditorError(failure instanceof Error ? failure.message : "空间编辑未完成");
     }
   };
+  const applyRecommended = () => {
+    try {
+      setHistory(createSpaceHistory(createRecommendedSpace(draft.type)));
+      setFloorId("");
+      setShowIssues(false);
+      setNotice("");
+      setEditorError("");
+      setSelectedItemId("");
+      setSelectedOpening(undefined);
+    } catch (failure) {
+      setEditorError(failure instanceof Error ? failure.message : "推荐布局未能应用");
+    }
+  };
   const applyCell = (x: number, y: number) => {
     try {
       if (tool === "erase") edit(eraseSpaceCell(draft, x, y));
@@ -214,6 +228,7 @@ export function PublicSpaceDesignPage() {
       <aside className="space-tool-rail" aria-label="空间工具">
         <label>公共空间类型<select aria-label="公共空间类型" value={draft.type} onChange={(event) => switchType(event.target.value as PublicSpaceType)}>{FACILITY_CATALOG.map((entry) => <option key={entry.type} value={entry.type}>{entry.name}</option>)}</select></label>
         <div className="space-tool-buttons">{(["paint", "rectangle", "erase", "item", "opening"] as const).map((value) => <button type="button" aria-pressed={tool === value} key={value} onClick={() => { setTool(value); setRectangleAnchor(undefined); }}>{{ paint: "绘制分区", rectangle: "矩形绘制", erase: "擦除", item: "放置物件", opening: "设置开口" }[value]}</button>)}</div>
+        <button type="button" onClick={applyRecommended}>应用推荐布局</button>
         <label>空间分区<select aria-label="空间分区" value={zoneId} onChange={(event) => setZoneId(event.target.value)}>{definition.allowedZoneIds.map((id) => <option key={id} value={id}>{ZONE_CATALOG.find((entry) => entry.id === id)?.name ?? id}</option>)}</select></label>
         <label>空间物件<select aria-label="空间物件" value={itemId} onChange={(event) => setItemId(event.target.value)}><option value="">不放置物件</option>{definition.permittedItemIds.map((id) => <option key={id} value={id}>{ITEM_CATALOG.find((entry) => entry.id === id)?.name ?? id}</option>)}</select></label>
         <label>开口类型<select aria-label="开口类型" value={openingType} onChange={(event) => setOpeningType(event.target.value as typeof openingType)}><option value="doors">门</option><option value="windows">窗</option><option value="walls">墙边</option></select></label>

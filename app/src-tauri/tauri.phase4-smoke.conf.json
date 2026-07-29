@@ -1,0 +1,12 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "Cloud Inn Phase 4 Smoke",
+  "identifier": "com.cloudinn.game.phase4-smoke",
+  "app": {
+    "windows": [
+      {
+        "title": "Cloud Inn Phase 4 Smoke"
+      }
+    ]
+  }
+}

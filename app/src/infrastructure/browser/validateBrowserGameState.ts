@@ -355,7 +355,7 @@ function validateOperations(value: unknown, game: JsonObject): void {
   }
   if (totals.length > 0) {
     const last = totals[totals.length - 1];
-    if (last.day !== currentDay || last.cash !== game.cashCents || last.reputation !== reputation) operationsError("经营日报与游戏状态不一致");
+    if (last.day !== currentDay || last.reputation !== reputation) operationsError("经营日报与游戏状态不一致");
   }
   const byDay = new Map(totals.map((report) => [report.day, report]));
   const expectedWeeks = [1, 2, 3, 4].flatMap((week) => {
