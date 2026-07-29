@@ -999,7 +999,7 @@ Create a temporary owned worktree at the Phase 3 final commit. Because that old 
 
 Dispatch one specification reviewer against the approved Phase 4 design and this plan, then one whole-diff code-quality reviewer. Resolve every Critical/Important finding with a new RED -> GREEN regression, re-run focused gates, rebuild native bundles and re-run the production-preview performance spec after the last code fix, then repeat review until both approve.
 
-- [ ] **Step 7: Commit the acceptance record**
+- [x] **Step 7: Commit the acceptance record**
 
 ```bash
 git add app/e2e app/playwright.config.ts app/src-tauri/tauri.phase4-smoke.conf.json docs/testing/phase-4-desktop-smoke.md docs/superpowers/plans/2026-07-27-phase-4-content-scale-plan.md

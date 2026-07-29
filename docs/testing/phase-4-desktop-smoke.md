@@ -4,10 +4,13 @@
 
 - Smoke started: 2026-07-29T13:03:37+08:00
 - Final evidence recorded: 2026-07-29T13:55:27+08:00
+- Exact-SHA rebuild started: 2026-07-29T14:29:43+08:00
+- Exact-SHA rebuild completed by: 2026-07-29T14:30:58+08:00
 - System: macOS 26.5.2 (25F84), arm64, Darwin 25.5.0
 - Source branch: `codex/phase-4-content-scale`
 - Task 13 starting commit: `2a39887217aa301c66bf6c59a140d664e16cda1e`
-- The bundles were built from that branch plus the uncommitted Task 13 acceptance changes. The final Task 13 commit is recorded in Git as `test: verify phase four hotel scale`.
+- Final code commit: `e66ed284bffd4366b500e8da2133d907a69fc23c`
+- The final app and DMG were rebuilt from that exact commit after the final acceptance-proof fixes.
 - Product: `Cloud Inn Phase 4 Smoke`
 - Bundle identifier: `com.cloudinn.game.phase4-smoke`
 - Isolated data directory: `/Users/miaoyuchen/Library/Application Support/com.cloudinn.game.phase4-smoke`
@@ -18,6 +21,10 @@
 - App: `/Users/miaoyuchen/Documents/Cloud Inn/.worktrees/phase-4-content-scale/app/src-tauri/target/debug/bundle/macos/Cloud Inn Phase 4 Smoke.app`
 - DMG: `/Users/miaoyuchen/Documents/Cloud Inn/.worktrees/phase-4-content-scale/app/src-tauri/target/debug/bundle/dmg/Cloud Inn Phase 4 Smoke_0.1.0_aarch64.dmg`
 - Database: `/Users/miaoyuchen/Library/Application Support/com.cloudinn.game.phase4-smoke/saves/save-1/save.sqlite3`
+- App executable timestamp: `2026-07-29T14:30:01+0800`
+- App executable SHA-256: `c100e6e77eacd82541df1da3a838997a27b37c65b419dfe7fde4d46576271184`
+- DMG timestamp: `2026-07-29T14:30:22+0800`
+- DMG SHA-256: `66235a1edb064a72fc5a28524d6de3ff05b81697d51ad7cc1f8e4d49888962e3`
 
 The final debug app and DMG were built with:
 
@@ -84,12 +91,13 @@ The 120-room database used for the maximum snapshot was backed up at `/tmp/cloud
 Final Task 13 verification runs:
 
 - TypeScript typecheck: PASS
-- Vitest: PASS, 64 files and 1,352 tests
+- Vitest: PASS, 65 files and 1,354 tests
 - Production build: PASS; only the existing Vite chunk-size warning
 - Full Playwright: PASS, six scenarios
-- Browser Phase 4 acceptance: PASS
-- Production-preview performance: 41 sprites, p95 8.50 ms across 1,262 samples, PASS
-- Rust tests: PASS, 59 tests
+- Browser Phase 4 acceptance: PASS; it visibly selects and restores the real `Tea-smoked duck` restaurant signature and `Cloud restoration` Spa package, and performs no post-seed persistence inspection
+- Reload restoration proof: PASS; visible UI/accessibility values cover exact floors, rooms, six facilities, cash, deterministic revision transition, floor identities, selected content, Spa operating state, report counts, and daily/weekly/monthly revenue and cost categories
+- Production-preview performance: 41 sprites, p95 8.80 ms across 1,264 samples, PASS
+- Rust tests: PASS, 60 tests, including exact raw revision/operations/Phase 2/latest-report preservation after a rejected Phase 4 initialization of a native Phase 3 row
 - Clippy with `-D warnings`: PASS
 - Rust format check: PASS
 - `git diff --check`: PASS
