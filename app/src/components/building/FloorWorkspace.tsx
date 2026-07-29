@@ -2,6 +2,9 @@ import { useMemo, useState } from "react";
 import type { PublicSpaceBlueprint } from "../../domain/facilities/facilityTypes";
 import type { FloorProjection } from "../../state/GameProvider";
 import type { StableId } from "../../domain/building/buildingTypes";
+import { projectFlowSnapshot } from "../../domain/flows/flowProjection";
+import { HotelFlowCanvas } from "../../canvas/HotelFlowCanvas";
+import { useGame } from "../../state/GameProvider";
 import { floorUseLabel } from "./TowerOverview";
 
 const FACILITY_LABELS: Record<string, string> = {
@@ -49,6 +52,7 @@ export function FloorWorkspace({
     localPlacementId: StableId;
   }>;
 }) {
+  const { state } = useGame();
   const { floor, template, rooms, facilities, roomStatusByOfferId, roomStatusTotals } = projection;
   const [selectedRoomId, setSelectedRoomId] = useState<string | null>(null);
   const roomByPlacement = useMemo(
@@ -80,6 +84,16 @@ export function FloorWorkspace({
   const ringStyle = template
     ? centeredSquare(template.columns, template.rows, 0.5)
     : undefined;
+  const flowSnapshot = useMemo(
+    () => state ? projectFlowSnapshot(state, floor.id) : {
+      day: 0,
+      floorId: floor.id,
+      width: 1,
+      height: 1,
+      events: [],
+    },
+    [floor.id, state],
+  );
 
   return (
     <section
@@ -105,6 +119,7 @@ export function FloorWorkspace({
               width: `min(100%, ${(760 * template.columns) / template.rows}px)`,
             } : undefined}
           >
+            <HotelFlowCanvas snapshot={flowSnapshot} />
             <div className="ring-corridor-visual" style={ringStyle}><span>环形走廊</span></div>
             <div className="central-core" style={coreStyle}><span>中央核心筒</span><small>电梯 · 楼梯 · 后勤</small></div>
             {template?.roomPlacements.map((placement) => {
