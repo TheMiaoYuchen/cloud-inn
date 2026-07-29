@@ -29,6 +29,7 @@ export function BuildingOverviewPage({ requestedFloorId = null }: { requestedFlo
   const [purchaseNotice, setPurchaseNotice] = useState<{ saveId: string; message: string }>();
   const [railCollapsed, setRailCollapsed] = useState(false);
   const purchaseInFlightRef = useRef<{ saveId: string; floorNumber: number } | null>(null);
+  const handledFloorRequestRef = useRef<{ saveId: string; floorId: string } | null>(null);
   const currentSaveIdRef = useRef(saveId);
   currentSaveIdRef.current = saveId;
 
@@ -44,17 +45,21 @@ export function BuildingOverviewPage({ requestedFloorId = null }: { requestedFlo
       setSelectedFloorEvidence(undefined);
       return;
     }
+    const requestIsNew = requestedFloorId !== null
+      && (handledFloorRequestRef.current?.saveId !== saveId
+        || handledFloorRequestRef.current.floorId !== requestedFloorId);
+    if (requestIsNew) {
+      handledFloorRequestRef.current = { saveId, floorId: requestedFloorId };
+      const requestedFloor = building.floorById.get(requestedFloorId);
+      if (requestedFloor?.floor.purchased && selectedFloorId !== requestedFloorId) {
+        setSelectedFloorEvidence({ saveId, floorId: requestedFloorId });
+        return;
+      }
+    }
     const selectedFloor = selectedFloorId ? building.floorById.get(selectedFloorId) : undefined;
     if (!selectedFloor?.floor.purchased) {
-      const requestedFloor = requestedFloorId
-        ? building.floorById.get(requestedFloorId)
-        : undefined;
-      const fallbackFloor = requestedFloor?.floor.purchased
-        ? requestedFloor
-        : building.floors.find(({ floor }) => floor.purchased);
-      setSelectedFloorEvidence(fallbackFloor
-        ? { saveId, floorId: fallbackFloor.floor.id }
-        : undefined);
+      const fallbackFloor = building.floors.find(({ floor }) => floor.purchased);
+      setSelectedFloorEvidence(fallbackFloor ? { saveId, floorId: fallbackFloor.floor.id } : undefined);
     }
   }, [building, requestedFloorId, saveId, selectedFloorId]);
 

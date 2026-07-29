@@ -72,6 +72,36 @@ describe("content compendium page", () => {
     expect(window.location.hash).toBe("#/compendium?source=report");
   });
 
+  it("supports roving focus and standard keyboard navigation across all tabs", async () => {
+    window.location.hash = "#/compendium?source=report";
+    const user = userEvent.setup();
+    render(<App savePort={new ReadOnlyPort(createPhase4AcceptanceState("keyboard-tabs"))} />);
+    await screen.findByRole("heading", { name: "酒店百科" });
+    const content = screen.getByRole("tab", { name: "内容目录" });
+    const design = screen.getByRole("tab", { name: "设计系列" });
+    const market = screen.getByRole("tab", { name: "市场洞察" });
+
+    expect([content.tabIndex, design.tabIndex, market.tabIndex]).toEqual([0, -1, -1]);
+    content.focus();
+    await user.keyboard("{ArrowRight}");
+    expect(design).toHaveFocus();
+    expect([content.tabIndex, design.tabIndex, market.tabIndex]).toEqual([-1, 0, -1]);
+    expect(window.location.hash).toBe("#/compendium?source=report&tab=design");
+
+    await user.keyboard("{End}");
+    expect(market).toHaveFocus();
+    expect(screen.getByRole("tabpanel", { name: "市场洞察" })).toBeInTheDocument();
+    expect(document.getElementById("compendium-panel-content")).toHaveAttribute("hidden");
+
+    await user.keyboard("{ArrowRight}");
+    expect(content).toHaveFocus();
+    expect(window.location.hash).toBe("#/compendium?source=report");
+    await user.keyboard("{Home}");
+    expect(content).toHaveFocus();
+    await user.keyboard("{ArrowLeft}");
+    expect(market).toHaveFocus();
+  });
+
   it("opens the exact production floor linked from a saved design", async () => {
     const state = createPhase4AcceptanceState("usage-floor-link");
     const targetFloor = state.phase4!.floors.find(({ rooms }) => rooms.length > 0)!;

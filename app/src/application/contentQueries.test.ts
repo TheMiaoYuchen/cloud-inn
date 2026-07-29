@@ -61,6 +61,33 @@ describe("read-only content compendium queries", () => {
       id === state.phase2!.roomMaster!.id)).toHaveLength(1);
   });
 
+  it("merges cross-kind stable ID collisions without losing names or floor usages", () => {
+    const state = createPhase4AcceptanceState("design-id-collision");
+    const roomMaster = state.phase2!.roomMaster!;
+    const publicSpace = Object.values(state.phase4!.publicSpaces)[0];
+    const blueprint = state.phase4!.spaceBlueprints[publicSpace.blueprintId];
+    blueprint.id = assertStableId(roomMaster.id);
+    blueprint.name = "Collision Space";
+    publicSpace.blueprintId = blueprint.id;
+    state.phase4!.spaceBlueprints["duplicate-record"] = structuredClone(blueprint);
+
+    const library = projectDesignLibrary(state);
+    const collisionEntries = library.entries.filter(({ id }) => id === roomMaster.id);
+    const roomFloors = state.phase4!.floors
+      .filter(({ rooms }) => rooms.some(({ roomBlueprintId }) => roomBlueprintId === roomMaster.id))
+      .map(({ id }) => id);
+
+    expect(collisionEntries).toHaveLength(1);
+    expect(collisionEntries[0]).toMatchObject({
+      kind: "mixed",
+      name: `${roomMaster.name} / Collision Space`,
+    });
+    expect(collisionEntries[0].usageFloorIds).toEqual(
+      [...new Set([...roomFloors, publicSpace.floorId])].sort(),
+    );
+    expect(new Set(library.entries.map(({ id }) => id)).size).toBe(library.entries.length);
+  });
+
   it("keeps facilities in catalog order and reports real unlock state", () => {
     const state = createPhase4AcceptanceState("catalog-query");
     state.phase4!.catalogProgress.unlockedIds = [FACILITY_CATALOG[1].id];

@@ -8,6 +8,7 @@ import { createPhase4AcceptanceState } from "../testing/phase4Fixtures";
 import { BuildingOverviewPage } from "./BuildingOverviewPage";
 import { createOperationsState } from "../domain/operations/createOperationsState";
 import { projectHotelInventory } from "../domain/building/hotelInventory";
+import { App } from "../app/App";
 
 function towerState() {
   const state = createPhase4AcceptanceState("tower");
@@ -37,6 +38,30 @@ async function renderTower(
 }
 
 describe("Phase 4 building overview", () => {
+  it("follows valid floor URL changes and browser history while remaining mounted", async () => {
+    const state = towerState();
+    state.saveId = "save-1";
+    const firstFloor = state.phase4!.floors.find(({ floorNumber }) => floorNumber === 28)!;
+    const secondFloor = state.phase4!.floors.find(({ floorNumber }) => floorNumber === 29)!;
+    const port = new InMemorySavePort();
+    await port.commit(0, state);
+    window.location.hash = `#/building?floorId=${encodeURIComponent(firstFloor.id)}`;
+    render(<App savePort={port} />);
+
+    expect(await screen.findByRole("region", { name: "28层平面工作区" }))
+      .toBeInTheDocument();
+    act(() => { window.location.hash = `#/building?floorId=${encodeURIComponent(secondFloor.id)}`; });
+    expect(await screen.findByRole("region", { name: "29层平面工作区" }))
+      .toBeInTheDocument();
+
+    act(() => { window.history.back(); });
+    expect(await screen.findByRole("region", { name: "28层平面工作区" }))
+      .toBeInTheDocument();
+    act(() => { window.history.forward(); });
+    expect(await screen.findByRole("region", { name: "29层平面工作区" }))
+      .toBeInTheDocument();
+  });
+
   it("shows sixteen physical floors highest first and mounts only the selected scene", async () => {
     const { user } = await renderTower();
     const tower = screen.getByRole("region", { name: "酒店垂直楼层" });

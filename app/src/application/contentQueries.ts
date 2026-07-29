@@ -9,7 +9,7 @@ import { GUEST_SEGMENTS } from "../domain/operations/segmentCatalog";
 export interface DesignLibraryEntry {
   id: string;
   name: string;
-  kind: "room-series" | "room-variant" | "public-space";
+  kind: "room-series" | "room-variant" | "public-space" | "mixed";
   usageFloorIds: readonly StableId[];
 }
 
@@ -58,22 +58,38 @@ export function projectDesignLibrary(state: Readonly<GameState>): DesignLibraryP
   ).filter(({ blueprintId: candidate }) => candidate === blueprintId).map(({ floorId }) => floorId));
 
   const entries: DesignLibraryEntry[] = [];
-  const designIds = new Set<string>();
-  const addRoomDesign = (design: { id: string; name: string }, kind: DesignLibraryEntry["kind"]) => {
-    if (designIds.has(design.id)) return;
-    designIds.add(design.id);
-    entries.push({ id: design.id, name: design.name, kind, usageFloorIds: roomUsage(design.id) });
+  const entryById = new Map<string, DesignLibraryEntry>();
+  const addDesign = (
+    design: { id: string; name: string },
+    kind: Exclude<DesignLibraryEntry["kind"], "mixed">,
+    usageFloorIds: readonly StableId[],
+  ) => {
+    const existing = entryById.get(design.id);
+    if (!existing) {
+      const entry = { id: design.id, name: design.name, kind, usageFloorIds };
+      entryById.set(design.id, entry);
+      entries.push(entry);
+      return;
+    }
+    const crossesPublicSpaceBoundary = (existing.kind === "public-space") !== (kind === "public-space")
+      || existing.kind === "mixed";
+    existing.kind = crossesPublicSpaceBoundary ? "mixed" : existing.kind;
+    if (!existing.name.split(" / ").includes(design.name)) {
+      existing.name = `${existing.name} / ${design.name}`;
+    }
+    existing.usageFloorIds = uniqueSortedFloorIds([...existing.usageFloorIds, ...usageFloorIds]);
   };
   const master = state.phase2?.roomMaster;
-  if (master) addRoomDesign(master, "room-series");
-  for (const variant of state.phase2?.roomVariants ?? []) addRoomDesign(variant, "room-variant");
-  if (state.roomBlueprint) addRoomDesign(state.roomBlueprint, "room-series");
-  for (const blueprint of Object.values(state.phase4.spaceBlueprints)) entries.push({
-    id: blueprint.id,
-    name: blueprint.name,
-    kind: "public-space",
-    usageFloorIds: publicUsage(blueprint.id),
-  });
+  if (master) addDesign(master, "room-series", roomUsage(master.id));
+  for (const variant of state.phase2?.roomVariants ?? []) {
+    addDesign(variant, "room-variant", roomUsage(variant.id));
+  }
+  if (state.roomBlueprint) {
+    addDesign(state.roomBlueprint, "room-series", roomUsage(state.roomBlueprint.id));
+  }
+  for (const blueprint of Object.values(state.phase4.spaceBlueprints)) {
+    addDesign(blueprint, "public-space", publicUsage(blueprint.id));
+  }
   return { hotelGene: state.phase2?.hotelGene ?? null, entries };
 }
 
