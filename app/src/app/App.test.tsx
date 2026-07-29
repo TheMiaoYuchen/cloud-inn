@@ -70,5 +70,7 @@ describe("App", () => {
     window.location.hash = "#/floor-plan";
     render(<App savePort={port} />);
     expect(await screen.findByRole("heading", { name: "云端塔楼总览" })).toBeInTheDocument();
+    expect(window.location.hash).toBe("#/building");
+    expect(screen.getByRole("link", { name: "塔楼" })).toHaveAttribute("aria-current", "page");
   });
 });

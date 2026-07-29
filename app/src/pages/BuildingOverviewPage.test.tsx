@@ -6,6 +6,8 @@ import { InMemorySavePort } from "../infrastructure/memory/InMemorySavePort";
 import { GameProvider } from "../state/GameProvider";
 import { createPhase4AcceptanceState } from "../testing/phase4Fixtures";
 import { BuildingOverviewPage } from "./BuildingOverviewPage";
+import { createOperationsState } from "../domain/operations/createOperationsState";
+import { projectHotelInventory } from "../domain/building/hotelInventory";
 
 function towerState() {
   const state = createPhase4AcceptanceState("tower");
@@ -62,7 +64,7 @@ describe("Phase 4 building overview", () => {
     expect(screen.getByText("本层 10 间客房")).toBeInTheDocument();
   });
 
-  it("uses the authoritative post-rotation room geometry and true-size facility blueprints", async () => {
+  it("uses authoritative post-rotation room geometry and public-space slots", async () => {
     const state = towerState();
     const guestFloor = state.phase4!.floors.find(({ floorNumber }) => floorNumber === 28)!;
     const guestTemplate = state.phase4!.floorTemplates[guestFloor.templateId];
@@ -72,19 +74,37 @@ describe("Phase 4 building overview", () => {
       height: 6,
       rotation: 90,
     };
+    const facilityFloor = state.phase4!.floors.find(({ floorNumber }) => floorNumber === 21)!;
+    const facilityTemplate = state.phase4!.floorTemplates[facilityFloor.templateId];
+    Object.assign(facilityTemplate.publicSpaceSlots[0], {
+      anchorX: 2,
+      anchorY: 3,
+      width: 8,
+      height: 9,
+    });
+    facilityTemplate.publicSpaceSlots.reverse();
     const { user } = await renderTower(state);
     const tower = screen.getByRole("region", { name: "酒店垂直楼层" });
 
     await user.click(within(tower).getByRole("button", { name: /^选择28层，客房，/ }));
+    expect(screen.getByLabelText("28层真实比例平面")).toHaveStyle({
+      aspectRatio: "24 / 60",
+    });
     const room = screen.getAllByTestId("room-footprint")[0];
     expect(room).toHaveStyle({ width: `${(4 / 24) * 100}%`, height: "10%" });
+    expect(screen.getByText("中央核心筒").parentElement).toHaveStyle({
+      width: "25%",
+      height: "10%",
+    });
 
     await user.click(within(tower).getByRole("button", { name: /^选择21层，设施，/ }));
     const facilities = screen.getAllByTestId("space-footprint");
     expect(facilities).toHaveLength(4);
     expect(facilities[0]).toHaveStyle({
+      left: `${(2 / 24) * 100}%`,
+      top: "12.5%",
       width: `${(8 / 24) * 100}%`,
-      height: `${(8 / 24) * 100}%`,
+      height: "37.5%",
     });
   });
 
@@ -105,6 +125,65 @@ describe("Phase 4 building overview", () => {
     expect(saved?.cashCents).toBe(75_000_000);
     expect(saved?.phase4?.floors.some(({ floorNumber }) => floorNumber === 35))
       .toBe(true);
+  });
+
+  it("projects occupied, renovating, and available room overlays with renovation priority", async () => {
+    const state = towerState();
+    const offers = projectHotelInventory(state).rooms.filter(
+      ({ floorNumber }) => floorNumber === 28,
+    );
+    const occupied = offers[0];
+    const renovating = offers[1];
+    state.operations = createOperationsState();
+    state.operations.lastOfflineCheckpointMs = 1_000;
+    state.operations.offerUpgrades[`${renovating.id}:workspace`] = {
+      roomOfferId: renovating.id,
+      upgradeId: "upgrade:workspace:1",
+      kind: "workspace",
+      level: 1,
+      remainingClosureDays: 2,
+      committedDay: 0,
+      costCents: 100,
+    };
+    state.operations.dailyReports = [{
+      day: 1,
+      segments: [],
+      revenueCents: 0,
+      operatingCostCents: 0,
+      financeCostCents: 0,
+      netIncomeCents: 0,
+      endingCashCents: state.cashCents,
+      reputationBps: 5_000,
+      bookings: [occupied, renovating].map((room) => ({
+        segmentId: "business" as const,
+        roomId: room.sourceRoomId,
+        offerId: room.id,
+        rateCents: room.nightlyRateCents,
+      })),
+    }];
+    const unchanged = structuredClone(state);
+    const port = new InMemorySavePort();
+    await port.commit(0, state);
+    const user = userEvent.setup();
+    render(
+      <GameProvider savePort={port} saveId={state.saveId} nowMs={() => 1_000}>
+        <BuildingOverviewPage />
+      </GameProvider>,
+    );
+    await screen.findByRole("heading", { name: "云端塔楼总览" });
+    const tower = screen.getByRole("region", { name: "酒店垂直楼层" });
+
+    await user.click(within(tower).getByRole("button", { name: /^选择28层，客房，/ }));
+
+    expect(screen.getByRole("button", { name: new RegExp(`客房 ${occupied.localPlacementId}，.*入住`) }))
+      .toHaveClass("is-occupied");
+    expect(screen.getByRole("button", { name: new RegExp(`客房 ${renovating.localPlacementId}，.*停业改造`) }))
+      .toHaveClass("is-renovating");
+    expect(screen.getAllByRole("button", { name: /平方米，可售$/ })).toHaveLength(8);
+    expect(screen.getByText("入住 1 间")).toBeInTheDocument();
+    expect(screen.getByText("停业改造 1 间")).toBeInTheDocument();
+    expect(screen.getByText("可售 8 间")).toBeInTheDocument();
+    expect(await port.load("tower")).toEqual(unchanged);
   });
 
   it("reports insufficient cash without offering a false confirmation", async () => {

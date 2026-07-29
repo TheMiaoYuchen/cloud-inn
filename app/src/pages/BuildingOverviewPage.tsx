@@ -4,6 +4,8 @@ import { FloorWorkspace } from "../components/building/FloorWorkspace";
 import { TowerOverview } from "../components/building/TowerOverview";
 import "../components/building/building.css";
 import { useGame } from "../state/GameProvider";
+import type { StableId } from "../domain/building/buildingTypes";
+import type { PublicSpaceBlueprint } from "../domain/facilities/facilityTypes";
 
 function formatMoney(cents: number): string {
   return new Intl.NumberFormat("zh-CN", {
@@ -43,11 +45,17 @@ export function BuildingOverviewPage() {
     ? undefined
     : building?.expansionOfferByFloorNumber.get(previewFloorNumber);
   const publicSpaceBlueprints = useMemo(() => {
-    const result = new Map();
+    const result = new Map<string, {
+      blueprint: PublicSpaceBlueprint;
+      localPlacementId: StableId;
+    }>();
     if (!state?.phase4) return result;
     for (const instance of Object.values(state.phase4.publicSpaces)) {
       const blueprint = state.phase4.spaceBlueprints[instance.blueprintId];
-      if (blueprint) result.set(instance.id, blueprint);
+      if (blueprint) result.set(instance.id, {
+        blueprint,
+        localPlacementId: instance.localPlacementId,
+      });
     }
     return result;
   }, [state]);

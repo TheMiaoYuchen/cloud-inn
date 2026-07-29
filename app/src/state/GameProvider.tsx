@@ -14,12 +14,15 @@ import { OPERATIONS_DAY_INTERVAL_MS, useOperationsClock } from './useOperationsC
 
 type Commands = ReturnType<typeof createGameCommands> & ReturnType<typeof createBuildingCommands>;
 export type StartupNotice = { message: string; settledDays: number; checkpointMs: number | null };
+export type RoomOperatingStatus = 'available' | 'occupied' | 'renovating';
 export type FloorProjection = {
   floor: HotelFloor;
   template: ScaleFloorTemplate | null;
   rooms: HotelInventoryRoom[];
   facilities: FacilityState[];
   open: boolean;
+  roomStatusByOfferId: ReadonlyMap<string, RoomOperatingStatus>;
+  roomStatusTotals: Readonly<Record<RoomOperatingStatus, number>>;
 };
 export type BuildingProjection = {
   floors: FloorProjection[];
@@ -108,19 +111,42 @@ export function GameProvider({ children, savePort: port, saveId = 'save-1', visu
     }
     const publicSpaceById = new Map(Object.values(state.phase4.publicSpaces).map(space => [space.id, space]));
     const facilitiesBySpaceId = new Map(inventory.facilities.map(facility => [facility.publicSpaceInstanceId, facility]));
+    const reports = state.operations?.dailyReports ?? [];
+    const latestReport = reports[reports.length - 1];
+    const occupiedOfferIds = new Set(latestReport?.bookings?.map(booking => booking.offerId) ?? []);
+    const occupiedRoomIds = new Set(latestReport?.bookings?.map(booking => booking.roomId) ?? []);
+    const renovatingOfferIds = new Set(Object.values(state.operations?.offerUpgrades ?? {})
+      .filter(upgrade => (upgrade.remainingClosureDays ?? 0) > 0)
+      .map(upgrade => upgrade.roomOfferId));
     const floors = [...state.phase4.floors]
       .sort((left, right) => right.floorNumber - left.floorNumber || left.id.localeCompare(right.id))
-      .map((floor): FloorProjection => ({
-        floor,
-        template: state.phase4!.floorTemplates[`template-snapshot:${floor.id}`] ?? state.phase4!.floorTemplates[floor.templateId] ?? null,
-        rooms: roomsByFloor.get(floor.id) ?? [],
-        facilities: floor.publicSpaceInstanceIds.flatMap(id => {
-          const space = publicSpaceById.get(id);
-          const facility = space ? facilitiesBySpaceId.get(space.id) : undefined;
-          return facility ? [facility] : [];
-        }),
-        open: state.phase === 'open' && floor.purchased,
-      }));
+      .map((floor): FloorProjection => {
+        const rooms = roomsByFloor.get(floor.id) ?? [];
+        const roomStatusByOfferId = new Map<string, RoomOperatingStatus>();
+        const roomStatusTotals: Record<RoomOperatingStatus, number> = { available: 0, occupied: 0, renovating: 0 };
+        for (const room of rooms) {
+          const status: RoomOperatingStatus = renovatingOfferIds.has(room.id)
+            ? 'renovating'
+            : occupiedOfferIds.has(room.id) || occupiedRoomIds.has(room.sourceRoomId)
+              ? 'occupied'
+              : 'available';
+          roomStatusByOfferId.set(room.id, status);
+          roomStatusTotals[status] += 1;
+        }
+        return {
+          floor,
+          template: state.phase4!.floorTemplates[`template-snapshot:${floor.id}`] ?? state.phase4!.floorTemplates[floor.templateId] ?? null,
+          rooms,
+          facilities: floor.publicSpaceInstanceIds.flatMap(id => {
+            const space = publicSpaceById.get(id);
+            const facility = space ? facilitiesBySpaceId.get(space.id) : undefined;
+            return facility ? [facility] : [];
+          }),
+          open: state.phase === 'open' && floor.purchased,
+          roomStatusByOfferId,
+          roomStatusTotals,
+        };
+      });
     const expansionOffers = [...state.phase4.building.availableExpansionFloorNumbers]
       .sort((left, right) => left - right)
       .map(floorNumber => previewExpansion(state, floorNumber));

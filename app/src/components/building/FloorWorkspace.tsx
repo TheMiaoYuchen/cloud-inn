@@ -1,6 +1,7 @@
 import { useMemo, useState } from "react";
 import type { PublicSpaceBlueprint } from "../../domain/facilities/facilityTypes";
 import type { FloorProjection } from "../../state/GameProvider";
+import type { StableId } from "../../domain/building/buildingTypes";
 import { floorUseLabel } from "./TowerOverview";
 
 const FACILITY_LABELS: Record<string, string> = {
@@ -18,8 +19,24 @@ const FACILITY_LABELS: Record<string, string> = {
   boutique: "精品店",
 };
 
+const ROOM_STATUS_LABELS = {
+  available: "可售",
+  occupied: "入住",
+  renovating: "停业改造",
+} as const;
+
 function percentage(value: number, total: number): string {
   return `${(value / Math.max(1, total)) * 100}%`;
+}
+
+function centeredSquare(columns: number, rows: number, scale: number) {
+  const side = Math.max(1, Math.floor(Math.min(columns, rows) * scale));
+  return {
+    left: percentage((columns - side) / 2, columns),
+    top: percentage((rows - side) / 2, rows),
+    width: percentage(side, columns),
+    height: percentage(side, rows),
+  };
 }
 
 export function FloorWorkspace({
@@ -27,9 +44,12 @@ export function FloorWorkspace({
   publicSpaceBlueprints,
 }: {
   projection: FloorProjection;
-  publicSpaceBlueprints: ReadonlyMap<string, PublicSpaceBlueprint>;
+  publicSpaceBlueprints: ReadonlyMap<string, {
+    blueprint: PublicSpaceBlueprint;
+    localPlacementId: StableId;
+  }>;
 }) {
-  const { floor, template, rooms, facilities } = projection;
+  const { floor, template, rooms, facilities, roomStatusByOfferId, roomStatusTotals } = projection;
   const [selectedRoomId, setSelectedRoomId] = useState<string | null>(null);
   const roomByPlacement = useMemo(
     () => new Map(rooms.map((room) => [room.localPlacementId, room])),
@@ -44,12 +64,22 @@ export function FloorWorkspace({
     : null;
   const facilityBlueprints = useMemo(
     () => facilities.flatMap((facility) => {
-      const blueprint = publicSpaceBlueprints.get(facility.publicSpaceInstanceId);
-      return blueprint ? [{ facility, blueprint }] : [];
+      const projection = publicSpaceBlueprints.get(facility.publicSpaceInstanceId);
+      return projection ? [{ facility, ...projection }] : [];
     }),
     [facilities, publicSpaceBlueprints],
   );
+  const publicSpaceSlotById = useMemo(
+    () => new Map((template?.publicSpaceSlots ?? []).map((slot) => [slot.id, slot])),
+    [template],
+  );
   const totalRoomArea = rooms.reduce((sum, room) => sum + room.areaSquareMeters, 0);
+  const coreStyle = template
+    ? centeredSquare(template.columns, template.rows, 0.25)
+    : undefined;
+  const ringStyle = template
+    ? centeredSquare(template.columns, template.rows, 0.5)
+    : undefined;
 
   return (
     <section
@@ -70,19 +100,26 @@ export function FloorWorkspace({
           <div
             className="true-scale-floor"
             aria-label={`${floor.floorNumber}层真实比例平面`}
+            style={template ? {
+              aspectRatio: `${template.columns} / ${template.rows}`,
+              width: `min(100%, ${(760 * template.columns) / template.rows}px)`,
+            } : undefined}
           >
-            <div className="ring-corridor-visual"><span>环形走廊</span></div>
-            <div className="central-core"><span>中央核心筒</span><small>电梯 · 楼梯 · 后勤</small></div>
+            <div className="ring-corridor-visual" style={ringStyle}><span>环形走廊</span></div>
+            <div className="central-core" style={coreStyle}><span>中央核心筒</span><small>电梯 · 楼梯 · 后勤</small></div>
             {template?.roomPlacements.map((placement) => {
               const room = roomByPlacement.get(placement.id);
               if (!room) return null;
+              const roomStatus = roomStatusByOfferId.get(room.id) ?? "available";
+              const roomStatusLabel = ROOM_STATUS_LABELS[roomStatus];
               return (
                 <button
                   key={room.id}
                   type="button"
                   data-testid="room-footprint"
-                  className="room-footprint"
-                  aria-label={`客房 ${room.localPlacementId}，${room.areaSquareMeters}平方米，可售`}
+                  className={`room-footprint is-${roomStatus}`}
+                  aria-label={`客房 ${room.localPlacementId}，${room.areaSquareMeters}平方米，${roomStatusLabel}`}
+                  title={roomStatusLabel}
                   aria-pressed={selectedRoomId === room.id}
                   onClick={() => setSelectedRoomId(room.id)}
                   style={{
@@ -93,26 +130,31 @@ export function FloorWorkspace({
                   }}
                 >
                   <span>{room.areaSquareMeters}㎡</span>
-                  <small>可售</small>
+                  <small>{roomStatusLabel}</small>
                 </button>
               );
             })}
-            {facilityBlueprints.map(({ facility, blueprint }, index) => (
-              <div
-                key={facility.id}
-                data-testid="space-footprint"
-                className="facility-footprint"
-                style={{
-                  left: `${4 + (index % 3) * 32}%`,
-                  bottom: `${4 + Math.floor(index / 3) * 35}%`,
-                  width: percentage(blueprint.columns, template?.columns ?? blueprint.columns),
-                  height: percentage(blueprint.rows, template?.rows ?? blueprint.rows),
-                }}
-              >
-                <span>{FACILITY_LABELS[facility.type] ?? facility.type}</span>
-                <small>{facility.status === "operating" ? "营业中" : facility.status === "closed" ? "已关闭" : "筹备中"}</small>
-              </div>
-            ))}
+            {facilityBlueprints.map(({ facility, localPlacementId }) => {
+              const slot = publicSpaceSlotById.get(localPlacementId);
+              if (!template || slot?.anchorX === undefined || slot.anchorY === undefined ||
+                  slot.width === undefined || slot.height === undefined) return null;
+              return (
+                <div
+                  key={facility.id}
+                  data-testid="space-footprint"
+                  className="facility-footprint"
+                  style={{
+                    left: percentage(slot.anchorX, template.columns),
+                    top: percentage(slot.anchorY, template.rows),
+                    width: percentage(slot.width, template.columns),
+                    height: percentage(slot.height, template.rows),
+                  }}
+                >
+                  <span>{FACILITY_LABELS[facility.type] ?? facility.type}</span>
+                  <small>{facility.status === "operating" ? "营业中" : facility.status === "closed" ? "已关闭" : "筹备中"}</small>
+                </div>
+              );
+            })}
           </div>
         </div>
 
@@ -122,6 +164,9 @@ export function FloorWorkspace({
             <div><dt>用途</dt><dd>{floorUseLabel(floor.use)}</dd></div>
             <div><dt>客房</dt><dd>{rooms.length} 间</dd></div>
             <div><dt>客房面积</dt><dd>{totalRoomArea}㎡</dd></div>
+            <div><dt>入住</dt><dd>入住 {roomStatusTotals.occupied} 间</dd></div>
+            <div><dt>停业</dt><dd>停业改造 {roomStatusTotals.renovating} 间</dd></div>
+            <div><dt>可售</dt><dd>可售 {roomStatusTotals.available} 间</dd></div>
             <div><dt>设施</dt><dd>{facilities.length} 项</dd></div>
             <div><dt>状态</dt><dd>{floor.purchased ? "已纳入酒店" : "尚未购买"}</dd></div>
           </dl>
@@ -129,7 +174,7 @@ export function FloorWorkspace({
             <div className="selected-room-card">
               <h3>已选客房</h3>
               <p>{selectedRoom.localPlacementId}</p>
-              <strong>{selectedRoom.areaSquareMeters}㎡ · 可售</strong>
+              <strong>{selectedRoom.areaSquareMeters}㎡ · {ROOM_STATUS_LABELS[roomStatusByOfferId.get(selectedRoom.id) ?? "available"]}</strong>
             </div>
           ) : <p className="muted">选择平面中的客房查看详情。</p>}
         </aside>

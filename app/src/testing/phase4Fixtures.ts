@@ -277,9 +277,13 @@ function createPhase4State(): ContentScaleState {
   const createPublicSpaceSlots = (floorNumber: number) =>
     PUBLIC_SPACE_PLACEMENTS.filter(
       (placement) => placement.floorNumber === floorNumber,
-    ).map(({ localPlacementId, type }) => ({
+    ).map(({ localPlacementId, type }, index) => ({
       id: localPlacementId,
       permittedTypes: [type],
+      anchorX: 2 + (index % 2) * 11,
+      anchorY: 2 + Math.floor(index / 2) * 11,
+      width: 9,
+      height: 9,
     }));
 
   const floorTemplates = stableRecord<ScaleFloorTemplate>([

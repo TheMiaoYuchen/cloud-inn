@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
-import { Link } from 'react-router-dom';
+import { Link, Navigate } from 'react-router-dom';
 import { useGame } from '../state/GameProvider';
 import { OperationsPage } from './OperationsPage';
 import { prototypeConfig } from '../domain/config/prototypeConfig';
@@ -7,7 +7,6 @@ import { analyzeCorridorTemplate, createCorridorTemplate, type CorridorTemplateK
 import { FloorTemplatePicker } from '../components/floor/FloorTemplatePicker';
 import { FloorOverview } from '../components/floor/FloorOverview';
 import { FloorHintPanel } from '../components/floor/FloorHintPanel';
-import { BuildingOverviewPage } from './BuildingOverviewPage';
 
 export function FloorPlanningPage() {
   const { state,error,commands,visualProvider,visualPending }=useGame();
@@ -19,7 +18,7 @@ export function FloorPlanningPage() {
   const analysis=useMemo(()=>analyzeCorridorTemplate(template),[template]);
   useEffect(()=>{const id=state?.phase2?.corridorTemplate?.id;if(id==='complete-ring'||id==='partial-ring')setTemplateKind(id);},[state?.phase2?.corridorTemplate?.id]);
   if(!state)return null;
-  if(state.phase4)return <BuildingOverviewPage/>;
+  if(state.phase4)return <Navigate to="/building" replace/>;
   if(state.phase==='design')return <main><p>请先设计房型。</p><Link to="/design">前往设计</Link></main>;
   if(state.phase==='open')return <OperationsPage/>;
   const bp=state.roomBlueprint,labels=['西北','东北','西南','东南'],variants=state.phase2?.roomVariants ?? [];

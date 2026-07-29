@@ -87,6 +87,10 @@ export interface ScaleRoomPlacement {
 export interface ScalePublicSpaceSlot {
   id: StableId;
   permittedTypes: PublicSpaceInstance["type"][];
+  anchorX?: number;
+  anchorY?: number;
+  width?: number;
+  height?: number;
 }
 
 export interface ScaleFloorTemplate {
