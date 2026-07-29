@@ -212,6 +212,47 @@ describe("complete Phase 4 browser persistence validation", () => {
     expect(() => validateBrowserGameState(outside, "phase4-shared")).toThrow("公共空间物品超出蓝图");
   });
 
+  const slotGeometryCases: Array<[string, string, (slot: any) => void]> = [
+    ["partial", "公共空间槽位几何必须完整", (slot) => { slot.anchorX = 0; }],
+    ["string", "公共空间槽位几何必须是安全整数", (slot) => {
+      Object.assign(slot, { anchorX: "0", anchorY: 0, width: 1, height: 1 });
+    }],
+    ["fraction", "公共空间槽位几何必须是安全整数", (slot) => {
+      Object.assign(slot, { anchorX: 0.5, anchorY: 0, width: 1, height: 1 });
+    }],
+    ["negative", "公共空间槽位几何必须是安全整数", (slot) => {
+      Object.assign(slot, { anchorX: -1, anchorY: 0, width: 1, height: 1 });
+    }],
+    ["zero-size", "公共空间槽位几何必须是安全整数", (slot) => {
+      Object.assign(slot, { anchorX: 0, anchorY: 0, width: 0, height: 1 });
+    }],
+    ["out-of-bounds", "公共空间槽位几何超出楼层模板", (slot) => {
+      Object.assign(slot, { anchorX: 23, anchorY: 23, width: 2, height: 2 });
+    }],
+  ];
+
+  it.each(slotGeometryCases)("rejects public-space slot geometry %s", (_name, errorClass, mutate) => {
+    const value = structuredClone(sharedPhase4Fixture) as any;
+    const slot = value.phase4.floorTemplates["template:facility:standard"].publicSpaceSlots[0];
+    mutate(slot);
+    expect(() => validateBrowserGameState(value, "phase4-shared")).toThrow(errorClass);
+  });
+
+  it("keeps absent slot geometry compatible and accepts the exact boundary", () => {
+    const legacy = structuredClone(sharedPhase4Fixture) as any;
+    expect(() => validateBrowserGameState(legacy, "phase4-shared")).not.toThrow();
+
+    const boundary = structuredClone(sharedPhase4Fixture) as any;
+    const template = boundary.phase4.floorTemplates["template:facility:standard"];
+    Object.assign(template.publicSpaceSlots[0], {
+      anchorX: template.columns - 8,
+      anchorY: template.rows - 9,
+      width: 8,
+      height: 9,
+    });
+    expect(() => validateBrowserGameState(boundary, "phase4-shared")).not.toThrow();
+  });
+
   it("accepts extension ID-like metadata without treating it as schema", () => {
     const value = structuredClone(sharedPhase4Fixture) as any;
     value.phase4.persistenceMetadata = { futureId: "Future ID", futureIds: ["Future ID"] };

@@ -1,4 +1,4 @@
-import { render, screen, within } from "@testing-library/react";
+import { act, fireEvent, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it } from "vitest";
 import type { SavePort } from "../application/ports/SavePort";
@@ -240,5 +240,110 @@ describe("Phase 4 building overview", () => {
 
     expect(screen.getByText("酒店还没有可查看的楼层")).toBeInTheDocument();
     expect(screen.queryByTestId("floor-scene")).not.toBeInTheDocument();
+  });
+
+  it("resets selected floor and expansion evidence when switching saves", async () => {
+    const stateA = towerState();
+    stateA.saveId = "tower-a";
+    const stateB = towerState();
+    stateB.saveId = "tower-b";
+    stateB.phase4!.floors.forEach((floor, index) => { floor.floorNumber = 39 + index; });
+    stateB.phase4!.building.availableExpansionFloorNumbers = [55];
+    const port = new InMemorySavePort();
+    await port.commit(0, stateA);
+    await port.commit(0, stateB);
+    const user = userEvent.setup();
+    const view = render(
+      <GameProvider savePort={port} saveId={stateA.saveId}>
+        <BuildingOverviewPage />
+      </GameProvider>,
+    );
+    await screen.findByRole("heading", { name: "云端塔楼总览" });
+    const towerA = screen.getByRole("region", { name: "酒店垂直楼层" });
+    await user.click(within(towerA).getByRole("button", { name: /^选择28层，客房，/ }));
+    await user.click(screen.getByRole("button", { name: "查看35层扩建" }));
+    expect(screen.getByRole("region", { name: "35层扩建预览" })).toBeInTheDocument();
+
+    view.rerender(
+      <GameProvider savePort={port} saveId={stateB.saveId}>
+        <BuildingOverviewPage />
+      </GameProvider>,
+    );
+
+    expect(await screen.findByRole("region", { name: "54层平面工作区" })).toBeInTheDocument();
+    expect(screen.queryByRole("region", { name: "35层扩建预览" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("region", { name: "28层平面工作区" })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "查看55层扩建" })).toBeInTheDocument();
+    expect((await port.load(stateB.saveId))?.revision).toBe(1);
+  });
+
+  it("does not leak an in-flight purchase notice across save switches", async () => {
+    const stateA = towerState();
+    stateA.saveId = "tower-a";
+    const stateB = towerState();
+    stateB.saveId = "tower-b";
+    stateB.phase4!.floors.forEach((floor, index) => { floor.floorNumber = 39 + index; });
+    stateB.phase4!.building.availableExpansionFloorNumbers = [55];
+    const backing = new InMemorySavePort();
+    await backing.commit(0, stateA);
+    await backing.commit(0, stateB);
+    let release!: () => void;
+    const port: SavePort = {
+      load: (saveId) => backing.load(saveId),
+      commit: async (revision, next) => {
+        if (next.saveId === stateA.saveId && next.revision === 2) {
+          await new Promise<void>((resolve) => { release = resolve; });
+        }
+        await backing.commit(revision, next);
+      },
+    };
+    const user = userEvent.setup();
+    const view = render(
+      <GameProvider savePort={port} saveId={stateA.saveId}>
+        <BuildingOverviewPage />
+      </GameProvider>,
+    );
+    await screen.findByRole("heading", { name: "云端塔楼总览" });
+    await user.click(screen.getByRole("button", { name: "查看35层扩建" }));
+    await user.click(screen.getByRole("button", { name: "确认购买35层" }));
+
+    view.rerender(
+      <GameProvider savePort={port} saveId={stateB.saveId}>
+        <BuildingOverviewPage />
+      </GameProvider>,
+    );
+    expect(await screen.findByRole("region", { name: "54层平面工作区" })).toBeInTheDocument();
+    await act(async () => release());
+    await act(async () => {});
+
+    expect(screen.queryByText("35层已纳入酒店")).not.toBeInTheDocument();
+    expect(screen.queryByRole("region", { name: "35层扩建预览" })).not.toBeInTheDocument();
+    expect((await backing.load(stateB.saveId))?.revision).toBe(1);
+  });
+
+  it("guards same-tick expansion confirmation with one commit", async () => {
+    const state = towerState();
+    const backing = new InMemorySavePort();
+    let purchaseCommits = 0;
+    const port: SavePort = {
+      load: (saveId) => backing.load(saveId),
+      commit: async (revision, next) => {
+        if (next.revision === 2) purchaseCommits += 1;
+        await backing.commit(revision, next);
+      },
+    };
+    await renderTower(state, port);
+    await userEvent.setup().click(screen.getByRole("button", { name: "查看35层扩建" }));
+    const confirm = screen.getByRole("button", { name: "确认购买35层" });
+
+    act(() => {
+      fireEvent.click(confirm);
+      fireEvent.click(confirm);
+    });
+
+    expect(await screen.findByText("35层已纳入酒店")).toBeInTheDocument();
+    await act(async () => {});
+    expect(purchaseCommits).toBe(1);
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
   });
 });

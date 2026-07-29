@@ -57,20 +57,29 @@ describe("App", () => {
     expect(await screen.findByRole("heading", { name: "云端塔楼总览" })).toBeInTheDocument();
   });
 
-  it("guards direct legacy building routes and converts old floor links for Phase 4", async () => {
+  it("guards direct legacy building routes for legacy saves", async () => {
     window.location.hash = "#/building";
-    const legacyView = render(<App savePort={new InMemorySavePort()} />);
+    render(<App savePort={new InMemorySavePort()} />);
     expect(await screen.findByRole("heading", { name: "Cloud Inn" })).toBeInTheDocument();
-
-    legacyView.unmount();
-    const port = new InMemorySavePort();
-    const state = createPhase4AcceptanceState("save-1");
-    state.revision = 1;
-    await port.commit(0, state);
-    window.location.hash = "#/floor-plan";
-    render(<App savePort={port} />);
-    expect(await screen.findByRole("heading", { name: "云端塔楼总览" })).toBeInTheDocument();
-    expect(window.location.hash).toBe("#/building");
-    expect(screen.getByRole("link", { name: "塔楼" })).toHaveAttribute("aria-current", "page");
   });
+
+  it.each(["#/design", "#/design/variants", "#/floor-plan", "#/floor"])(
+    "redirects the Phase 4 legacy route %s to the building overview",
+    async (route) => {
+      const port = new InMemorySavePort();
+      const state = createPhase4AcceptanceState("save-1");
+      state.revision = 1;
+      await port.commit(0, state);
+      window.location.hash = route;
+
+      render(<App savePort={port} />);
+
+      expect(await screen.findByRole("heading", { name: "云端塔楼总览" })).toBeInTheDocument();
+      expect(window.location.hash).toBe("#/building");
+      expect(screen.getByRole("link", { name: "塔楼" })).toHaveAttribute("aria-current", "page");
+      expect(screen.queryByRole("heading", { name: "设计你的第一间客房" })).not.toBeInTheDocument();
+      expect(screen.queryByRole("heading", { name: "客房系列同步" })).not.toBeInTheDocument();
+      expect(screen.queryByRole("heading", { name: "高层酒店楼层规划" })).not.toBeInTheDocument();
+    },
+  );
 });

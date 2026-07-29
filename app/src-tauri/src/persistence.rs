@@ -1545,6 +1545,37 @@ fn validate_phase4(value: &Value, game: &Value) -> Result<(), String> {
             if permitted.is_empty() || permitted.len() != permitted_values.len() {
                 return Err(phase4_error("允许设施类型无效"));
             }
+            let geometry_fields = ["anchorX", "anchorY", "width", "height"];
+            let geometry_field_count = geometry_fields
+                .iter()
+                .filter(|field| slot.get(**field).is_some())
+                .count();
+            if geometry_field_count != 0 && geometry_field_count != geometry_fields.len() {
+                return Err(phase4_error("公共空间槽位几何必须完整"));
+            }
+            if geometry_field_count == geometry_fields.len() {
+                let geometry_int = |field: &str, minimum: i64, maximum: i64| {
+                    phase4_int(
+                        phase4_field(slot, field, "公共空间槽位几何")?,
+                        "公共空间槽位几何",
+                        minimum,
+                        maximum,
+                    )
+                };
+                let anchor_x = geometry_int("anchorX", 0, columns - 1)?;
+                let anchor_y = geometry_int("anchorY", 0, rows - 1)?;
+                let width = geometry_int("width", 1, columns)?;
+                let height = geometry_int("height", 1, rows)?;
+                let right = anchor_x
+                    .checked_add(width)
+                    .ok_or_else(|| phase4_error("公共空间槽位几何超出楼层模板"))?;
+                let bottom = anchor_y
+                    .checked_add(height)
+                    .ok_or_else(|| phase4_error("公共空间槽位几何超出楼层模板"))?;
+                if right > columns || bottom > rows {
+                    return Err(phase4_error("公共空间槽位几何超出楼层模板"));
+                }
+            }
             if slots.insert(id, permitted).is_some() {
                 return Err(phase4_error("公共空间槽位无效"));
             }
@@ -4605,6 +4636,90 @@ mod tests {
             &mut boundary["phase4"]["spaceBlueprints"]["space-blueprint:all-day-dining"];
         blueprint["placedItems"][0]["x"] = json!(127);
         blueprint["placedItems"][0]["y"] = json!(63);
+        assert!(validate_game(&boundary).is_ok());
+    }
+
+    #[test]
+    fn phase4_validates_optional_public_space_slot_geometry() {
+        type SlotMutation = (&'static str, &'static str, Box<dyn Fn(&mut Value)>);
+        let cases: Vec<SlotMutation> = vec![
+            (
+                "partial",
+                "公共空间槽位几何必须完整",
+                Box::new(|slot| slot["anchorX"] = json!(0)),
+            ),
+            (
+                "string",
+                "公共空间槽位几何必须是安全整数",
+                Box::new(|slot| {
+                    slot["anchorX"] = json!("0");
+                    slot["anchorY"] = json!(0);
+                    slot["width"] = json!(1);
+                    slot["height"] = json!(1);
+                }),
+            ),
+            (
+                "fraction",
+                "公共空间槽位几何必须是安全整数",
+                Box::new(|slot| {
+                    slot["anchorX"] = json!(0.5);
+                    slot["anchorY"] = json!(0);
+                    slot["width"] = json!(1);
+                    slot["height"] = json!(1);
+                }),
+            ),
+            (
+                "negative",
+                "公共空间槽位几何必须是安全整数",
+                Box::new(|slot| {
+                    slot["anchorX"] = json!(-1);
+                    slot["anchorY"] = json!(0);
+                    slot["width"] = json!(1);
+                    slot["height"] = json!(1);
+                }),
+            ),
+            (
+                "zero-size",
+                "公共空间槽位几何必须是安全整数",
+                Box::new(|slot| {
+                    slot["anchorX"] = json!(0);
+                    slot["anchorY"] = json!(0);
+                    slot["width"] = json!(0);
+                    slot["height"] = json!(1);
+                }),
+            ),
+            (
+                "out-of-bounds",
+                "公共空间槽位几何超出楼层模板",
+                Box::new(|slot| {
+                    slot["anchorX"] = json!(23);
+                    slot["anchorY"] = json!(23);
+                    slot["width"] = json!(2);
+                    slot["height"] = json!(2);
+                }),
+            ),
+        ];
+        for (name, expected, mutate) in cases {
+            let mut invalid = phase4_fixture(include_str!("../tests/fixtures/phase4-valid.json"));
+            let slot = &mut invalid["phase4"]["floorTemplates"]["template:facility:standard"]
+                ["publicSpaceSlots"][0];
+            mutate(slot);
+            let error = validate_game(&invalid).err().unwrap();
+            assert!(
+                error.contains(expected),
+                "{name} expected {expected}, got {error}"
+            );
+        }
+
+        let legacy = phase4_fixture(include_str!("../tests/fixtures/phase4-valid.json"));
+        assert!(validate_game(&legacy).is_ok());
+        let mut boundary = legacy;
+        let slot = &mut boundary["phase4"]["floorTemplates"]["template:facility:standard"]
+            ["publicSpaceSlots"][0];
+        slot["anchorX"] = json!(16);
+        slot["anchorY"] = json!(15);
+        slot["width"] = json!(8);
+        slot["height"] = json!(9);
         assert!(validate_game(&boundary).is_ok());
     }
 

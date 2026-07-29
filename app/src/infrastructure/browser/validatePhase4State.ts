@@ -281,6 +281,21 @@ export function validatePhase4State(value: unknown, gameValue?: unknown): void {
       if (slots.has(slotId)) phase4Error("公共空间槽位编号重复");
       const permitted = array(slot.permittedTypes, "允许设施类型").map((type) => oneOf(type, PUBLIC_SPACE_TYPES, "设施类型"));
       if (permitted.length === 0 || new Set(permitted).size !== permitted.length) phase4Error("允许设施类型无效");
+      const geometry = [slot.anchorX, slot.anchorY, slot.width, slot.height];
+      const geometryFieldCount = geometry.filter((value) => value !== undefined).length;
+      if (geometryFieldCount !== 0 && geometryFieldCount !== geometry.length) {
+        phase4Error("公共空间槽位几何必须完整");
+      }
+      if (geometryFieldCount === geometry.length) {
+        const anchorX = integer(slot.anchorX, "公共空间槽位几何", 0, Number(template.columns) - 1);
+        const anchorY = integer(slot.anchorY, "公共空间槽位几何", 0, Number(template.rows) - 1);
+        const width = integer(slot.width, "公共空间槽位几何", 1, Number(template.columns));
+        const height = integer(slot.height, "公共空间槽位几何", 1, Number(template.rows));
+        if (
+          anchorX + width > Number(template.columns)
+          || anchorY + height > Number(template.rows)
+        ) phase4Error("公共空间槽位几何超出楼层模板");
+      }
       slots.set(slotId, permitted);
     }
     templateSlots.set(id, slots);

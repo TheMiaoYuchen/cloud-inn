@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Navigate } from "react-router-dom";
 import { FloorWorkspace } from "../components/building/FloorWorkspace";
 import { TowerOverview } from "../components/building/TowerOverview";
@@ -23,20 +23,38 @@ const EXPANSION_REASON_LABELS: Record<string, string> = {
 
 export function BuildingOverviewPage() {
   const { state, building, loading, commandPending, error, commands } = useGame();
-  const [selectedFloorId, setSelectedFloorId] = useState<string>();
-  const [previewFloorNumber, setPreviewFloorNumber] = useState<number>();
-  const [purchaseNotice, setPurchaseNotice] = useState<string>();
+  const saveId = state?.saveId;
+  const [selectedFloorEvidence, setSelectedFloorEvidence] = useState<{ saveId: string; floorId: string }>();
+  const [expansionEvidence, setExpansionEvidence] = useState<{ saveId: string; floorNumber: number }>();
+  const [purchaseNotice, setPurchaseNotice] = useState<{ saveId: string; message: string }>();
   const [railCollapsed, setRailCollapsed] = useState(false);
+  const purchaseInFlightRef = useRef<{ saveId: string; floorNumber: number } | null>(null);
+  const currentSaveIdRef = useRef(saveId);
+  currentSaveIdRef.current = saveId;
+
+  const selectedFloorId = selectedFloorEvidence && selectedFloorEvidence.saveId === saveId
+    ? selectedFloorEvidence.floorId
+    : undefined;
+  const previewFloorNumber = expansionEvidence && expansionEvidence.saveId === saveId
+    ? expansionEvidence.floorNumber
+    : undefined;
 
   useEffect(() => {
-    if (!building?.floors.length) {
-      setSelectedFloorId(undefined);
+    if (!saveId || !building?.floors.length) {
+      setSelectedFloorEvidence(undefined);
       return;
     }
     if (!selectedFloorId || !building.floorById.has(selectedFloorId)) {
-      setSelectedFloorId(building.floors[0].floor.id);
+      setSelectedFloorEvidence({ saveId, floorId: building.floors[0].floor.id });
     }
-  }, [building, selectedFloorId]);
+  }, [building, saveId, selectedFloorId]);
+
+  useEffect(() => {
+    setExpansionEvidence(undefined);
+    setPurchaseNotice(undefined);
+    setRailCollapsed(false);
+    purchaseInFlightRef.current = null;
+  }, [saveId]);
 
   const selectedFloor = selectedFloorId
     ? building?.floorById.get(selectedFloorId)
@@ -64,15 +82,28 @@ export function BuildingOverviewPage() {
   if (!state?.phase4 || !building) return <Navigate to="/" replace />;
 
   const purchaseFloor = async () => {
-    if (!expansionPreview || commandPending) return;
+    if (!saveId || expansionEvidence?.saveId !== saveId || !expansionPreview || commandPending) return;
+    if (purchaseInFlightRef.current) return;
+    const purchaseIdentity = { saveId, floorNumber: expansionPreview.floorNumber };
+    purchaseInFlightRef.current = purchaseIdentity;
     setPurchaseNotice(undefined);
-    const purchased = await commands.purchaseFloor(
-      expansionPreview.floorNumber,
-      "dense-ring",
-    );
-    if (purchased) {
-      setPurchaseNotice(`${expansionPreview.floorNumber}层已纳入酒店`);
-      setPreviewFloorNumber(undefined);
+    try {
+      const purchased = await commands.purchaseFloor(
+        expansionPreview.floorNumber,
+        "dense-ring",
+      );
+      if (purchased && currentSaveIdRef.current === purchaseIdentity.saveId) {
+        setPurchaseNotice({
+          saveId: purchaseIdentity.saveId,
+          message: `${purchaseIdentity.floorNumber}层已纳入酒店`,
+        });
+        setExpansionEvidence(undefined);
+      }
+    } finally {
+      if (currentSaveIdRef.current === purchaseIdentity.saveId &&
+        purchaseInFlightRef.current?.saveId === purchaseIdentity.saveId
+        && purchaseInFlightRef.current.floorNumber === purchaseIdentity.floorNumber
+      ) purchaseInFlightRef.current = null;
     }
   };
   const roomCount = building.floors.reduce(
@@ -113,7 +144,9 @@ export function BuildingOverviewPage() {
           <TowerOverview
             floors={building.floors}
             selectedFloorId={selectedFloorId}
-            onSelectFloor={setSelectedFloorId}
+            onSelectFloor={(floorId) => {
+              if (saveId) setSelectedFloorEvidence({ saveId, floorId });
+            }}
             collapsed={railCollapsed}
             onToggle={() => setRailCollapsed((value) => !value)}
           />
@@ -139,7 +172,7 @@ export function BuildingOverviewPage() {
                 disabled={commandPending}
                 onClick={() => {
                   setPurchaseNotice(undefined);
-                  setPreviewFloorNumber(offer.floorNumber);
+                  if (saveId) setExpansionEvidence({ saveId, floorNumber: offer.floorNumber });
                 }}
               >
                 查看{offer.floorNumber}层扩建
@@ -169,7 +202,7 @@ export function BuildingOverviewPage() {
           )}
         </section>
       )}
-      {purchaseNotice && <p className="success-note" role="status">{purchaseNotice}</p>}
+      {purchaseNotice && purchaseNotice.saveId === saveId && <p className="success-note" role="status">{purchaseNotice.message}</p>}
       {error && <p className="command-error" role="alert">{error}</p>}
     </main>
   );
