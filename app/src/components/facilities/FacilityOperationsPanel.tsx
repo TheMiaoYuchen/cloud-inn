@@ -66,6 +66,8 @@ function FacilityActionForm({ facility, pending, onConfigure, onDevelop, onSelec
   const [offeringId, setOfferingId] = useState<string>("");
   const [notice, setNotice] = useState("");
   const offerings = projectFacilityOfferings(facility.type);
+  const selectedOffering = offerings.find(({ id }) =>
+    id === facility.policy?.signatureOfferingId);
 
   useEffect(() => {
     const nextChoices = group ? projectOperatingChoices(group) : [];
@@ -134,6 +136,7 @@ function FacilityActionForm({ facility, pending, onConfigure, onDevelop, onSelec
       <option value="">选择待预览产品</option>
       {offerings.map((offering) => <option key={offering.id} value={offering.id}>{offering.name}{facility.developedOfferingIds.includes(offering.id) ? " · 已开发" : " · 待开发"}</option>)}
     </select></label>}
+    {selectedOffering && <p className="muted">已选{selectedOffering.kind === "service-package" ? "服务套餐" : "招牌产品"}：{selectedOffering.name}</p>}
     <div className="facility-form-actions">
       <button type="button" disabled={pending} onClick={() => void save()}>保存设施策略</button>
       <button type="button" disabled={pending} onClick={() => void onSetEnabled(facility.id, !facility.enabled)}>{facility.enabled ? "暂停营业" : "启用营业"}</button>

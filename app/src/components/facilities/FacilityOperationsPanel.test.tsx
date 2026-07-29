@@ -82,4 +82,21 @@ describe("facility operations panel", () => {
     expect(develop).toHaveBeenCalledWith(dining.id, locked.getAttribute("value"));
     expect(await screen.findByRole("status")).toHaveTextContent("招牌产品已开发");
   });
+
+  it("shows the selected spa service package after it is restored", () => {
+    const spa = facilityState().find(({ type }) => type === "spa")!;
+    spa.developedOfferingIds = [assertStableId("service:cloud-restoration")];
+    spa.policy = {
+      positioningId: assertStableId("positioning:restorative-wellness"),
+      priceBandId: assertStableId("price-band:premium"),
+      capacity: 12,
+      openingPolicyId: assertStableId("opening-policy:appointment-daily"),
+      serviceBudgetCents: 100_000,
+      signatureOfferingId: assertStableId("service:cloud-restoration"),
+    };
+
+    render(<FacilityOperationsPanel facilities={[spa]} pending={false} onConfigure={async () => true} onDevelop={async () => true} onSelectOffering={async () => true} onSetEnabled={async () => true} />);
+
+    expect(screen.getByText("已选服务套餐：Cloud restoration")).toBeInTheDocument();
+  });
 });

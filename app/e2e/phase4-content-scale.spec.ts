@@ -106,9 +106,18 @@ test("completes and restores the visible Phase 4 content-scale loop", async ({ p
   await expect(facilityPanel.getByRole("status")).toHaveText("招牌产品已开发");
   await facilityPanel.getByRole("combobox", { name: "招牌产品" }).selectOption({ index: 1 });
   await facilityPanel.getByRole("button", { name: "选用招牌产品" }).click();
+  await expect(facilityPanel.getByRole("status")).toHaveText("招牌产品已选用");
+  await expect(facilityPanel).toContainText("已选招牌产品：Tea-smoked duck");
   await facilityPanel.getByRole("combobox", { name: "经营设施" }).selectOption({ label: "Spa" });
   await facilityPanel.getByRole("button", { name: "保存设施策略" }).click();
   await expect(facilityPanel.getByRole("status")).toHaveText("已保存");
+  await facilityPanel.getByRole("combobox", { name: "招牌产品" }).selectOption({ index: 1 });
+  await facilityPanel.getByRole("button", { name: "开发招牌产品" }).click();
+  await expect(facilityPanel.getByRole("status")).toHaveText("招牌产品已开发");
+  await facilityPanel.getByRole("combobox", { name: "招牌产品" }).selectOption({ index: 1 });
+  await facilityPanel.getByRole("button", { name: "选用招牌产品" }).click();
+  await expect(facilityPanel.getByRole("status")).toHaveText("招牌产品已选用");
+  await expect(facilityPanel).toContainText("已选服务套餐：Cloud restoration");
   await facilityPanel.getByRole("button", { name: "启用营业" }).click();
   await expect(facilityPanel).toContainText("Spa · 营业中");
 
@@ -118,7 +127,11 @@ test("completes and restores the visible Phase 4 content-scale loop", async ({ p
   await expect(page.getByText("营业日 30 / 30")).toBeVisible();
   const timeline = page.getByRole("region", { name: "经营报告时间线" });
   for (const category of ["日报", "周报", "月结"]) {
-    await expect(timeline.getByRole("heading", { name: category })).toBeVisible();
+    const reportGroup = timeline.getByRole("article", { name: category });
+    await expect(reportGroup).toContainText("客房收入");
+    await expect(reportGroup).toContainText("公共空间收入");
+    await expect(reportGroup).toContainText("部门成本");
+    await expect(reportGroup).toContainText("设施成本");
   }
   await expect(facilityPanel).toContainText("昨日收入");
   await expect(facilityPanel).toContainText("月累计收入");
@@ -131,20 +144,46 @@ test("completes and restores the visible Phase 4 content-scale loop", async ({ p
   await page.getByRole("link", { name: "塔楼" }).click();
   await page.getByRole("button", { name: /^选择8层，设施，/ }).click();
   await expect(page.getByTestId("hotel-flow-host")).toHaveAttribute("data-flow-sprite-count", /[1-9]\d*/);
+  const visibleExpected = {
+    floors: await page.getByTestId("hotel-floor-count").getAttribute("data-value"),
+    rooms: await page.getByTestId("hotel-room-count").getAttribute("data-value"),
+    facilities: await page.getByTestId("hotel-facility-count").getAttribute("data-value"),
+    cash: await page.getByTestId("hotel-cash-cents").getAttribute("data-value"),
+    revision: await page.getByTestId("hotel-revision").getAttribute("data-value"),
+  };
+  expect(visibleExpected.facilities).toBe("6");
+  for (const floor of [4, 5, 8]) {
+    await expect(page.getByRole("button", { name: new RegExp(`^选择${floor}层，`) })).toBeVisible();
+  }
 
-  const restored = await page.evaluate(() => {
-    const raw = JSON.parse(localStorage.getItem("cloud-inn:save:save-1")!);
-    return {
-      revision: raw.game.revision,
-      cashCents: raw.game.cashCents,
-      rooms: raw.game.phase4.floors.flatMap((floor: { rooms: unknown[] }) => floor.rooms).length,
-      facilities: Object.keys(raw.game.phase4.facilities).length,
-      reports: raw.game.operations.dailyReports.length,
-    };
-  });
   await page.reload();
-  await expect(page.getByTestId("hotel-room-count")).toHaveAttribute("data-value", String(restored.rooms));
-  await expect(page.getByTestId("hotel-cash-cents")).toHaveAttribute("data-value", String(restored.cashCents));
-  expect(restored.facilities).toBeGreaterThanOrEqual(6);
-  expect(restored.reports).toBe(30);
+  await expect(page.getByRole("heading", { name: "云端塔楼总览" })).toBeVisible();
+  await expect(page.getByTestId("hotel-floor-count")).toHaveAttribute("data-value", visibleExpected.floors!);
+  await expect(page.getByTestId("hotel-room-count")).toHaveAttribute("data-value", visibleExpected.rooms!);
+  await expect(page.getByTestId("hotel-facility-count")).toHaveAttribute("data-value", visibleExpected.facilities!);
+  await expect(page.getByTestId("hotel-cash-cents")).toHaveAttribute("data-value", visibleExpected.cash!);
+  await expect(page.getByTestId("hotel-revision")).toHaveAttribute(
+    "data-value",
+    String(Number(visibleExpected.revision) + 1),
+  );
+  for (const floor of [4, 5, 8]) {
+    await expect(page.getByRole("button", { name: new RegExp(`^选择${floor}层，`) })).toBeVisible();
+  }
+
+  await page.getByRole("link", { name: "运营" }).click();
+  const restoredFacilityPanel = page.getByRole("region", { name: "设施经营" });
+  await restoredFacilityPanel.getByRole("combobox", { name: "经营设施" }).selectOption({ label: "All-Day Dining" });
+  await expect(restoredFacilityPanel).toContainText("已选招牌产品：Tea-smoked duck");
+  await restoredFacilityPanel.getByRole("combobox", { name: "经营设施" }).selectOption({ label: "Spa" });
+  await expect(restoredFacilityPanel).toContainText("Spa · 营业中");
+  await expect(restoredFacilityPanel).toContainText("已选服务套餐：Cloud restoration");
+  const restoredTimeline = page.getByRole("region", { name: "经营报告时间线" });
+  await expect(restoredTimeline).toContainText("日报 30 · 周报 4 · 月结 1");
+  for (const category of ["日报", "周报", "月结"]) {
+    const reportGroup = restoredTimeline.getByRole("article", { name: category });
+    await expect(reportGroup).toContainText("客房收入");
+    await expect(reportGroup).toContainText("公共空间收入");
+    await expect(reportGroup).toContainText("部门成本");
+    await expect(reportGroup).toContainText("设施成本");
+  }
 });

@@ -114,6 +114,9 @@ describe("Phase 4 building overview", () => {
     expect(screen.getByText("环形走廊")).toBeInTheDocument();
     expect(screen.getAllByTestId("room-footprint")).toHaveLength(10);
     expect(screen.getByText("本层 10 间客房")).toBeInTheDocument();
+    expect(screen.getByTestId("hotel-floor-count")).toHaveAttribute("data-value", "16");
+    expect(screen.getByTestId("hotel-facility-count")).toHaveAttribute("data-value", "12");
+    expect(screen.getByTestId("hotel-revision")).toHaveAttribute("data-value", "1");
   });
 
   it("uses authoritative post-rotation room geometry and public-space slots", async () => {

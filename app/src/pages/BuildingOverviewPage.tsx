@@ -163,10 +163,11 @@ export function BuildingOverviewPage({ requestedFloorId = null }: { requestedFlo
           <p>从塔顶向下查看每一层，只加载当前选择的真实比例平面。</p>
         </div>
         <div className="building-summary" aria-label="酒店规模摘要">
-          <span><small>已购楼层</small><strong>{building.floors.length} 层</strong></span>
+          <span><small>已购楼层</small><strong data-testid="hotel-floor-count" data-value={building.floors.length}>{building.floors.length} 层</strong></span>
           <span><small>真实客房</small><strong data-testid="hotel-room-count" data-value={roomCount}>{roomCount} 间</strong></span>
-          <span><small>酒店设施</small><strong>{facilityCount} 项</strong></span>
+          <span><small>酒店设施</small><strong data-testid="hotel-facility-count" data-value={facilityCount}>{facilityCount} 项</strong></span>
           <span><small>可用现金</small><strong data-testid="hotel-cash-cents" data-value={state.cashCents}>¥{formatMoney(state.cashCents)}</strong></span>
+          <span><small>存档修订</small><strong data-testid="hotel-revision" data-value={state.revision}>#{state.revision}</strong></span>
         </div>
       </header>
 

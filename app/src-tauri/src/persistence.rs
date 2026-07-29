@@ -5258,6 +5258,54 @@ mod tests {
     }
 
     #[test]
+    fn failed_phase4_initialization_preserves_raw_phase3_row() {
+        let repository = SaveRepository::new(root("phase4-legacy-rollback"));
+        let mut legacy = full_operations_game();
+        legacy["revision"] = json!(1);
+        legacy.as_object_mut().unwrap().remove("phase4");
+        repository.commit_game(0, legacy).unwrap();
+
+        let conn = repository.open("save-1").unwrap();
+        let raw_before = conn
+            .query_row(
+                "SELECT revision, phase4_json, quote(operations_json), quote(phase2_json), quote(latest_report_json) FROM saves WHERE save_id='save-1'",
+                [],
+                |row| Ok((
+                    row.get::<_, i64>(0)?,
+                    row.get::<_, Option<String>>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, String>(3)?,
+                    row.get::<_, String>(4)?,
+                )),
+            )
+            .unwrap();
+        assert_eq!(raw_before.0, 1);
+        assert!(raw_before.1.is_none());
+
+        let mut invalid = phase4_fixture(include_str!(
+            "../tests/fixtures/phase4-invalid/unknown-catalog-reference.json"
+        ));
+        invalid["revision"] = json!(2);
+        invalid["saveId"] = json!("save-1");
+        assert!(repository.commit_game(1, invalid).is_err());
+
+        let raw_after = conn
+            .query_row(
+                "SELECT revision, phase4_json, quote(operations_json), quote(phase2_json), quote(latest_report_json) FROM saves WHERE save_id='save-1'",
+                [],
+                |row| Ok((
+                    row.get::<_, i64>(0)?,
+                    row.get::<_, Option<String>>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, String>(3)?,
+                    row.get::<_, String>(4)?,
+                )),
+            )
+            .unwrap();
+        assert_eq!(raw_after, raw_before);
+    }
+
+    #[test]
     fn phase4_minimal_migrates_old_schema_and_loads_without_envelope() {
         let repository = SaveRepository::new(root("phase4-old-schema"));
         repository.commit_game(0, game()).unwrap();
