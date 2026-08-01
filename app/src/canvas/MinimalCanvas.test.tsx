@@ -112,41 +112,31 @@ describe("MinimalCanvas", () => {
   });
 
   it("reports initialization failures and destroys the failed app", async () => {
-    const error = new Error("Pixi initialization failed");
     const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
-    pixiState.init.mockRejectedValue(error);
+    pixiState.init.mockRejectedValue(new Error("sentinel raw payload"));
 
     render(<MinimalCanvas />);
 
     await waitFor(() => {
-      expect(consoleError).toHaveBeenCalledWith(
-        "Failed to initialize Pixi canvas",
-        error,
-      );
+      expect(consoleError).toHaveBeenCalledWith("Failed to initialize Pixi canvas");
+      expect(JSON.stringify(consoleError.mock.calls)).not.toContain("sentinel raw payload");
     });
     expect(pixiState.applications[0].destroy).toHaveBeenCalledOnce();
   });
 
   it("reports initialization and cleanup failures without rejecting", async () => {
-    const initError = new Error("Pixi initialization failed");
-    const cleanupError = new Error("Pixi cleanup failed");
     const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
-    pixiState.init.mockRejectedValue(initError);
+    pixiState.init.mockRejectedValue(new Error("sentinel init payload"));
     pixiState.destroy.mockImplementation(() => {
-      throw cleanupError;
+      throw new Error("sentinel cleanup payload");
     });
 
     render(<MinimalCanvas />);
 
     await waitFor(() => {
-      expect(consoleError).toHaveBeenCalledWith(
-        "Failed to initialize Pixi canvas",
-        initError,
-      );
-      expect(consoleError).toHaveBeenCalledWith(
-        "Failed to clean up Pixi canvas after initialization failure",
-        cleanupError,
-      );
+      expect(consoleError).toHaveBeenCalledWith("Failed to initialize Pixi canvas");
+      expect(consoleError).toHaveBeenCalledWith("Failed to clean up Pixi canvas after initialization failure");
+      expect(JSON.stringify(consoleError.mock.calls)).not.toContain("sentinel");
     });
     expect(pixiState.applications[0].destroy).toHaveBeenCalledOnce();
   });

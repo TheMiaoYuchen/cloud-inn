@@ -103,8 +103,8 @@ export function HotelFlowCanvas({
       destroyed = true;
       try {
         target.destroy(true, { children: true });
-      } catch (error) {
-        console.error("Failed to clean up hotel flow canvas", error);
+      } catch {
+        console.error("Failed to clean up hotel flow canvas");
       }
     };
     const hostSize = () => fitViewport(
@@ -129,8 +129,8 @@ export function HotelFlowCanvas({
             backgroundAlpha: 0,
           });
         }
-      } catch (error) {
-        console.error("Failed to initialize hotel flow canvas", error);
+      } catch {
+        console.error("Failed to initialize hotel flow canvas");
         destroy(app);
         if (!cancelled) setFailed(true);
         return;
