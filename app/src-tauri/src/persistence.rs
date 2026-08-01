@@ -50,6 +50,13 @@ pub struct RecoveryPointSummary {
     created_at_ms: i64,
 }
 
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RestoreRecoveryResult {
+    save_id: String,
+    revision: i64,
+}
+
 /// Native-only input for publishing one generated image and attaching it to a
 /// domain owner. The repository derives both the catalog identity and file
 /// path from the verified bytes; callers never supply either value.
@@ -249,6 +256,120 @@ impl SaveRepository {
         read_ready_recovery_points(&connection)
     }
 
+    /// Restores a verified recovery package without ever exposing a path to
+    /// the caller. A verified pre-restore package is embedded in the candidate
+    /// database before the atomic swap, so any failure leaves the current save
+    /// untouched and a successful restore is itself reversible.
+    pub fn restore_recovery_point(
+        &self,
+        save_id: &str,
+        recovery_id: &str,
+    ) -> Result<RestoreRecoveryResult, SafeError> {
+        validate_save_id(save_id).map_err(|_| SafeError::new("save.invalid-id", "存档标识无效"))?;
+        let recovery_id = RecoveryId::parse(recovery_id).map_err(|_| recovery_corrupt())?;
+        let prepared = self.prepare_save_database(save_id)?;
+        let current_path = prepared.path.clone();
+        let current = open_current_connection(&current_path).map_err(|_| recovery_corrupt())?;
+        let target = read_ready_recovery_metadata(&current, &recovery_id)
+            .map_err(|error| error.with_detail("读取恢复点元数据失败"))?;
+        drop(current);
+
+        let recovery_directory = self.root.join("recovery-packages");
+        ensure_recovery_directory(&recovery_directory)?;
+        let target_package = target
+            .verify_package(&recovery_directory, &recovery_id)
+            .map_err(|error| error.with_detail("恢复包验证失败"))?;
+        let target_database = target_package.path.join("database.sqlite3");
+        let partial = unique_sibling(&current_path, "restore.partial");
+        let mut partial_guard = OwnedPartial::new(partial.clone());
+        copy_verified_database_payload(&target_database, &partial)
+            .map_err(|error| error.with_detail("无法冻结目标恢复包"))?;
+
+        let pre_restore_id = RecoveryId::parse(format!("pre-restore-{}", Uuid::new_v4()))
+            .map_err(|_| recovery_corrupt())?;
+        let pending_pre_restore_package = self
+            .create_frozen_recovery_package(&current_path, &pre_restore_id, recovery_corrupt)
+            .map_err(|error| error.with_detail("无法创建恢复前快照"))?;
+        let pre_restore_package = crate::recovery::promote_database_preimage(
+            &self.root.join("recovery-pending"),
+            &recovery_directory,
+            &pre_restore_id,
+        )
+        .map_err(|_| recovery_corrupt().with_detail("无法晋升恢复前快照"))?;
+        if pre_restore_package.package_sha256 != pending_pre_restore_package.package_sha256
+            || pre_restore_package.manifest_sha256 != pending_pre_restore_package.manifest_sha256
+        {
+            cleanup_verified_package(&pre_restore_package, &pre_restore_id);
+            return Err(recovery_corrupt());
+        }
+        let mut pre_restore_guard = PendingPackageGuard::new(
+            pre_restore_id.clone(),
+            pre_restore_package,
+            RecoveryReason::Settlement,
+        );
+        let pre_restore_revision = read_save_revision(&current_path, save_id)?;
+        let restored_revision = pre_restore_revision
+            .checked_add(1)
+            .ok_or_else(recovery_corrupt)?;
+
+        let mut candidate = open_current_connection(&partial)
+            .map_err(|_| recovery_corrupt().with_detail("无法打开恢复候选数据库"))?;
+        validate_opened_save(&candidate, &partial, save_id, false)
+            .map_err(|_| recovery_corrupt())?;
+        let candidate_revision = read_save_revision_from_connection(&candidate, save_id)?;
+        if candidate_revision != target.restore_revision {
+            return Err(recovery_corrupt());
+        }
+        let transaction = candidate
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(|_| recovery_corrupt())?;
+        let changed = transaction
+            .execute(
+                "UPDATE saves SET revision=?1,updated_at=datetime('now')
+                 WHERE save_id=?2 AND revision=?3",
+                params![restored_revision, save_id, candidate_revision],
+            )
+            .map_err(|_| recovery_corrupt())?;
+        if changed != 1 {
+            return Err(recovery_corrupt());
+        }
+        let timestamp = current_time_ms()?;
+        transaction
+            .execute(
+                "UPDATE runtime_session
+                 SET clean_shutdown=1,last_durable_revision=?1,
+                     coordinator_epoch=coordinator_epoch+1,
+                     last_observed_wall_ms=MAX(last_observed_wall_ms,?2),updated_at_ms=?2
+                 WHERE singleton=1",
+                params![restored_revision, timestamp],
+            )
+            .map_err(|_| recovery_corrupt())?;
+        record_ready_recovery_point(
+            &transaction,
+            &pre_restore_id,
+            &pre_restore_guard.package,
+            "pre-restore",
+            None,
+            pre_restore_revision,
+            RecoveryReason::Settlement,
+        )
+        .map_err(|error| error.with_detail("无法写入恢复前快照记录"))?;
+        transaction.commit().map_err(|_| recovery_corrupt())?;
+        make_single_file_durable(&candidate, &partial).map_err(|_| recovery_corrupt())?;
+        drop(candidate);
+        validate_restore_candidate(&partial, save_id)?;
+
+        if atomic_replace_database(&current_path, &partial).is_err() {
+            return Err(SafeError::new("recovery.restore-failed", "恢复存档失败"));
+        }
+        partial_guard.disarm();
+        pre_restore_guard.disarm();
+        Ok(RestoreRecoveryResult {
+            save_id: save_id.to_owned(),
+            revision: restored_revision,
+        })
+    }
+
     /// Completes the filesystem half of a pending automatic recovery point
     /// before making that exact catalog row player-visible.  Both catalog
     /// directories are derived from the repository root; no caller controls a
@@ -265,8 +386,15 @@ impl SaveRepository {
         let prepared = self.prepare_save_database(save_id)?;
         let mut connection =
             open_current_connection(&prepared.path).map_err(|_| recovery_corrupt())?;
-        let metadata = read_promotable_recovery_metadata(&connection, &recovery_id)?;
+        self.promote_pending_with_connection(&mut connection, &recovery_id)
+    }
 
+    fn promote_pending_with_connection(
+        &self,
+        connection: &mut Connection,
+        recovery_id: &RecoveryId,
+    ) -> Result<(), SafeError> {
+        let metadata = read_promotable_recovery_metadata(connection, recovery_id)?;
         let pending_directory = self.root.join("recovery-pending");
         let recovery_directory = self.root.join("recovery-packages");
         ensure_recovery_directory(&pending_directory)?;
@@ -274,13 +402,12 @@ impl SaveRepository {
         let package = crate::recovery::promote_database_preimage(
             &pending_directory,
             &recovery_directory,
-            &recovery_id,
+            recovery_id,
         )
         .map_err(|_| recovery_corrupt())?;
         if !metadata.matches_package(&package) {
             return Err(recovery_corrupt());
         }
-
         if metadata.status == "ready" {
             return Ok(());
         }
@@ -289,11 +416,9 @@ impl SaveRepository {
             .map_err(|_| recovery_corrupt())?;
         let changed = transaction
             .execute(
-                "UPDATE recovery_points
-                 SET status='ready'
+                "UPDATE recovery_points SET status='ready'
                  WHERE recovery_id=?1 AND status='pending'
-                   AND relative_path=?2 AND package_sha256=?3
-                   AND manifest_sha256=?4",
+                   AND relative_path=?2 AND package_sha256=?3 AND manifest_sha256=?4",
                 params![
                     recovery_id.as_str(),
                     metadata.relative_path,
@@ -306,6 +431,53 @@ impl SaveRepository {
             return Err(recovery_corrupt());
         }
         transaction.commit().map_err(|_| recovery_corrupt())
+    }
+
+    fn replay_pending_recovery_points(&self, path: &Path) -> Result<(), SafeError> {
+        let mut connection = open_current_connection(path).map_err(|_| recovery_corrupt())?;
+        let recovery_ids = {
+            let mut statement = connection
+                .prepare(
+                    "SELECT recovery_id FROM recovery_points
+                     WHERE status='pending' AND kind='automatic'
+                     ORDER BY created_at_ms,recovery_id",
+                )
+                .map_err(|_| recovery_corrupt())?;
+            let ids = statement
+                .query_map([], |row| row.get::<_, String>(0))
+                .map_err(|_| recovery_corrupt())?
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(|_| recovery_corrupt())?;
+            ids
+        };
+        for recovery_id in recovery_ids {
+            let recovery_id = RecoveryId::parse(recovery_id).map_err(|_| recovery_corrupt())?;
+            // A missing or damaged package must not make the active save
+            // unavailable. It remains hidden as pending for diagnostics and a
+            // later retry; verified crash leftovers are promoted immediately.
+            let _ = self.promote_pending_with_connection(&mut connection, &recovery_id);
+        }
+        Ok(())
+    }
+
+    fn create_frozen_recovery_package(
+        &self,
+        source_path: &Path,
+        recovery_id: &RecoveryId,
+        error: fn() -> SafeError,
+    ) -> Result<RecoveryPackage, SafeError> {
+        let pending_directory = self.root.join("recovery-pending");
+        ensure_recovery_directory(&pending_directory)?;
+        let frozen = pending_directory.join(format!(".freeze-{}.sqlite3", Uuid::new_v4()));
+        let mut guard = OwnedPartial::new(frozen.clone());
+        online_backup_with_error(source_path, &frozen, error)?;
+        sync_file(&frozen).map_err(|_| error())?;
+        let package =
+            crate::recovery::create_database_preimage(&frozen, &pending_directory, recovery_id)
+                .map_err(|_| error())?;
+        fs::remove_file(&frozen).map_err(|_| error())?;
+        guard.disarm();
+        Ok(package)
     }
 
     /// Keeps the newest twenty ready automatic recovery points.  It never
@@ -409,6 +581,34 @@ impl SaveRepository {
             .map_err(|error| error.to_string())?;
         validate_issued_grants_for_save(&conn, &control_connection, &save_id)
             .map_err(|error| error.to_string())?;
+        let current_before_write: i64 = conn
+            .query_row(
+                "SELECT revision FROM saves WHERE save_id=?1",
+                [&save_id],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(db_err)?
+            .unwrap_or(0);
+        let next_revision = expected_revision
+            .checked_add(1)
+            .ok_or_else(|| "存档版本无效".to_string())?;
+        if current_before_write != expected_revision || fields.revision != next_revision {
+            return Err("存档已更新，请重新加载".to_string());
+        }
+        let recovery_reason = load_game_from_connection(&conn, &save_id)?
+            .as_ref()
+            .and_then(|previous| detect_recovery_reason(previous, &game));
+        let mut recovery_guard = if let Some(reason) = recovery_reason {
+            let recovery_id = RecoveryId::parse(format!("automatic-{}", Uuid::new_v4()))
+                .map_err(|_| "无法创建恢复点".to_string())?;
+            let package = self
+                .create_frozen_recovery_package(&path, &recovery_id, recovery_corrupt)
+                .map_err(|error| error.to_string())?;
+            Some(PendingPackageGuard::new(recovery_id, package, reason))
+        } else {
+            None
+        };
         let tx = conn
             .transaction_with_behavior(TransactionBehavior::Immediate)
             .map_err(db_err)?;
@@ -421,9 +621,6 @@ impl SaveRepository {
             .optional()
             .map_err(db_err)?;
         let current = current.unwrap_or(0);
-        let next_revision = expected_revision
-            .checked_add(1)
-            .ok_or_else(|| "存档版本无效".to_string())?;
         if current != expected_revision || fields.revision != next_revision {
             return Err("存档已更新，请重新加载".to_string());
         }
@@ -454,7 +651,28 @@ impl SaveRepository {
             )
             .map_err(db_err)?;
         }
-        tx.commit().map_err(db_err)
+        if let Some(recovery) = recovery_guard.as_ref() {
+            record_pending_automatic_recovery_point(
+                &tx,
+                &recovery.recovery_id,
+                &recovery.package,
+                next_revision,
+                expected_revision,
+                recovery.reason,
+            )
+            .map_err(|error| error.to_string())?;
+        }
+        tx.commit().map_err(db_err)?;
+        if let Some(recovery) = recovery_guard.as_mut() {
+            recovery.disarm();
+        }
+        drop(conn);
+        drop(_save_lock);
+        if let Some(recovery) = recovery_guard.as_ref() {
+            let _ = self.promote_pending_automatic_recovery_point(&save_id, &recovery.recovery_id);
+            let _ = self.rotate_ready_automatic_recovery_points(&save_id);
+        }
+        Ok(())
     }
 
     fn db_path(&self, save_id: &str) -> PathBuf {
@@ -480,6 +698,8 @@ impl SaveRepository {
         let validation_connection = open_read_only(&path, "migration.validation-failed")?;
         validate_opened_save(&validation_connection, &path, save_id, false)?;
         validate_issued_grants_for_save(&validation_connection, &control_connection, save_id)?;
+        drop(validation_connection);
+        self.replay_pending_recovery_points(&path)?;
         Ok(PreparedSaveDatabase {
             path,
             control_connection,
@@ -619,12 +839,135 @@ fn read_ready_recovery_points(
     Ok(points)
 }
 
+fn read_ready_recovery_metadata(
+    connection: &Connection,
+    recovery_id: &RecoveryId,
+) -> Result<ReadyRecoveryMetadata, SafeError> {
+    let row = connection
+        .query_row(
+            "SELECT restore_revision,relative_path,package_sha256,manifest_sha256
+             FROM recovery_points WHERE recovery_id=?1 AND status='ready'",
+            [recovery_id.as_str()],
+            |row| {
+                Ok((
+                    row.get::<_, i64>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, Option<String>>(3)?,
+                ))
+            },
+        )
+        .optional()
+        .map_err(|_| recovery_corrupt())?
+        .ok_or_else(|| SafeError::new("recovery.not-found", "恢复点不存在"))?;
+    let manifest_sha256 = row.3.ok_or_else(recovery_corrupt)?;
+    if row.0 < 0
+        || !valid_recovery_relative_path(&row.1)
+        || !valid_recovery_sha256(&row.2)
+        || !valid_recovery_sha256(&manifest_sha256)
+    {
+        return Err(recovery_corrupt());
+    }
+    Ok(ReadyRecoveryMetadata {
+        restore_revision: row.0,
+        relative_path: row.1,
+        package_sha256: row.2,
+        manifest_sha256,
+    })
+}
+
+fn read_save_revision(path: &Path, save_id: &str) -> Result<i64, SafeError> {
+    let connection = open_read_only(path, "recovery.corrupt")?;
+    read_save_revision_from_connection(&connection, save_id)
+}
+
+fn read_save_revision_from_connection(
+    connection: &Connection,
+    save_id: &str,
+) -> Result<i64, SafeError> {
+    connection
+        .query_row(
+            "SELECT revision FROM saves WHERE save_id=?1",
+            [save_id],
+            |row| row.get::<_, i64>(0),
+        )
+        .map_err(|_| recovery_corrupt())
+}
+
+fn validate_restore_candidate(path: &Path, save_id: &str) -> Result<(), SafeError> {
+    let connection = open_read_only(path, "recovery.restore-failed")?;
+    validate_current_save_database(&connection)
+        .map_err(|_| SafeError::new("recovery.restore-failed", "恢复存档失败"))?;
+    validate_opened_save(&connection, path, save_id, false)
+        .map_err(|_| SafeError::new("recovery.restore-failed", "恢复存档失败"))
+}
+
 #[derive(Debug)]
 struct RecoveryRotationCandidate {
     recovery_id: RecoveryId,
     relative_path: String,
     package_sha256: String,
     manifest_sha256: String,
+}
+
+struct PendingPackageGuard {
+    recovery_id: RecoveryId,
+    package: RecoveryPackage,
+    reason: RecoveryReason,
+    armed: bool,
+}
+
+impl PendingPackageGuard {
+    fn new(recovery_id: RecoveryId, package: RecoveryPackage, reason: RecoveryReason) -> Self {
+        Self {
+            recovery_id,
+            package,
+            reason,
+            armed: true,
+        }
+    }
+
+    fn disarm(&mut self) {
+        self.armed = false;
+    }
+}
+
+impl Drop for PendingPackageGuard {
+    fn drop(&mut self) {
+        if self.armed {
+            cleanup_verified_package(&self.package, &self.recovery_id);
+        }
+    }
+}
+
+#[derive(Debug)]
+struct ReadyRecoveryMetadata {
+    restore_revision: i64,
+    relative_path: String,
+    package_sha256: String,
+    manifest_sha256: String,
+}
+
+impl ReadyRecoveryMetadata {
+    fn verify_package(
+        &self,
+        recovery_directory: &Path,
+        recovery_id: &RecoveryId,
+    ) -> Result<RecoveryPackage, SafeError> {
+        if self.relative_path != format!("recovery-packages/{}", recovery_id.as_str()) {
+            return Err(recovery_corrupt());
+        }
+        let package = crate::recovery::verify_database_preimage(
+            &recovery_directory.join(recovery_id.as_str()),
+        )
+        .map_err(|_| recovery_corrupt())?;
+        if package.package_sha256 != self.package_sha256
+            || package.manifest_sha256 != self.manifest_sha256
+        {
+            return Err(recovery_corrupt());
+        }
+        Ok(package)
+    }
 }
 
 impl RecoveryRotationCandidate {
@@ -1020,6 +1363,81 @@ pub(crate) fn record_pending_automatic_recovery_point(
         )
         .map_err(|_| recovery_corrupt())?;
     Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+fn record_ready_recovery_point(
+    transaction: &rusqlite::Transaction<'_>,
+    recovery_id: &RecoveryId,
+    package: &RecoveryPackage,
+    kind: &str,
+    origin_commit_revision: Option<i64>,
+    restore_revision: i64,
+    reason: RecoveryReason,
+) -> Result<(), SafeError> {
+    if !matches!(kind, "pre-upgrade" | "pre-restore")
+        || origin_commit_revision.is_some_and(|revision| revision < 0)
+        || restore_revision < 0
+    {
+        return Err(recovery_corrupt());
+    }
+    let verified =
+        crate::recovery::verify_database_preimage(&package.path).map_err(|_| recovery_corrupt())?;
+    if verified != *package
+        || package.path.file_name().and_then(|name| name.to_str()) != Some(recovery_id.as_str())
+    {
+        return Err(recovery_corrupt());
+    }
+    let relative_path = format!("recovery-packages/{}", recovery_id.as_str());
+    transaction
+        .execute(
+            "INSERT INTO recovery_points(
+               recovery_id,kind,origin_commit_revision,restore_revision,reason,status,
+               relative_path,package_sha256,manifest_sha256,created_at_ms
+             ) VALUES(?1,?2,?3,?4,?5,'ready',?6,?7,?8,?9)",
+            params![
+                recovery_id.as_str(),
+                kind,
+                origin_commit_revision,
+                restore_revision,
+                reason.as_storage_value(),
+                relative_path,
+                verified.package_sha256,
+                verified.manifest_sha256,
+                current_time_ms()?,
+            ],
+        )
+        .map_err(|_| recovery_corrupt())?;
+    Ok(())
+}
+
+fn cleanup_verified_package(package: &RecoveryPackage, recovery_id: &RecoveryId) {
+    if let Some(directory) = package.path.parent() {
+        let _ = crate::recovery::remove_verified_database_preimage(
+            directory,
+            recovery_id,
+            &package.package_sha256,
+            &package.manifest_sha256,
+        );
+    }
+}
+
+fn detect_recovery_reason(previous: &Value, next: &Value) -> Option<RecoveryReason> {
+    if previous.get("roomBlueprint") != next.get("roomBlueprint")
+        || previous.pointer("/floor/rooms") != next.pointer("/floor/rooms")
+    {
+        return Some(RecoveryReason::Construction);
+    }
+    if previous.get("currentDay") != next.get("currentDay")
+        || previous.get("reports") != next.get("reports")
+        || previous.get("latestReport") != next.get("latestReport")
+    {
+        return Some(RecoveryReason::Settlement);
+    }
+    if previous.get("phase4") != next.get("phase4") {
+        return Some(RecoveryReason::VisualAdoption);
+    }
+    None
 }
 
 fn current_time_ms() -> Result<i64, SafeError> {
@@ -1627,12 +2045,39 @@ fn reject_partial_v7_schema(connection: &Connection) -> Result<(), SafeError> {
 }
 
 fn online_backup(source_path: &Path, destination_path: &Path) -> Result<(), SafeError> {
-    let source = open_read_only(source_path, "migration.backup-failed")?;
-    let mut destination = Connection::open(destination_path).map_err(|_| backup_migration())?;
-    let backup = Backup::new(&source, &mut destination).map_err(|_| backup_migration())?;
+    online_backup_with_error(source_path, destination_path, backup_migration)
+}
+
+fn copy_verified_database_payload(source: &Path, destination: &Path) -> Result<(), SafeError> {
+    let metadata = fs::symlink_metadata(source).map_err(|_| recovery_corrupt())?;
+    if metadata.file_type().is_symlink() || !metadata.is_file() {
+        return Err(recovery_corrupt());
+    }
+    let mut input = OpenOptions::new()
+        .read(true)
+        .open(source)
+        .map_err(|_| recovery_corrupt())?;
+    let mut output = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(destination)
+        .map_err(|_| recovery_corrupt())?;
+    std::io::copy(&mut input, &mut output).map_err(|_| recovery_corrupt())?;
+    output.sync_all().map_err(|_| recovery_corrupt())
+}
+
+fn online_backup_with_error(
+    source_path: &Path,
+    destination_path: &Path,
+    error: fn() -> SafeError,
+) -> Result<(), SafeError> {
+    let source = Connection::open_with_flags(source_path, OpenFlags::SQLITE_OPEN_READ_ONLY)
+        .map_err(|_| error())?;
+    let mut destination = Connection::open(destination_path).map_err(|_| error())?;
+    let backup = Backup::new(&source, &mut destination).map_err(|_| error())?;
     backup
         .run_to_completion(128, Duration::from_millis(1), None)
-        .map_err(|_| backup_migration())?;
+        .map_err(|_| error())?;
     drop(backup);
     drop(destination);
     drop(source);
@@ -5661,6 +6106,106 @@ mod tests {
         repository
             .promote_pending_automatic_recovery_point(&save.save_id, &recovery_id)
             .unwrap();
+    }
+
+    #[test]
+    fn phase5_startup_replays_a_committed_pending_recovery_point() {
+        let repository = SaveRepository::new(root("phase5-recovery-startup-replay"));
+        let save = repository
+            .create_save(Some("恢复重放".to_string()))
+            .unwrap();
+        let recovery_id = RecoveryId::parse("startup-replay").unwrap();
+        let package = verified_recovery_package(&repository, &save.save_id, &recovery_id);
+        let mut connection = open_current_connection(&repository.db_path(&save.save_id)).unwrap();
+        let transaction = connection.transaction().unwrap();
+        record_pending_automatic_recovery_point(
+            &transaction,
+            &recovery_id,
+            &package,
+            1,
+            0,
+            RecoveryReason::Construction,
+        )
+        .unwrap();
+        transaction.commit().unwrap();
+        drop(connection);
+
+        let points = repository.list_recovery_points(&save.save_id).unwrap();
+        assert_eq!(points.len(), 1);
+        assert_eq!(points[0].recovery_id, recovery_id.as_str());
+        assert!(repository
+            .root
+            .join("recovery-packages")
+            .join(recovery_id.as_str())
+            .is_dir());
+    }
+
+    #[test]
+    fn phase5_game_commit_creates_reversible_verified_preimage() {
+        let repository = SaveRepository::new(root("phase5-recovery-real-commit"));
+        repository.commit_game(0, game()).unwrap();
+        let next = blueprint_game(2, json!([]));
+        repository.commit_game(1, next).unwrap();
+
+        let points = repository.list_recovery_points("save-1").unwrap();
+        assert_eq!(points.len(), 1);
+        assert_eq!(points[0].kind, "automatic");
+        assert_eq!(points[0].restore_revision, 1);
+        assert_eq!(points[0].reason, "construction");
+
+        let restored = repository
+            .restore_recovery_point("save-1", &points[0].recovery_id)
+            .unwrap();
+        assert_eq!(restored.save_id, "save-1");
+        assert_eq!(restored.revision, 3);
+        let mut restored_game = game();
+        restored_game["revision"] = json!(3);
+        assert_eq!(repository.load_game("save-1").unwrap(), Some(restored_game));
+        let post_restore = repository.list_recovery_points("save-1").unwrap();
+        assert_eq!(post_restore.len(), 1);
+        assert_eq!(post_restore[0].kind, "pre-restore");
+        assert_eq!(post_restore[0].restore_revision, 2);
+
+        let rolled_forward = repository
+            .restore_recovery_point("save-1", &post_restore[0].recovery_id)
+            .unwrap();
+        assert_eq!(rolled_forward.revision, 4);
+        let mut expected_forward = blueprint_game(2, json!([]));
+        expected_forward["revision"] = json!(4);
+        assert_eq!(
+            repository.load_game("save-1").unwrap(),
+            Some(expected_forward)
+        );
+    }
+
+    #[test]
+    fn phase5_corrupt_restore_target_never_replaces_current_save() {
+        let repository = SaveRepository::new(root("phase5-recovery-safe-failure"));
+        repository.commit_game(0, game()).unwrap();
+        let next = blueprint_game(2, json!([]));
+        repository.commit_game(1, next.clone()).unwrap();
+        let point = repository.list_recovery_points("save-1").unwrap().remove(0);
+        let package = repository
+            .root
+            .join("recovery-packages")
+            .join(&point.recovery_id);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(&package, fs::Permissions::from_mode(0o755)).unwrap();
+            fs::set_permissions(
+                package.join("database.sqlite3"),
+                fs::Permissions::from_mode(0o644),
+            )
+            .unwrap();
+        }
+        fs::write(package.join("database.sqlite3"), b"not sqlite").unwrap();
+
+        let error = repository
+            .restore_recovery_point("save-1", &point.recovery_id)
+            .unwrap_err();
+        assert!(error.to_string().ends_with("(recovery.corrupt)"));
+        assert_eq!(repository.load_game("save-1").unwrap(), Some(next));
     }
 
     #[test]
