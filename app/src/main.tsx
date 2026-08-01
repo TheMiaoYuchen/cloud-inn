@@ -1,11 +1,14 @@
 import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 import { App } from "./app/App";
+import { createRuntimeReliabilityPort } from "./runtimeReliabilityPort";
 import { createRuntimeSavePort } from "./runtimeSavePort";
 import { e2eDayMilliseconds } from "./e2eClockConfig";
 import "./styles.css";
 
-const savePort = createRuntimeSavePort("__TAURI_INTERNALS__" in window);
+const hasTauri = "__TAURI_INTERNALS__" in window;
+const savePort = createRuntimeSavePort(hasTauri);
+const reliabilityPort = createRuntimeReliabilityPort(hasTauri);
 const testDayMs = e2eDayMilliseconds(
   import.meta.env.DEV && import.meta.env.VITE_CLOUD_INN_E2E === "true",
   window.localStorage.getItem("cloud-inn:e2e-day-ms"),
@@ -13,6 +16,10 @@ const testDayMs = e2eDayMilliseconds(
 
 createRoot(document.getElementById("root")!).render(
   <StrictMode>
-    <App savePort={savePort} millisecondsPerGameDay={testDayMs} />
+    <App
+      savePort={savePort}
+      reliabilityPort={reliabilityPort}
+      millisecondsPerGameDay={testDayMs}
+    />
   </StrictMode>,
 );

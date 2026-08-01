@@ -11,6 +11,9 @@ import { BuildingOverviewPage } from "../pages/BuildingOverviewPage";
 import { PublicSpaceDesignPage } from "../pages/PublicSpaceDesignPage";
 import { ContentCompendiumPage } from "../pages/ContentCompendiumPage";
 import { useGame } from "../state/GameProvider";
+import { SaveManagerPage } from "../pages/SaveManagerPage";
+import { DesignStudioPage } from "../pages/DesignStudioPage";
+import { DiagnosticsPage } from "../pages/DiagnosticsPage";
 
 function LegacyDesignRoute({ children }: { children: ReactNode }) {
   const { state, loading } = useGame();
@@ -48,6 +51,9 @@ export function createAppRouter() {
         { path: "public-spaces/design", element: <Phase4Route><PublicSpaceDesignPage /></Phase4Route> },
         { path: "compendium", element: <Phase4Route><ContentCompendiumPage /></Phase4Route> },
         { path: "operations", element: <OperationsPage /> },
+        { path: "saves", element: <SaveManagerPage /> },
+        { path: "studio", element: <DesignStudioPage /> },
+        { path: "diagnostics", element: <DiagnosticsPage /> },
         { path: "*", element: <Navigate to="/" replace /> },
       ],
     },
