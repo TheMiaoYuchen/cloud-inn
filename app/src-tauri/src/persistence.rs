@@ -193,6 +193,65 @@ impl SaveRepository {
         read_ready_recovery_points(&connection)
     }
 
+    /// Completes the filesystem half of a pending automatic recovery point
+    /// before making that exact catalog row player-visible.  Both catalog
+    /// directories are derived from the repository root; no caller controls a
+    /// package path.
+    #[allow(dead_code)]
+    pub(crate) fn promote_pending_automatic_recovery_point(
+        &self,
+        save_id: &str,
+        recovery_id: &RecoveryId,
+    ) -> Result<(), SafeError> {
+        validate_save_id(save_id).map_err(|_| SafeError::new("save.invalid-id", "存档标识无效"))?;
+        let recovery_id =
+            RecoveryId::parse(recovery_id.as_str()).map_err(|_| recovery_corrupt())?;
+        let prepared = self.prepare_save_database(save_id)?;
+        let mut connection =
+            open_current_connection(&prepared.path).map_err(|_| recovery_corrupt())?;
+        let metadata = read_promotable_recovery_metadata(&connection, &recovery_id)?;
+
+        let pending_directory = self.root.join("recovery-pending");
+        let recovery_directory = self.root.join("recovery-packages");
+        ensure_recovery_directory(&pending_directory)?;
+        ensure_recovery_directory(&recovery_directory)?;
+        let package = crate::recovery::promote_database_preimage(
+            &pending_directory,
+            &recovery_directory,
+            &recovery_id,
+        )
+        .map_err(|_| recovery_corrupt())?;
+        if !metadata.matches_package(&package) {
+            return Err(recovery_corrupt());
+        }
+
+        if metadata.status == "ready" {
+            return Ok(());
+        }
+        let transaction = connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(|_| recovery_corrupt())?;
+        let changed = transaction
+            .execute(
+                "UPDATE recovery_points
+                 SET status='ready'
+                 WHERE recovery_id=?1 AND status='pending'
+                   AND relative_path=?2 AND package_sha256=?3
+                   AND manifest_sha256=?4",
+                params![
+                    recovery_id.as_str(),
+                    metadata.relative_path,
+                    metadata.package_sha256,
+                    metadata.manifest_sha256,
+                ],
+            )
+            .map_err(|_| recovery_corrupt())?;
+        if changed != 1 {
+            return Err(recovery_corrupt());
+        }
+        transaction.commit().map_err(|_| recovery_corrupt())
+    }
+
     fn default_display_name(&self) -> Result<String, SafeError> {
         let existing = self.list_saves()?;
         let used = existing
@@ -498,6 +557,103 @@ fn valid_recovery_sha256(value: &str) -> bool {
         && value
             .bytes()
             .all(|byte| byte.is_ascii_digit() || matches!(byte, b'a'..=b'f'))
+}
+
+#[derive(Debug)]
+struct PromotableRecoveryMetadata {
+    status: String,
+    relative_path: String,
+    package_sha256: String,
+    manifest_sha256: String,
+}
+
+impl PromotableRecoveryMetadata {
+    fn matches_package(&self, package: &RecoveryPackage) -> bool {
+        package.package_sha256 == self.package_sha256
+            && package.manifest_sha256 == self.manifest_sha256
+    }
+}
+
+fn read_promotable_recovery_metadata(
+    connection: &Connection,
+    recovery_id: &RecoveryId,
+) -> Result<PromotableRecoveryMetadata, SafeError> {
+    let row = connection
+        .query_row(
+            "SELECT kind,origin_commit_revision,restore_revision,reason,status,
+                    relative_path,package_sha256,manifest_sha256,created_at_ms
+             FROM recovery_points WHERE recovery_id=?1",
+            [recovery_id.as_str()],
+            |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, Option<i64>>(1)?,
+                    row.get::<_, i64>(2)?,
+                    row.get::<_, String>(3)?,
+                    row.get::<_, String>(4)?,
+                    row.get::<_, String>(5)?,
+                    row.get::<_, String>(6)?,
+                    row.get::<_, Option<String>>(7)?,
+                    row.get::<_, i64>(8)?,
+                ))
+            },
+        )
+        .optional()
+        .map_err(|_| recovery_corrupt())?
+        .ok_or_else(recovery_corrupt)?;
+    let (
+        kind,
+        origin_commit_revision,
+        restore_revision,
+        reason,
+        status,
+        relative_path,
+        package_sha256,
+        manifest_sha256,
+        created_at_ms,
+    ) = row;
+    let expected_relative_path = format!("recovery-packages/{}", recovery_id.as_str());
+    let valid_kind = kind == "automatic";
+    let valid_origin = origin_commit_revision
+        .is_some_and(|revision| revision >= 0 && restore_revision.checked_add(1) == Some(revision));
+    let manifest_sha256 = manifest_sha256.ok_or_else(recovery_corrupt)?;
+    if !valid_kind
+        || !valid_origin
+        || restore_revision < 0
+        || created_at_ms < 0
+        || RecoveryReason::parse_storage_value(&reason).is_err()
+        || !matches!(status.as_str(), "pending" | "ready")
+        || relative_path != expected_relative_path
+        || !valid_recovery_relative_path(&relative_path)
+        || !valid_recovery_sha256(&package_sha256)
+        || !valid_recovery_sha256(&manifest_sha256)
+    {
+        return Err(recovery_corrupt());
+    }
+    Ok(PromotableRecoveryMetadata {
+        status,
+        relative_path,
+        package_sha256,
+        manifest_sha256,
+    })
+}
+
+fn ensure_recovery_directory(directory: &Path) -> Result<(), SafeError> {
+    match fs::symlink_metadata(directory) {
+        Ok(metadata) if metadata.file_type().is_symlink() || !metadata.is_dir() => {
+            Err(recovery_corrupt())
+        }
+        Ok(_) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            fs::create_dir_all(directory).map_err(|_| recovery_corrupt())?;
+            let metadata = fs::symlink_metadata(directory).map_err(|_| recovery_corrupt())?;
+            if metadata.file_type().is_symlink() || !metadata.is_dir() {
+                return Err(recovery_corrupt());
+            }
+            Ok(())
+        }
+        Err(_) => Err(recovery_corrupt()),
+    }
 }
 
 fn recovery_corrupt() -> SafeError {
@@ -4966,6 +5122,118 @@ mod tests {
         assert_eq!(row.6, expected_package_sha256);
         assert_eq!(row.7, expected_manifest_sha256);
         assert!(row.8 >= 0);
+    }
+
+    #[test]
+    fn phase5_promotes_a_verified_pending_recovery_point_exactly_once() {
+        let repository = SaveRepository::new(root("phase5-recovery-promotion"));
+        let save = repository
+            .create_save(Some("恢复晋升".to_string()))
+            .unwrap();
+        let recovery_id = RecoveryId::parse("promote-verified").unwrap();
+        let package = verified_recovery_package(&repository, &save.save_id, &recovery_id);
+        let mut connection = open_current_connection(&repository.db_path(&save.save_id)).unwrap();
+        let transaction = connection.transaction().unwrap();
+        record_pending_automatic_recovery_point(
+            &transaction,
+            &recovery_id,
+            &package,
+            1,
+            0,
+            RecoveryReason::Construction,
+        )
+        .unwrap();
+        transaction.commit().unwrap();
+        drop(connection);
+
+        repository
+            .promote_pending_automatic_recovery_point(&save.save_id, &recovery_id)
+            .unwrap();
+        assert!(!repository
+            .root
+            .join("recovery-pending")
+            .join(recovery_id.as_str())
+            .exists());
+        let ready = repository
+            .root
+            .join("recovery-packages")
+            .join(recovery_id.as_str());
+        let verified = crate::recovery::verify_database_preimage(&ready).unwrap();
+        assert_eq!(verified.package_sha256, package.package_sha256);
+        assert_eq!(verified.manifest_sha256, package.manifest_sha256);
+
+        let connection = open_current_connection(&repository.db_path(&save.save_id)).unwrap();
+        assert_eq!(
+            connection
+                .query_row(
+                    "SELECT status FROM recovery_points WHERE recovery_id=?1",
+                    [recovery_id.as_str()],
+                    |row| row.get::<_, String>(0),
+                )
+                .unwrap(),
+            "ready"
+        );
+        drop(connection);
+
+        repository
+            .promote_pending_automatic_recovery_point(&save.save_id, &recovery_id)
+            .unwrap();
+    }
+
+    #[test]
+    fn phase5_refuses_to_promote_a_corrupt_pending_recovery_package() {
+        let repository = SaveRepository::new(root("phase5-recovery-promotion-corrupt"));
+        let save = repository
+            .create_save(Some("恢复晋升损坏".to_string()))
+            .unwrap();
+        let recovery_id = RecoveryId::parse("promote-corrupt").unwrap();
+        let package = verified_recovery_package(&repository, &save.save_id, &recovery_id);
+        let mut connection = open_current_connection(&repository.db_path(&save.save_id)).unwrap();
+        let transaction = connection.transaction().unwrap();
+        record_pending_automatic_recovery_point(
+            &transaction,
+            &recovery_id,
+            &package,
+            1,
+            0,
+            RecoveryReason::Settlement,
+        )
+        .unwrap();
+        transaction.commit().unwrap();
+        drop(connection);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(&package.path, fs::Permissions::from_mode(0o755)).unwrap();
+            fs::set_permissions(
+                package.path.join("manifest.json"),
+                fs::Permissions::from_mode(0o644),
+            )
+            .unwrap();
+        }
+        fs::write(package.path.join("manifest.json"), b"tampered").unwrap();
+
+        let error = repository
+            .promote_pending_automatic_recovery_point(&save.save_id, &recovery_id)
+            .unwrap_err();
+        assert!(error.to_string().ends_with("(recovery.corrupt)"));
+        assert!(package.path.is_dir());
+        assert!(!repository
+            .root
+            .join("recovery-packages")
+            .join(recovery_id.as_str())
+            .exists());
+        let connection = open_current_connection(&repository.db_path(&save.save_id)).unwrap();
+        assert_eq!(
+            connection
+                .query_row(
+                    "SELECT status FROM recovery_points WHERE recovery_id=?1",
+                    [recovery_id.as_str()],
+                    |row| row.get::<_, String>(0),
+                )
+                .unwrap(),
+            "pending"
+        );
     }
 
     #[test]

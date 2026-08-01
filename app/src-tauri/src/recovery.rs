@@ -78,6 +78,9 @@ pub(crate) fn verify_database_preimage(path: &Path) -> io::Result<RecoveryPackag
     require_directory(path)?;
     let database = path.join(DATABASE_PAYLOAD_PATH);
     require_regular_file(&database)?;
+    let manifest_path = path.join(MANIFEST_PATH);
+    require_regular_file(&manifest_path)?;
+    require_exact_database_package_contents(path)?;
     let digest = sha256_file(&database)?;
     let record = PayloadRecord::new(
         DATABASE_PAYLOAD_PATH,
@@ -86,7 +89,7 @@ pub(crate) fn verify_database_preimage(path: &Path) -> io::Result<RecoveryPackag
     )
     .map_err(validation_io)?;
     let package_digest = package_sha256(std::slice::from_ref(&record)).map_err(validation_io)?;
-    let manifest = fs::read(path.join(MANIFEST_PATH))?;
+    let manifest = fs::read(manifest_path)?;
     let expected = database_manifest(&record, &package_digest);
     if manifest != expected.as_bytes() {
         return Err(io::Error::new(
@@ -99,6 +102,84 @@ pub(crate) fn verify_database_preimage(path: &Path) -> io::Result<RecoveryPackag
         package_sha256: package_digest,
         manifest_sha256: manifest_sha256(&manifest),
     })
+}
+
+/// Promotes a sealed package from the app-owned pending directory into the
+/// app-owned recovery catalog.  The package is verified before and after the
+/// same-volume rename, so callers can safely retry after a crash between the
+/// filesystem operation and their durable catalog update.
+///
+/// A destination that already exists is an idempotent success only when that
+/// destination is itself a valid sealed package.  We deliberately do not
+/// overwrite it: an existing package with the same opaque ID must be checked
+/// by the persistence layer against its catalog metadata before it becomes
+/// visible.
+pub(crate) fn promote_database_preimage(
+    pending_directory: &Path,
+    recovery_directory: &Path,
+    recovery_id: &RecoveryId,
+) -> io::Result<RecoveryPackage> {
+    require_directory(pending_directory)?;
+    require_directory(recovery_directory)?;
+    require_same_volume(pending_directory, recovery_directory)?;
+
+    let pending_package = pending_directory.join(recovery_id.as_str());
+    let ready_package = recovery_directory.join(recovery_id.as_str());
+    match fs::symlink_metadata(&ready_package) {
+        Ok(metadata) if metadata.file_type().is_symlink() || !metadata.is_dir() => {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "recovery destination is not a directory",
+            ));
+        }
+        Ok(_) => {
+            match fs::symlink_metadata(&pending_package) {
+                Ok(_) => {
+                    return Err(io::Error::new(
+                        io::ErrorKind::AlreadyExists,
+                        "recovery package exists in both catalog directories",
+                    ));
+                }
+                Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+                Err(error) => return Err(error),
+            }
+            seal_directory(&ready_package)?;
+            sync_directory(recovery_directory)?;
+            return verify_database_preimage(&ready_package);
+        }
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+        Err(error) => return Err(error),
+    }
+
+    verify_database_preimage(&pending_package)?;
+    unseal_directory_for_move(&pending_package)?;
+    if let Err(error) = fs::rename(&pending_package, &ready_package) {
+        let _ = seal_directory(&pending_package);
+        return Err(error);
+    }
+    seal_directory(&ready_package)?;
+    sync_directory(pending_directory)?;
+    sync_directory(recovery_directory)?;
+    verify_database_preimage(&ready_package)
+}
+
+fn require_exact_database_package_contents(path: &Path) -> io::Result<()> {
+    let mut names = fs::read_dir(path)?
+        .map(|entry| entry.map(|entry| entry.file_name()))
+        .collect::<Result<Vec<_>, _>>()?;
+    names.sort_unstable();
+    if names.as_slice()
+        != [
+            std::ffi::OsString::from(DATABASE_PAYLOAD_PATH),
+            std::ffi::OsString::from(MANIFEST_PATH),
+        ]
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "recovery package has unexpected contents",
+        ));
+    }
+    Ok(())
 }
 
 fn database_manifest(record: &PayloadRecord, package_digest: &str) -> String {
@@ -198,6 +279,16 @@ fn seal_directory(path: &Path) -> io::Result<()> {
 }
 #[cfg(not(unix))]
 fn seal_directory(_: &Path) -> io::Result<()> {
+    Ok(())
+}
+
+#[cfg(unix)]
+fn unseal_directory_for_move(path: &Path) -> io::Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+    fs::set_permissions(path, fs::Permissions::from_mode(0o755))
+}
+#[cfg(not(unix))]
+fn unseal_directory_for_move(_: &Path) -> io::Result<()> {
     Ok(())
 }
 
