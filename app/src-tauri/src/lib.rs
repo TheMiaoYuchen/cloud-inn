@@ -6,6 +6,8 @@ pub mod cross_database_validation;
 pub mod generation_jobs;
 mod keychain;
 mod persistence;
+#[allow(dead_code)]
+mod provider;
 pub mod provider_control;
 // Recovery packages are introduced before the write coordinator wires them in.
 #[allow(dead_code)]
