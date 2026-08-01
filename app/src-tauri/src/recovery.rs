@@ -1,3 +1,4 @@
+use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::fmt;
 use std::fs::{self, File, OpenOptions};
@@ -18,6 +19,30 @@ pub(crate) struct RecoveryPackage {
     pub(crate) manifest_sha256: String,
 }
 
+#[derive(Clone, Debug)]
+pub(crate) struct RecoveryAssetSource {
+    pub(crate) normalized_path: String,
+    pub(crate) source_path: PathBuf,
+    pub(crate) sha256: String,
+    pub(crate) byte_length: u64,
+}
+
+#[derive(Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct RecoveryManifest {
+    format_version: u32,
+    payload: Vec<ManifestPayload>,
+    package_sha256: String,
+}
+
+#[derive(Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct ManifestPayload {
+    path: String,
+    sha256: String,
+    byte_length: u64,
+}
+
 /// Copies one committed database into a new, sealed recovery package.  Asset
 /// payloads are added by the write coordinator later; this narrow primitive
 /// deliberately has no knowledge of save layout or database schema.
@@ -25,6 +50,20 @@ pub(crate) fn create_database_preimage(
     source_database: &Path,
     same_volume_pending_directory: &Path,
     recovery_id: &RecoveryId,
+) -> io::Result<RecoveryPackage> {
+    create_save_preimage(
+        source_database,
+        same_volume_pending_directory,
+        recovery_id,
+        &[],
+    )
+}
+
+pub(crate) fn create_save_preimage(
+    source_database: &Path,
+    same_volume_pending_directory: &Path,
+    recovery_id: &RecoveryId,
+    assets: &[RecoveryAssetSource],
 ) -> io::Result<RecoveryPackage> {
     require_regular_file(source_database)?;
     require_directory(same_volume_pending_directory)?;
@@ -52,12 +91,38 @@ pub(crate) fn create_database_preimage(
         let length = fs::metadata(&database)?.len();
         let record = PayloadRecord::new(DATABASE_PAYLOAD_PATH, &source_digest, length)
             .map_err(validation_io)?;
-        let package_digest =
-            package_sha256(std::slice::from_ref(&record)).map_err(validation_io)?;
-        let manifest = database_manifest(&record, &package_digest);
+        let mut records = vec![record];
+        for asset in assets {
+            require_regular_file(&asset.source_path)?;
+            require_same_volume(&asset.source_path, same_volume_pending_directory)?;
+            let record =
+                PayloadRecord::new(&asset.normalized_path, &asset.sha256, asset.byte_length)
+                    .map_err(validation_io)?;
+            if sha256_file(&asset.source_path)? != asset.sha256
+                || fs::metadata(&asset.source_path)?.len() != asset.byte_length
+            {
+                return Err(io::Error::new(io::ErrorKind::InvalidData, "asset changed"));
+            }
+            let destination = temporary.join(&asset.normalized_path);
+            fs::create_dir_all(
+                destination
+                    .parent()
+                    .ok_or_else(|| io::Error::other("path"))?,
+            )?;
+            copy_and_sync(&asset.source_path, &destination)?;
+            if sha256_file(&destination)? != asset.sha256 {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "asset copy mismatch",
+                ));
+            }
+            records.push(record);
+        }
+        let package_digest = package_sha256(&records).map_err(validation_io)?;
+        let manifest = recovery_manifest(&records, &package_digest)?;
         let manifest_path = temporary.join(MANIFEST_PATH);
         write_new_and_sync(&manifest_path, manifest.as_bytes())?;
-        seal_file(&database)?;
+        seal_payload_tree(&temporary, &manifest_path)?;
         seal_file(&manifest_path)?;
         sync_directory(&temporary)?;
         seal_directory(&temporary)?;
@@ -80,18 +145,46 @@ pub(crate) fn verify_database_preimage(path: &Path) -> io::Result<RecoveryPackag
     require_regular_file(&database)?;
     let manifest_path = path.join(MANIFEST_PATH);
     require_regular_file(&manifest_path)?;
-    require_exact_database_package_contents(path)?;
-    let digest = sha256_file(&database)?;
-    let record = PayloadRecord::new(
-        DATABASE_PAYLOAD_PATH,
-        &digest,
-        fs::metadata(&database)?.len(),
-    )
-    .map_err(validation_io)?;
-    let package_digest = package_sha256(std::slice::from_ref(&record)).map_err(validation_io)?;
     let manifest = fs::read(manifest_path)?;
-    let expected = database_manifest(&record, &package_digest);
-    if manifest != expected.as_bytes() {
+    let parsed: RecoveryManifest = serde_json::from_slice(&manifest)
+        .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "recovery manifest invalid"))?;
+    if parsed.format_version != 1 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "recovery version",
+        ));
+    }
+    let records = parsed
+        .payload
+        .iter()
+        .map(|item| PayloadRecord::new(&item.path, &item.sha256, item.byte_length))
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(validation_io)?;
+    if !records
+        .iter()
+        .any(|record| record.normalized_path == DATABASE_PAYLOAD_PATH)
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "recovery database missing",
+        ));
+    }
+    require_exact_package_contents(path, &records)?;
+    for record in &records {
+        let payload = path.join(&record.normalized_path);
+        require_regular_file(&payload)?;
+        if fs::metadata(&payload)?.len() != record.byte_length
+            || sha256_file(&payload)? != record.sha256
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "recovery payload mismatch",
+            ));
+        }
+    }
+    let package_digest = package_sha256(&records).map_err(validation_io)?;
+    let expected = recovery_manifest(&records, &package_digest)?;
+    if parsed.package_sha256 != package_digest || manifest != expected.as_bytes() {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
             "recovery manifest mismatch",
@@ -126,7 +219,7 @@ pub(crate) fn remove_verified_database_preimage(
             "recovery package identity mismatch",
         ));
     }
-    unseal_directory_for_move(&package_path)?;
+    unseal_tree_for_removal(&package_path)?;
     fs::remove_dir_all(&package_path)?;
     if package_path.exists() {
         return Err(io::Error::other("recovery package removal incomplete"));
@@ -193,17 +286,17 @@ pub(crate) fn promote_database_preimage(
     verify_database_preimage(&ready_package)
 }
 
-fn require_exact_database_package_contents(path: &Path) -> io::Result<()> {
-    let mut names = fs::read_dir(path)?
-        .map(|entry| entry.map(|entry| entry.file_name()))
-        .collect::<Result<Vec<_>, _>>()?;
-    names.sort_unstable();
-    if names.as_slice()
-        != [
-            std::ffi::OsString::from(DATABASE_PAYLOAD_PATH),
-            std::ffi::OsString::from(MANIFEST_PATH),
-        ]
-    {
+fn require_exact_package_contents(path: &Path, records: &[PayloadRecord]) -> io::Result<()> {
+    let mut actual = Vec::new();
+    collect_package_files(path, path, &mut actual)?;
+    actual.sort();
+    let mut expected = records
+        .iter()
+        .map(|r| r.normalized_path.clone())
+        .collect::<Vec<_>>();
+    expected.push(MANIFEST_PATH.to_owned());
+    expected.sort();
+    if actual != expected {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
             "recovery package has unexpected contents",
@@ -212,11 +305,24 @@ fn require_exact_database_package_contents(path: &Path) -> io::Result<()> {
     Ok(())
 }
 
-fn database_manifest(record: &PayloadRecord, package_digest: &str) -> String {
-    format!(
-        "{{\"formatVersion\":1,\"payload\":[{{\"path\":\"{}\",\"sha256\":\"{}\",\"byteLength\":{}}}],\"packageSha256\":\"{}\"}}\n",
-        record.normalized_path, record.sha256, record.byte_length, package_digest
-    )
+fn recovery_manifest(records: &[PayloadRecord], package_digest: &str) -> io::Result<String> {
+    let mut payload = records
+        .iter()
+        .map(|record| ManifestPayload {
+            path: record.normalized_path.clone(),
+            sha256: record.sha256.clone(),
+            byte_length: record.byte_length,
+        })
+        .collect::<Vec<_>>();
+    payload.sort_by(|a, b| a.path.cmp(&b.path));
+    let mut bytes = serde_json::to_string(&RecoveryManifest {
+        format_version: 1,
+        payload,
+        package_sha256: package_digest.to_owned(),
+    })
+    .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "manifest"))?;
+    bytes.push('\n');
+    Ok(bytes)
 }
 
 fn copy_and_sync(source: &Path, destination: &Path) -> io::Result<()> {
@@ -228,6 +334,54 @@ fn copy_and_sync(source: &Path, destination: &Path) -> io::Result<()> {
     io::copy(&mut input, &mut output)?;
     output.flush()?;
     output.sync_all()
+}
+
+fn collect_package_files(
+    root: &Path,
+    directory: &Path,
+    output: &mut Vec<String>,
+) -> io::Result<()> {
+    for entry in fs::read_dir(directory)? {
+        let entry = entry?;
+        let metadata = entry.file_type()?;
+        if metadata.is_symlink() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "recovery symlink",
+            ));
+        }
+        if metadata.is_dir() {
+            collect_package_files(root, &entry.path(), output)?;
+        } else if metadata.is_file() {
+            let relative = entry
+                .path()
+                .strip_prefix(root)
+                .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "path"))?
+                .to_str()
+                .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "path"))?
+                .replace(std::path::MAIN_SEPARATOR, "/");
+            output.push(relative);
+        } else {
+            return Err(io::Error::new(io::ErrorKind::InvalidData, "recovery entry"));
+        }
+    }
+    Ok(())
+}
+
+fn seal_payload_tree(directory: &Path, manifest: &Path) -> io::Result<()> {
+    for entry in fs::read_dir(directory)? {
+        let entry = entry?;
+        if entry.path() == manifest {
+            continue;
+        }
+        if entry.file_type()?.is_dir() {
+            seal_payload_tree(&entry.path(), manifest)?;
+            seal_directory(&entry.path())?;
+        } else {
+            seal_file(&entry.path())?;
+        }
+    }
+    Ok(())
 }
 
 fn write_new_and_sync(path: &Path, bytes: &[u8]) -> io::Result<()> {
@@ -316,6 +470,17 @@ fn seal_directory(_: &Path) -> io::Result<()> {
 fn unseal_directory_for_move(path: &Path) -> io::Result<()> {
     use std::os::unix::fs::PermissionsExt;
     fs::set_permissions(path, fs::Permissions::from_mode(0o755))
+}
+
+fn unseal_tree_for_removal(path: &Path) -> io::Result<()> {
+    unseal_directory_for_move(path)?;
+    for entry in fs::read_dir(path)? {
+        let entry = entry?;
+        if entry.file_type()?.is_dir() {
+            unseal_tree_for_removal(&entry.path())?;
+        }
+    }
+    Ok(())
 }
 #[cfg(not(unix))]
 fn unseal_directory_for_move(_: &Path) -> io::Result<()> {
@@ -707,6 +872,54 @@ mod tests {
             verify_database_preimage(&package.path).unwrap_err().kind(),
             io::ErrorKind::InvalidData
         );
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn save_preimage_seals_and_verifies_referenced_asset_payloads() {
+        let root = test_root("asset-preimage");
+        let source = root.join("source.sqlite3");
+        let asset = root.join("asset.png");
+        let pending = root.join("pending");
+        fs::create_dir(&pending).unwrap();
+        fs::write(&source, b"database payload").unwrap();
+        fs::write(&asset, b"verified image payload").unwrap();
+        let digest = sha256_file(&asset).unwrap();
+        let relative_path = format!("assets/sha256/{}/{}.png", &digest[..2], digest);
+        let package = create_save_preimage(
+            &source,
+            &pending,
+            &RecoveryId::parse("asset-point").unwrap(),
+            &[RecoveryAssetSource {
+                normalized_path: relative_path.clone(),
+                source_path: asset,
+                sha256: digest,
+                byte_length: 22,
+            }],
+        )
+        .unwrap();
+
+        assert_eq!(
+            fs::read(package.path.join(&relative_path)).unwrap(),
+            b"verified image payload"
+        );
+        assert_eq!(verify_database_preimage(&package.path).unwrap(), package);
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let payload = package.path.join(&relative_path);
+            fs::set_permissions(&package.path, fs::Permissions::from_mode(0o755)).unwrap();
+            fs::set_permissions(payload.parent().unwrap(), fs::Permissions::from_mode(0o755))
+                .unwrap();
+            fs::set_permissions(&payload, fs::Permissions::from_mode(0o644)).unwrap();
+            fs::write(&payload, b"substituted image bytes").unwrap();
+        }
+        assert_eq!(
+            verify_database_preimage(&package.path).unwrap_err().kind(),
+            io::ErrorKind::InvalidData
+        );
+        let _ = unseal_tree_for_removal(&package.path);
         let _ = fs::remove_dir_all(&root);
     }
 }

@@ -11,18 +11,25 @@ use crate::reliability::{
     legacy_schema_needs_repair, lock_save, normalize_display_name, validate_current_save_database,
     PerSaveLock, SAVE_APPLICATION_ID, SAVE_SCHEMA_VERSION,
 };
-use crate::save_validation::{validate_asset_registry, validate_single_save_identity};
+use crate::save_validation::{validate_asset_catalog, validate_single_save_identity};
 use rusqlite::backup::Backup;
 use rusqlite::{params, Connection, OpenFlags, OptionalExtension, TransactionBehavior};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
+#[cfg(test)]
+use std::cell::Cell;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::fs::{self, File, OpenOptions};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 use uuid::Uuid;
+
+#[cfg(test)]
+thread_local! {
+    static FAIL_FINAL_ATOMIC_REPLACE_SYNC: Cell<bool> = const { Cell::new(false) };
+}
 
 pub struct SaveRepository {
     root: PathBuf,
@@ -43,8 +50,23 @@ pub struct SaveSummary {
 }
 
 impl SaveSummary {
+    #[allow(dead_code)]
     pub(crate) fn save_id(&self) -> &str {
         &self.save_id
+    }
+
+    pub(crate) fn from_imported(imported: crate::archive::ImportedSave) -> Self {
+        Self {
+            save_id: imported.save_id,
+            display_name: imported.display_name,
+            metadata_revision: imported.metadata_revision,
+            game_revision: imported.game_revision,
+            current_day: imported.current_day,
+            room_count: imported.room_count,
+            schema_healthy: true,
+            recovery_available: false,
+            last_played_at_ms: imported.last_played_at_ms,
+        }
     }
 }
 
@@ -95,6 +117,31 @@ pub(crate) struct PreparedSaveDatabase {
     _save_lock: PerSaveLock,
 }
 
+/// Owns the sealed preimage for one critical save mutation until either its
+/// transaction fails (Drop removes the orphan) or its pending outbox row has
+/// committed (finish hands ownership to replay/promotion).
+pub(crate) struct PreparedCriticalRecovery {
+    restore_revision: i64,
+    guard: PendingPackageGuard,
+}
+
+impl PreparedCriticalRecovery {
+    pub(crate) fn record_pending(
+        &self,
+        transaction: &rusqlite::Transaction<'_>,
+        origin_commit_revision: i64,
+    ) -> Result<(), SafeError> {
+        record_pending_automatic_recovery_point(
+            transaction,
+            &self.guard.recovery_id,
+            &self.guard.package,
+            origin_commit_revision,
+            self.restore_revision,
+            self.guard.reason,
+        )
+    }
+}
+
 impl std::fmt::Debug for PreparedSaveDatabase {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         formatter.write_str("PreparedSaveDatabase")
@@ -104,6 +151,49 @@ impl std::fmt::Debug for PreparedSaveDatabase {
 impl SaveRepository {
     pub fn new(root: PathBuf) -> Self {
         Self { root }
+    }
+
+    pub(crate) fn prepare_critical_recovery(
+        &self,
+        prepared: &PreparedSaveDatabase,
+        restore_revision: i64,
+        reason: RecoveryReason,
+    ) -> Result<PreparedCriticalRecovery, SafeError> {
+        let connection = open_read_only(&prepared.path, "recovery.corrupt")?;
+        let (save_id, current_revision) = connection
+            .query_row("SELECT save_id,revision FROM saves LIMIT 1", [], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
+            })
+            .map_err(|_| recovery_corrupt())?;
+        drop(connection);
+        if validate_save_id(&save_id).is_err()
+            || restore_revision < 0
+            || current_revision != restore_revision
+        {
+            return Err(recovery_corrupt());
+        }
+        let recovery_id = RecoveryId::parse(format!("automatic-{}", Uuid::new_v4()))
+            .map_err(|_| recovery_corrupt())?;
+        let package =
+            self.create_frozen_recovery_package(&prepared.path, &recovery_id, recovery_corrupt)?;
+        Ok(PreparedCriticalRecovery {
+            restore_revision,
+            guard: PendingPackageGuard::new(recovery_id, package, reason),
+        })
+    }
+
+    /// Must be called only after the mutation and its pending recovery row
+    /// commit. Promotion and retention are deliberately best-effort: replay
+    /// can finish a failed promotion on the next open, while the committed
+    /// game mutation is never rolled back.
+    pub(crate) fn finish_critical_recovery(
+        &self,
+        connection: &mut Connection,
+        mut recovery: PreparedCriticalRecovery,
+    ) {
+        recovery.guard.disarm();
+        let _ = self.promote_pending_with_connection(connection, &recovery.guard.recovery_id);
+        let _ = self.rotate_ready_automatic_recovery_points_with_connection(connection);
     }
 
     pub fn load_game(&self, save_id: &str) -> Result<Option<Value>, String> {
@@ -294,20 +384,14 @@ impl SaveRepository {
         fs::create_dir(staging.join("save")).map_err(|_| archive_export_failed())?;
         online_backup_with_error(&prepared.path, &database_path, archive_export_failed)?;
 
-        let frozen = Connection::open(&database_path).map_err(|_| archive_export_failed())?;
+        let mut frozen = Connection::open(&database_path).map_err(|_| archive_export_failed())?;
         configure_migration_connection(&frozen).map_err(|_| archive_export_failed())?;
         validate_current_save_database(&frozen).map_err(|_| archive_export_failed())?;
         validate_single_save_identity(&frozen, save_id, false)
             .map_err(|_| archive_export_failed())?;
-        frozen
-            .execute(
-                "DELETE FROM assets
-                 WHERE NOT EXISTS(
-                   SELECT 1 FROM asset_references
-                   WHERE asset_references.asset_id=assets.asset_id
-                 )",
-                [],
-            )
+        sanitize_portable_export(&mut frozen, save_id)?;
+        validate_current_save_database(&frozen).map_err(|_| archive_export_failed())?;
+        validate_single_save_identity(&frozen, save_id, false)
             .map_err(|_| archive_export_failed())?;
         let export_metadata = read_export_metadata(&frozen, save_id)?;
         let assets = read_export_assets(&frozen)?;
@@ -414,10 +498,26 @@ impl SaveRepository {
             .verify_package(&recovery_directory, &recovery_id)
             .map_err(|error| error.with_detail("恢复包验证失败"))?;
         let target_database = target_package.path.join("database.sqlite3");
+        let recovered_copy = unique_sibling(&current_path, "recovered.partial");
+        let _recovered_guard = OwnedPartial::new(recovered_copy.clone());
+        copy_verified_database_payload(&target_database, &recovered_copy)
+            .map_err(|error| error.with_detail("无法冻结目标恢复包"))?;
+        let recovered = Connection::open(&recovered_copy).map_err(|_| recovery_corrupt())?;
+        validate_current_save_database(&recovered).map_err(|_| recovery_corrupt())?;
+        validate_single_save_identity(&recovered, save_id, false)
+            .map_err(|_| recovery_corrupt())?;
+        validate_asset_catalog(&recovered).map_err(|_| recovery_corrupt())?;
+        let candidate_revision = read_save_revision_from_connection(&recovered, save_id)?;
+        if candidate_revision != target.restore_revision {
+            return Err(recovery_corrupt());
+        }
+        let recovered_assets = read_recovery_assets(&recovered)?;
+        validate_recovery_asset_payloads(&target_package.path, &recovered_assets)?;
+        drop(recovered);
+
         let partial = unique_sibling(&current_path, "restore.partial");
         let mut partial_guard = OwnedPartial::new(partial.clone());
-        copy_verified_database_payload(&target_database, &partial)
-            .map_err(|error| error.with_detail("无法冻结目标恢复包"))?;
+        online_backup_with_error(&current_path, &partial, recovery_corrupt)?;
 
         let pre_restore_id = RecoveryId::parse(format!("pre-restore-{}", Uuid::new_v4()))
             .map_err(|_| recovery_corrupt())?;
@@ -446,27 +546,93 @@ impl SaveRepository {
             .checked_add(1)
             .ok_or_else(recovery_corrupt)?;
 
+        // Conservatively revoke every unsent authorization before changing
+        // save/job revisions. A crash after this point can require another
+        // confirmation but cannot preserve stale permission to send.
+        prepared
+            .control_connection
+            .execute(
+                "UPDATE provider_send_grants SET state='expired'
+                 WHERE save_id=?1 AND state='issued'",
+                [save_id],
+            )
+            .map_err(|_| recovery_corrupt())?;
+
+        let active_directory = current_path.parent().ok_or_else(recovery_corrupt)?;
+        materialize_recovery_assets(&target_package.path, active_directory, &recovered_assets)?;
+
         let mut candidate = open_current_connection(&partial)
             .map_err(|_| recovery_corrupt().with_detail("无法打开恢复候选数据库"))?;
         validate_opened_save(&candidate, &partial, save_id, false)
             .map_err(|_| recovery_corrupt())?;
-        let candidate_revision = read_save_revision_from_connection(&candidate, save_id)?;
-        if candidate_revision != target.restore_revision {
-            return Err(recovery_corrupt());
-        }
+        candidate
+            .execute(
+                "ATTACH DATABASE ?1 AS recovered",
+                [recovered_copy.to_string_lossy().as_ref()],
+            )
+            .map_err(|_| recovery_corrupt())?;
         let transaction = candidate
             .transaction_with_behavior(TransactionBehavior::Immediate)
             .map_err(|_| recovery_corrupt())?;
         let changed = transaction
             .execute(
-                "UPDATE saves SET revision=?1,updated_at=datetime('now')
-                 WHERE save_id=?2 AND revision=?3",
-                params![restored_revision, save_id, candidate_revision],
+                "UPDATE saves SET
+                   schema_version=(SELECT schema_version FROM recovered.saves WHERE save_id=?2),
+                   ruleset_version=(SELECT ruleset_version FROM recovered.saves WHERE save_id=?2),
+                   revision=?1,
+                   phase=(SELECT phase FROM recovered.saves WHERE save_id=?2),
+                   current_day=(SELECT current_day FROM recovered.saves WHERE save_id=?2),
+                   cash_cents=(SELECT cash_cents FROM recovered.saves WHERE save_id=?2),
+                   rate_cents=(SELECT rate_cents FROM recovered.saves WHERE save_id=?2),
+                   phase2_json=(SELECT phase2_json FROM recovered.saves WHERE save_id=?2),
+                   latest_report_json=(SELECT latest_report_json FROM recovered.saves WHERE save_id=?2),
+                   operations_json=(SELECT operations_json FROM recovered.saves WHERE save_id=?2),
+                   phase4_json=(SELECT phase4_json FROM recovered.saves WHERE save_id=?2),
+                   updated_at=datetime('now') WHERE save_id=?2 AND revision=?3",
+                params![restored_revision, save_id, pre_restore_revision],
             )
             .map_err(|_| recovery_corrupt())?;
         if changed != 1 {
             return Err(recovery_corrupt());
         }
+        for table in ["daily_reports", "room_instances", "room_blueprints"] {
+            transaction
+                .execute(&format!("DELETE FROM {table} WHERE save_id=?1"), [save_id])
+                .map_err(|_| recovery_corrupt())?;
+        }
+        transaction.execute(
+            "INSERT INTO room_blueprints SELECT * FROM recovered.room_blueprints WHERE save_id=?1",
+            [save_id],
+        ).map_err(|_| recovery_corrupt())?;
+        transaction.execute(
+            "INSERT INTO room_instances SELECT * FROM recovered.room_instances WHERE save_id=?1",
+            [save_id],
+        ).map_err(|_| recovery_corrupt())?;
+        transaction
+            .execute(
+                "INSERT INTO daily_reports SELECT * FROM recovered.daily_reports WHERE save_id=?1",
+                [save_id],
+            )
+            .map_err(|_| recovery_corrupt())?;
+        transaction.execute(
+            "INSERT OR IGNORE INTO assets SELECT * FROM recovered.assets
+             WHERE EXISTS(SELECT 1 FROM recovered.asset_references r WHERE r.asset_id=recovered.assets.asset_id)",
+            [],
+        ).map_err(|_| recovery_corrupt())?;
+        transaction
+            .execute(
+                "DELETE FROM asset_references WHERE owner_kind='visual-target'",
+                [],
+            )
+            .map_err(|_| recovery_corrupt())?;
+        transaction
+            .execute(
+                "INSERT INTO asset_references SELECT * FROM recovered.asset_references
+             WHERE owner_kind='visual-target'",
+                [],
+            )
+            .map_err(|_| recovery_corrupt())?;
+
         let timestamp = current_time_ms()?;
         transaction
             .execute(
@@ -478,6 +644,18 @@ impl SaveRepository {
                 params![restored_revision, timestamp],
             )
             .map_err(|_| recovery_corrupt())?;
+        transaction.execute(
+            "UPDATE generation_jobs SET
+               status=CASE WHEN response_ambiguous=1 OR status IN
+                 ('checking-model','running-primary','running-fallback','staging-asset','retry-delay')
+                 THEN 'needs-retry-confirmation'
+                 WHEN status IN ('queued','blocked-no-credential','waiting-network','failed-retryable')
+                 THEN 'needs-player-confirmation' ELSE status END,
+               next_attempt_at_ms=NULL,lease_owner=NULL,lease_until_ms=NULL,
+               lease_epoch=lease_epoch+1,job_revision=job_revision+1,updated_at_ms=?1
+             WHERE save_id=?2 AND status NOT IN ('adopted','superseded','failed-terminal','cancelled')",
+            params![timestamp, save_id],
+        ).map_err(|_| recovery_corrupt())?;
         record_ready_recovery_point(
             &transaction,
             &pre_restore_id,
@@ -489,6 +667,9 @@ impl SaveRepository {
         )
         .map_err(|error| error.with_detail("无法写入恢复前快照记录"))?;
         transaction.commit().map_err(|_| recovery_corrupt())?;
+        candidate
+            .execute_batch("DETACH DATABASE recovered")
+            .map_err(|_| recovery_corrupt())?;
         make_single_file_durable(&candidate, &partial).map_err(|_| recovery_corrupt())?;
         drop(candidate);
         validate_restore_candidate(&partial, save_id)?;
@@ -497,6 +678,8 @@ impl SaveRepository {
             return Err(SafeError::new("recovery.restore-failed", "恢复存档失败"));
         }
         partial_guard.disarm();
+        // Keep the guard armed until scope exit. It owns the writable copy and
+        // will retry cleanup even if an eager unlink would fail transiently.
         pre_restore_guard.disarm();
         Ok(RestoreRecoveryResult {
             save_id: save_id.to_owned(),
@@ -606,9 +789,26 @@ impl SaveRepository {
         let mut guard = OwnedPartial::new(frozen.clone());
         online_backup_with_error(source_path, &frozen, error)?;
         sync_file(&frozen).map_err(|_| error())?;
-        let package =
-            crate::recovery::create_database_preimage(&frozen, &pending_directory, recovery_id)
-                .map_err(|_| error())?;
+        let frozen_connection = open_read_only(&frozen, "recovery.corrupt")?;
+        let assets = read_recovery_assets(&frozen_connection)?;
+        drop(frozen_connection);
+        let save_directory = source_path.parent().ok_or_else(error)?;
+        let sources = assets
+            .into_iter()
+            .map(|asset| crate::recovery::RecoveryAssetSource {
+                source_path: save_directory.join(&asset.relative_path),
+                normalized_path: asset.relative_path,
+                sha256: asset.sha256,
+                byte_length: asset.byte_length,
+            })
+            .collect::<Vec<_>>();
+        let package = crate::recovery::create_save_preimage(
+            &frozen,
+            &pending_directory,
+            recovery_id,
+            &sources,
+        )
+        .map_err(|_| error())?;
         fs::remove_file(&frozen).map_err(|_| error())?;
         guard.disarm();
         Ok(package)
@@ -624,13 +824,20 @@ impl SaveRepository {
         &self,
         save_id: &str,
     ) -> Result<(), SafeError> {
-        const AUTOMATIC_RECOVERY_RETENTION: i64 = 20;
-
         validate_save_id(save_id).map_err(|_| SafeError::new("save.invalid-id", "存档标识无效"))?;
         let prepared = self.prepare_save_database(save_id)?;
         let mut connection =
             open_current_connection(&prepared.path).map_err(|_| recovery_corrupt())?;
-        let candidates = read_rotation_candidates(&connection, AUTOMATIC_RECOVERY_RETENTION)?;
+        self.rotate_ready_automatic_recovery_points_with_connection(&mut connection)
+    }
+
+    fn rotate_ready_automatic_recovery_points_with_connection(
+        &self,
+        connection: &mut Connection,
+    ) -> Result<(), SafeError> {
+        const AUTOMATIC_RECOVERY_RETENTION: i64 = 20;
+
+        let candidates = read_rotation_candidates(connection, AUTOMATIC_RECOVERY_RETENTION)?;
         if candidates.is_empty() {
             return Ok(());
         }
@@ -912,6 +1119,73 @@ struct ExportAsset {
     height: u32,
 }
 
+/// Removes every machine-local or not-yet-adopted record from the frozen
+/// clone. Generation requests are deleted rather than redacted in place: the
+/// authoritative adopted visual already has a `visual-target` reference and
+/// lives in game JSON, while keeping a job would retain prompt/request
+/// fingerprints and queue provenance that are not portable game state.
+///
+/// `secure_delete` plus `VACUUM` is deliberate. A normal SQL DELETE can leave
+/// prompt, recovery path, lease and session bytes in SQLite freelist pages,
+/// which would still leak through the exported database payload.
+fn sanitize_portable_export(connection: &mut Connection, save_id: &str) -> Result<(), SafeError> {
+    connection
+        .pragma_update(None, "secure_delete", "ON")
+        .map_err(|_| archive_export_failed())?;
+    let transaction = connection
+        .transaction_with_behavior(TransactionBehavior::Immediate)
+        .map_err(|_| archive_export_failed())?;
+    transaction
+        .execute("DELETE FROM asset_write_intents", [])
+        .map_err(|_| archive_export_failed())?;
+    transaction
+        .execute("DELETE FROM generation_jobs", [])
+        .map_err(|_| archive_export_failed())?;
+    transaction
+        .execute(
+            "DELETE FROM asset_references WHERE owner_kind='generation-job'",
+            [],
+        )
+        .map_err(|_| archive_export_failed())?;
+    transaction
+        .execute("DELETE FROM recovery_points", [])
+        .map_err(|_| archive_export_failed())?;
+    transaction
+        .execute(
+            "DELETE FROM assets
+             WHERE NOT EXISTS(
+               SELECT 1 FROM asset_references
+               WHERE asset_references.asset_id=assets.asset_id
+             )",
+            [],
+        )
+        .map_err(|_| archive_export_failed())?;
+    let revision = transaction
+        .query_row(
+            "SELECT revision FROM saves WHERE save_id=?1",
+            [save_id],
+            |row| row.get::<_, i64>(0),
+        )
+        .map_err(|_| archive_export_failed())?;
+    let changed = transaction
+        .execute(
+            "UPDATE runtime_session
+             SET session_id='portable-export',clean_shutdown=1,
+                 last_durable_revision=?1,coordinator_epoch=0,
+                 last_observed_wall_ms=0,updated_at_ms=0
+             WHERE singleton=1",
+            [revision],
+        )
+        .map_err(|_| archive_export_failed())?;
+    if changed != 1 {
+        return Err(archive_export_failed());
+    }
+    transaction.commit().map_err(|_| archive_export_failed())?;
+    connection
+        .execute_batch("VACUUM;")
+        .map_err(|_| archive_export_failed())
+}
+
 fn read_export_metadata(
     connection: &Connection,
     save_id: &str,
@@ -938,12 +1212,28 @@ fn read_export_metadata(
 }
 
 fn read_export_assets(connection: &Connection) -> Result<Vec<ExportAsset>, SafeError> {
-    let mut statement = connection
-        .prepare(
-            "SELECT asset_id,relative_path,sha256,mime_type,byte_length,width,height
-             FROM assets ORDER BY relative_path,asset_id",
-        )
-        .map_err(|_| archive_export_failed())?;
+    read_assets_with_query(connection, "SELECT asset_id,relative_path,sha256,mime_type,byte_length,width,height FROM assets ORDER BY relative_path,asset_id", archive_export_failed)
+}
+
+fn read_recovery_assets(connection: &Connection) -> Result<Vec<ExportAsset>, SafeError> {
+    read_assets_with_query(
+        connection,
+        "SELECT asset_id,relative_path,sha256,mime_type,byte_length,width,height
+         FROM assets WHERE EXISTS(
+           SELECT 1 FROM asset_references
+           WHERE asset_references.asset_id=assets.asset_id
+             AND asset_references.owner_kind='visual-target'
+         ) ORDER BY relative_path,asset_id",
+        recovery_corrupt,
+    )
+}
+
+fn read_assets_with_query(
+    connection: &Connection,
+    query: &str,
+    error: fn() -> SafeError,
+) -> Result<Vec<ExportAsset>, SafeError> {
+    let mut statement = connection.prepare(query).map_err(|_| error())?;
     let rows = statement
         .query_map([], |row| {
             Ok((
@@ -956,23 +1246,20 @@ fn read_export_assets(connection: &Connection) -> Result<Vec<ExportAsset>, SafeE
                 row.get::<_, i64>(6)?,
             ))
         })
-        .map_err(|_| archive_export_failed())?;
+        .map_err(|_| error())?;
     let mut assets = Vec::new();
     for row in rows {
         let (asset_id, relative_path, sha256, mime_type, byte_length, width, height) =
-            row.map_err(|_| archive_export_failed())?;
-        validate_stored_asset_path(&relative_path, &sha256, &mime_type)
-            .map_err(|_| archive_export_failed())?;
+            row.map_err(|_| error())?;
+        validate_stored_asset_path(&relative_path, &sha256, &mime_type).map_err(|_| error())?;
         assets.push(ExportAsset {
             asset_id,
             relative_path,
             sha256,
             mime_type,
-            byte_length: byte_length
-                .try_into()
-                .map_err(|_| archive_export_failed())?,
-            width: width.try_into().map_err(|_| archive_export_failed())?,
-            height: height.try_into().map_err(|_| archive_export_failed())?,
+            byte_length: byte_length.try_into().map_err(|_| error())?,
+            width: width.try_into().map_err(|_| error())?,
+            height: height.try_into().map_err(|_| error())?,
         });
     }
     Ok(assets)
@@ -1011,6 +1298,71 @@ fn copy_export_asset(
         || sha256_file(destination).map_err(|_| archive_export_failed())? != asset.sha256
     {
         return Err(archive_export_failed());
+    }
+    Ok(())
+}
+
+fn materialize_recovery_assets(
+    package_root: &Path,
+    active_directory: &Path,
+    assets: &[ExportAsset],
+) -> Result<(), SafeError> {
+    for asset in assets {
+        let source = package_root.join(&asset.relative_path);
+        let destination = active_directory.join(&asset.relative_path);
+        match fs::symlink_metadata(&destination) {
+            Ok(metadata) => {
+                if metadata.file_type().is_symlink()
+                    || !metadata.is_file()
+                    || metadata.len() != asset.byte_length
+                    || sha256_file(&destination).map_err(|_| recovery_corrupt())? != asset.sha256
+                {
+                    return Err(recovery_corrupt());
+                }
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                let parent = destination.parent().ok_or_else(recovery_corrupt)?;
+                fs::create_dir_all(parent).map_err(|_| recovery_corrupt())?;
+                let staging = parent.join(format!(".recovery-asset-{}", Uuid::new_v4()));
+                copy_export_asset(&source, &staging, asset).map_err(|_| recovery_corrupt())?;
+                match fs::hard_link(&staging, &destination) {
+                    Ok(()) => {}
+                    Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+                        if sha256_file(&destination).map_err(|_| recovery_corrupt())?
+                            != asset.sha256
+                        {
+                            let _ = fs::remove_file(&staging);
+                            return Err(recovery_corrupt());
+                        }
+                    }
+                    Err(_) => {
+                        let _ = fs::remove_file(&staging);
+                        return Err(recovery_corrupt());
+                    }
+                }
+                let _ = fs::remove_file(&staging);
+                sync_directory(parent).map_err(|_| recovery_corrupt())?;
+            }
+            Err(_) => return Err(recovery_corrupt()),
+        }
+    }
+    Ok(())
+}
+
+fn validate_recovery_asset_payloads(
+    package_root: &Path,
+    assets: &[ExportAsset],
+) -> Result<(), SafeError> {
+    for asset in assets {
+        let payload = package_root.join(&asset.relative_path);
+        let metadata = fs::symlink_metadata(&payload).map_err(|_| recovery_corrupt())?;
+        if metadata.file_type().is_symlink()
+            || !metadata.is_file()
+            || metadata.len() != asset.byte_length
+            || sha256_file(&payload).map_err(|_| recovery_corrupt())? != asset.sha256
+        {
+            return Err(recovery_corrupt());
+        }
     }
     Ok(())
 }
@@ -2329,8 +2681,8 @@ fn validate_opened_save(
 ) -> Result<(), SafeError> {
     validate_single_save_identity(connection, expected_save_id, allow_empty)
         .map_err(|_| validation_migration())?;
-    let save_directory = database_path.parent().ok_or_else(validation_migration)?;
-    validate_asset_registry(connection, save_directory).map_err(|_| validation_migration())
+    let _ = database_path.parent().ok_or_else(validation_migration)?;
+    validate_asset_catalog(connection).map_err(|_| validation_migration())
 }
 
 fn reject_partial_v7_schema(connection: &Connection) -> Result<(), SafeError> {
@@ -2504,8 +2856,26 @@ fn atomic_replace_database(active: &Path, partial: &Path) -> Result<(), SafeErro
     }
     remove_database_group(&rollback);
     remove_upgrade_journal(directory);
-    sync_directory(directory).map_err(|_| failed_migration())?;
+    // The validated active database and its directory entry were already
+    // durably committed above. Cleanup is replay-safe housekeeping; reporting
+    // its sync failure would claim the replace failed after the old rollback
+    // had already been removed.
+    let _ = sync_atomic_replace_cleanup(directory);
     Ok(())
+}
+
+#[cfg(not(test))]
+fn sync_atomic_replace_cleanup(directory: &Path) -> std::io::Result<()> {
+    sync_directory(directory)
+}
+
+#[cfg(test)]
+fn sync_atomic_replace_cleanup(directory: &Path) -> std::io::Result<()> {
+    if FAIL_FINAL_ATOMIC_REPLACE_SYNC.with(Cell::take) {
+        Err(std::io::Error::other("forced final cleanup sync failure"))
+    } else {
+        sync_directory(directory)
+    }
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -5705,7 +6075,7 @@ fn validate_design_visuals(value: &Value) -> Result<(), String> {
             &mut focus_count,
         )?;
         let asset_path = strv(asset, "assetPath")?;
-        if !asset_path.starts_with("/visuals/") || asset_path.contains("..") {
+        if !valid_visual_asset_path(&asset_path) {
             return Err("视觉资源命名空间无效".into());
         }
     }
@@ -5746,7 +6116,7 @@ fn validate_visual_tree(value: &Value) -> Result<(), String> {
     match value {
         Value::Object(map) => {
             if let Some(asset) = map.get("assetPath").and_then(Value::as_str) {
-                if !asset.starts_with("/visuals/") || asset.contains("..") {
+                if !valid_visual_asset_path(asset) {
                     return Err("视觉资源命名空间无效".into());
                 }
             }
@@ -5762,6 +6132,20 @@ fn validate_visual_tree(value: &Value) -> Result<(), String> {
         _ => {}
     }
     Ok(())
+}
+
+fn valid_visual_asset_path(value: &str) -> bool {
+    if value.starts_with("/visuals/") && !value.contains("..") {
+        return true;
+    }
+    value
+        .strip_prefix("cloudinn-asset://")
+        .is_some_and(|digest| {
+            digest.len() == 64
+                && digest
+                    .bytes()
+                    .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+        })
 }
 
 #[cfg(test)]
@@ -6171,6 +6555,40 @@ mod tests {
     }
 
     #[test]
+    fn phase5_missing_visual_asset_does_not_block_gameplay_reopen() {
+        let repository = SaveRepository::new(root("phase5-missing-asset-placeholder"));
+        repository.commit_game(0, game()).unwrap();
+        let bytes = png_header(17, 23);
+        let asset_id = repository
+            .store_asset_reference(
+                "save-1",
+                AssetReferenceStoreRequest {
+                    owner_kind: "generation-job",
+                    owner_id: "job-missing",
+                    bytes: &bytes,
+                    mime_type: "image/png",
+                    width: 17,
+                    height: 23,
+                },
+            )
+            .unwrap();
+        let path = repository.db_path("save-1").parent().unwrap().join(format!(
+            "assets/sha256/{}/{}.png",
+            &asset_id[..2],
+            asset_id
+        ));
+        fs::remove_file(path).unwrap();
+
+        assert_eq!(
+            repository.load_game("save-1").unwrap().unwrap()["revision"],
+            json!(1)
+        );
+        let summary = repository.list_saves().unwrap();
+        assert_eq!(summary.len(), 1);
+        assert_eq!(summary[0].save_id, "save-1");
+    }
+
+    #[test]
     fn phase5_asset_reference_rejects_conflicting_existing_asset_metadata() {
         let repository = SaveRepository::new(root("phase5-asset-metadata-conflict"));
         let save = repository
@@ -6481,8 +6899,47 @@ mod tests {
 
     #[test]
     fn phase5_game_commit_creates_reversible_verified_preimage() {
-        let repository = SaveRepository::new(root("phase5-recovery-real-commit"));
+        let app_root = root("phase5-recovery-real-commit");
+        let repository = SaveRepository::new(app_root.clone());
         repository.commit_game(0, game()).unwrap();
+        let png = png_header(31, 37);
+        let asset_id = repository
+            .store_asset_reference(
+                "save-1",
+                AssetReferenceStoreRequest {
+                    owner_kind: "visual-target",
+                    owner_id: "recovery-master",
+                    bytes: &png,
+                    mime_type: "image/png",
+                    width: 31,
+                    height: 37,
+                },
+            )
+            .unwrap();
+        let relative_asset_path =
+            crate::assets::content_addressed_relative_path(&asset_id, "image/png").unwrap();
+        let active_asset_path = repository
+            .db_path("save-1")
+            .parent()
+            .unwrap()
+            .join(&relative_asset_path);
+        let unadopted_png = png_header(41, 43);
+        let unadopted_asset_id = repository
+            .store_asset_reference(
+                "save-1",
+                AssetReferenceStoreRequest {
+                    owner_kind: "generation-job",
+                    owner_id: "unadopted-recovery-job",
+                    bytes: &unadopted_png,
+                    mime_type: "image/png",
+                    width: 41,
+                    height: 43,
+                },
+            )
+            .unwrap();
+        let unadopted_relative_path =
+            crate::assets::content_addressed_relative_path(&unadopted_asset_id, "image/png")
+                .unwrap();
         let next = blueprint_game(2, json!([]));
         repository.commit_game(1, next).unwrap();
 
@@ -6491,7 +6948,73 @@ mod tests {
         assert_eq!(points[0].kind, "automatic");
         assert_eq!(points[0].restore_revision, 1);
         assert_eq!(points[0].reason, "construction");
+        let recovery_package = repository
+            .root
+            .join("recovery-packages")
+            .join(&points[0].recovery_id);
+        assert!(recovery_package.join(&relative_asset_path).is_file());
+        assert!(!recovery_package.join(&unadopted_relative_path).exists());
 
+        // Metadata, the live job ledger, and the complete recovery catalog
+        // belong to the current installation rather than to an old game
+        // snapshot. They must survive the restore unchanged (apart from the
+        // conservative job/grant recovery transition).
+        repository
+            .rename_save("save-1", "当前名称".to_owned(), 0)
+            .unwrap();
+        let fingerprint = "a".repeat(64);
+        let connection = repository.open("save-1").unwrap();
+        connection
+            .execute(
+                "DELETE FROM asset_references
+                 WHERE owner_kind='visual-target' AND owner_id='recovery-master'",
+                [],
+            )
+            .unwrap();
+        connection
+            .execute(
+                "INSERT INTO generation_jobs(
+                   job_id,save_id,target_kind,target_fingerprint,request_fingerprint,
+                   request_json,status,selected_model,response_ambiguous,created_at_ms,updated_at_ms
+                 ) VALUES(
+                   'current-job','save-1','master','current-target',?1,
+                   '{}','queued','model-1',0,1,1
+                 )",
+                [&fingerprint],
+            )
+            .unwrap();
+        connection
+            .execute(
+                "INSERT INTO generation_jobs(
+                   job_id,save_id,target_kind,target_fingerprint,request_fingerprint,
+                   request_json,status,selected_model,response_ambiguous,created_at_ms,updated_at_ms
+                 ) VALUES(
+                   'ambiguous-job','save-1','master','ambiguous-target',?1,
+                   '{}','needs-retry-confirmation','model-1',1,1,1
+                 )",
+                [&fingerprint],
+            )
+            .unwrap();
+        drop(connection);
+        let control = ProviderControlStore::new(app_root)
+            .open_validated()
+            .unwrap();
+        control
+            .execute(
+                "INSERT INTO provider_send_grants(
+                   grant_id,save_id,job_id,job_revision,attempt_sequence,model,
+                   request_fingerprint,quota_day,source,state,issued_at_ms
+                 ) VALUES(
+                   'restore-grant','save-1','current-job',0,1,'model-1',
+                   ?1,0,'player-confirmed','issued',1
+                 )",
+                [&fingerprint],
+            )
+            .unwrap();
+        drop(control);
+        fs::remove_file(&active_asset_path).unwrap();
+
+        FAIL_FINAL_ATOMIC_REPLACE_SYNC.with(|failpoint| failpoint.set(true));
         let restored = repository
             .restore_recovery_point("save-1", &points[0].recovery_id)
             .unwrap();
@@ -6500,13 +7023,66 @@ mod tests {
         let mut restored_game = game();
         restored_game["revision"] = json!(3);
         assert_eq!(repository.load_game("save-1").unwrap(), Some(restored_game));
+        assert_eq!(fs::read(&active_asset_path).unwrap(), png);
+        let restored_connection = repository.open("save-1").unwrap();
+        assert_eq!(
+            restored_connection
+                .query_row(
+                    "SELECT display_name FROM save_metadata WHERE save_id='save-1'",
+                    [],
+                    |row| row.get::<_, String>(0),
+                )
+                .unwrap(),
+            "当前名称"
+        );
+        assert_eq!(
+            restored_connection
+                .query_row(
+                    "SELECT status FROM generation_jobs WHERE job_id='current-job'",
+                    [],
+                    |row| row.get::<_, String>(0),
+                )
+                .unwrap(),
+            "needs-player-confirmation"
+        );
+        assert_eq!(
+            restored_connection
+                .query_row(
+                    "SELECT status || ':' || response_ambiguous
+                     FROM generation_jobs WHERE job_id='ambiguous-job'",
+                    [],
+                    |row| row.get::<_, String>(0),
+                )
+                .unwrap(),
+            "needs-retry-confirmation:1"
+        );
+        drop(restored_connection);
+        let control = ProviderControlStore::new(repository.root.clone())
+            .open_validated()
+            .unwrap();
+        assert_eq!(
+            control
+                .query_row(
+                    "SELECT state FROM provider_send_grants WHERE grant_id='restore-grant'",
+                    [],
+                    |row| row.get::<_, String>(0),
+                )
+                .unwrap(),
+            "expired"
+        );
         let post_restore = repository.list_recovery_points("save-1").unwrap();
-        assert_eq!(post_restore.len(), 1);
-        assert_eq!(post_restore[0].kind, "pre-restore");
-        assert_eq!(post_restore[0].restore_revision, 2);
+        assert_eq!(post_restore.len(), 2);
+        assert!(post_restore
+            .iter()
+            .any(|point| point.recovery_id == points[0].recovery_id));
+        let pre_restore = post_restore
+            .iter()
+            .find(|point| point.kind == "pre-restore")
+            .unwrap();
+        assert_eq!(pre_restore.restore_revision, 2);
 
         let rolled_forward = repository
-            .restore_recovery_point("save-1", &post_restore[0].recovery_id)
+            .restore_recovery_point("save-1", &pre_restore.recovery_id)
             .unwrap();
         assert_eq!(rolled_forward.revision, 4);
         let mut expected_forward = blueprint_game(2, json!([]));
@@ -6535,6 +7111,22 @@ mod tests {
                 },
             )
             .unwrap();
+        assert_eq!(
+            repository
+                .store_asset_reference(
+                    "save-1",
+                    AssetReferenceStoreRequest {
+                        owner_kind: "visual-target",
+                        owner_id: "export-master",
+                        bytes: &png,
+                        mime_type: "image/png",
+                        width: 19,
+                        height: 29,
+                    },
+                )
+                .unwrap(),
+            asset_id
+        );
 
         let export = repository.prepare_save_export("save-1").unwrap();
         assert_eq!(export.source_save_id, "save-1");
@@ -6583,6 +7175,153 @@ mod tests {
             )
             .unwrap(),
             png
+        );
+    }
+
+    #[test]
+    fn phase5_export_scrubs_machine_state_prompts_and_unadopted_assets_from_file_bytes() {
+        const SENTINEL_PROMPT: &str = "PORTABLE_EXPORT_MUST_NOT_LEAK_PROMPT_7f3d91";
+        const SENTINEL_SESSION: &str = "machine-session-must-not-export";
+        const SENTINEL_RECOVERY_PATH: &str = "recovery-packages/machine-only-recovery-sentinel";
+
+        let repository = SaveRepository::new(root("phase5-export-portable-scrub"));
+        repository.commit_game(0, game()).unwrap();
+        let adopted_png = png_header(41, 43);
+        let adopted_asset = repository
+            .store_asset_reference(
+                "save-1",
+                AssetReferenceStoreRequest {
+                    owner_kind: "visual-target",
+                    owner_id: "portable-adopted-master",
+                    bytes: &adopted_png,
+                    mime_type: "image/png",
+                    width: 41,
+                    height: 43,
+                },
+            )
+            .unwrap();
+        let unadopted_png = png_header(47, 53);
+        let unadopted_asset = repository
+            .store_asset_reference(
+                "save-1",
+                AssetReferenceStoreRequest {
+                    owner_kind: "generation-job",
+                    owner_id: "portable-active-job",
+                    bytes: &unadopted_png,
+                    mime_type: "image/png",
+                    width: 47,
+                    height: 53,
+                },
+            )
+            .unwrap();
+        let unadopted_path =
+            crate::assets::content_addressed_relative_path(&unadopted_asset, "image/png").unwrap();
+        let request_json = serde_json::to_string(&json!({
+            "targetKind": "master",
+            "prompt": SENTINEL_PROMPT,
+            "resolution": "1k",
+            "referenceAssetIds": [],
+        }))
+        .unwrap();
+        let connection = open_current_connection(&repository.db_path("save-1")).unwrap();
+        connection.execute("INSERT INTO generation_jobs(job_id,save_id,target_kind,target_fingerprint,request_fingerprint,job_revision,request_json,status,selected_model,next_attempt_at_ms,lease_owner,lease_until_ms,lease_epoch,asset_id,error_code,response_ambiguous,created_at_ms,updated_at_ms) VALUES('portable-active-job','save-1','master','portable-target',?1,0,?2,'running-primary','gemini-3.1-flash-image',NULL,'machine-worker',999999,1,NULL,NULL,0,100,100)", params!["a".repeat(64), request_json]).unwrap();
+        connection.execute("INSERT INTO asset_write_intents(job_id,operation_id,temp_relative_path,final_relative_path,expected_sha256,mime_type,byte_length,width,height,created_at_ms) VALUES('portable-active-job','portable-operation','assets/staging/temporary.png',?1,?2,'image/png',?3,47,53,100)", params![unadopted_path, unadopted_asset, i64::try_from(unadopted_png.len()).unwrap()]).unwrap();
+        connection.execute("INSERT INTO recovery_points(recovery_id,kind,origin_commit_revision,restore_revision,reason,status,relative_path,package_sha256,manifest_sha256,created_at_ms) VALUES('portable-machine-recovery','automatic',1,1,'settlement','failed',?1,?2,NULL,100)", params![SENTINEL_RECOVERY_PATH, "b".repeat(64)]).unwrap();
+        connection.execute("UPDATE runtime_session SET session_id=?1,clean_shutdown=0,coordinator_epoch=99,last_observed_wall_ms=888,updated_at_ms=888 WHERE singleton=1", [SENTINEL_SESSION]).unwrap();
+        drop(connection);
+
+        let export = repository.prepare_save_export("save-1").unwrap();
+        let archive_bytes = fs::read(&export.archive.path).unwrap();
+        for forbidden in [SENTINEL_PROMPT, SENTINEL_SESSION, SENTINEL_RECOVERY_PATH] {
+            assert!(
+                !archive_bytes
+                    .windows(forbidden.len())
+                    .any(|window| window == forbidden.as_bytes()),
+                "portable archive leaked {forbidden}"
+            );
+        }
+
+        let import_root = root("phase5-export-portable-scrub-import");
+        fs::create_dir_all(&import_root).unwrap();
+        let service = crate::archive::ArchiveImportService::new(&import_root).unwrap();
+        let inspection = service
+            .inspect_import(&export.archive.path, 10_000)
+            .unwrap();
+        assert_eq!(inspection.asset_count, 1);
+        let consumed = service.consume_import(&inspection.token, 10_001).unwrap();
+        assert_eq!(consumed.manifest.referenced_assets.len(), 1);
+        assert_eq!(
+            consumed.manifest.referenced_assets[0].asset_id,
+            adopted_asset
+        );
+        assert!(!consumed
+            .manifest
+            .payload
+            .iter()
+            .any(|payload| payload.sha256 == unadopted_asset));
+        let portable_database = consumed.extracted_save_directory.join("save.sqlite3");
+        let portable_bytes = fs::read(&portable_database).unwrap();
+        for forbidden in [SENTINEL_PROMPT, SENTINEL_SESSION, SENTINEL_RECOVERY_PATH] {
+            assert!(!portable_bytes
+                .windows(forbidden.len())
+                .any(|window| window == forbidden.as_bytes()));
+        }
+        let portable = open_read_only(&portable_database, "archive.export-failed").unwrap();
+        for table in ["generation_jobs", "asset_write_intents", "recovery_points"] {
+            assert_eq!(
+                portable
+                    .query_row(&format!("SELECT count(*) FROM {table}"), [], |row| {
+                        row.get::<_, i64>(0)
+                    })
+                    .unwrap(),
+                0
+            );
+        }
+        assert_eq!(
+            portable
+                .query_row(
+                    "SELECT session_id,clean_shutdown,last_durable_revision,coordinator_epoch,last_observed_wall_ms,updated_at_ms FROM runtime_session WHERE singleton=1",
+                    [],
+                    |row| Ok((row.get::<_,String>(0)?,row.get::<_,i64>(1)?,row.get::<_,i64>(2)?,row.get::<_,i64>(3)?,row.get::<_,i64>(4)?,row.get::<_,i64>(5)?)),
+                )
+                .unwrap(),
+            ("portable-export".to_owned(), 1, 1, 0, 0, 0)
+        );
+        assert_eq!(
+            portable
+                .query_row(
+                    "SELECT owner_kind,owner_id,asset_id FROM asset_references",
+                    [],
+                    |row| Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, String>(2)?,
+                    )),
+                )
+                .unwrap(),
+            (
+                "visual-target".to_owned(),
+                "portable-adopted-master".to_owned(),
+                adopted_asset
+            )
+        );
+
+        let active = open_current_connection(&repository.db_path("save-1")).unwrap();
+        assert_eq!(
+            active
+                .query_row("SELECT count(*) FROM generation_jobs", [], |row| {
+                    row.get::<_, i64>(0)
+                })
+                .unwrap(),
+            1
+        );
+        assert_eq!(
+            active
+                .query_row("SELECT session_id FROM runtime_session", [], |row| {
+                    row.get::<_, String>(0)
+                })
+                .unwrap(),
+            SENTINEL_SESSION
         );
     }
 
@@ -6643,6 +7382,22 @@ mod tests {
                 },
             )
             .unwrap();
+        assert_eq!(
+            repository
+                .store_asset_reference(
+                    "save-1",
+                    AssetReferenceStoreRequest {
+                        owner_kind: "visual-target",
+                        owner_id: "missing-export-master",
+                        bytes: &png,
+                        mime_type: "image/png",
+                        width: 31,
+                        height: 37,
+                    },
+                )
+                .unwrap(),
+            asset_id
+        );
         let asset_path =
             repository.db_path("save-1").parent().unwrap().join(
                 crate::assets::content_addressed_relative_path(&asset_id, "image/png").unwrap(),
@@ -9746,5 +10501,39 @@ mod tests {
         let error = repository.open("save-1").unwrap_err();
         assert!(error.contains("migration.validation-failed"), "{error}");
         assert_eq!(fs::read(repository.db_path("save-1")).unwrap(), before);
+    }
+
+    #[test]
+    #[ignore = "phase 5 accelerated release stress gate"]
+    fn phase5_two_thousand_atomic_commits_reopen_exactly() {
+        let repository = SaveRepository::new(root("phase5-two-thousand-commits"));
+        repository.commit_game(0, game()).unwrap();
+        let mut current = repository.load_game("save-1").unwrap().unwrap();
+        for expected in 1..=2_000_i64 {
+            current["revision"] = json!(expected + 1);
+            current["cashCents"] = json!(1_000_000 + expected);
+            repository.commit_game(expected, current.clone()).unwrap();
+        }
+        let reopened = repository.load_game("save-1").unwrap().unwrap();
+        assert_eq!(reopened["revision"], json!(2_001));
+        assert_eq!(reopened["cashCents"], json!(1_002_000));
+    }
+
+    #[test]
+    fn phase5_visual_assets_accept_only_legacy_paths_or_exact_native_digests() {
+        assert!(valid_visual_asset_path("/visuals/master.png"));
+        assert!(valid_visual_asset_path(&format!(
+            "cloudinn-asset://{}",
+            "a".repeat(64)
+        )));
+        for invalid in [
+            "cloudinn-asset://asset-1".to_owned(),
+            format!("cloudinn-asset://{}", "A".repeat(64)),
+            format!("cloudinn-asset://{}/extra", "a".repeat(64)),
+            "cloudinn-asset://../secret".to_owned(),
+            "/visuals/../secret".to_owned(),
+        ] {
+            assert!(!valid_visual_asset_path(&invalid), "{invalid}");
+        }
     }
 }

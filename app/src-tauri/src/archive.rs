@@ -5,6 +5,8 @@ use crate::save_validation::{validate_asset_registry, validate_single_save_ident
 use rusqlite::{params, Connection, OpenFlags, TransactionBehavior};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
+#[cfg(test)]
+use std::cell::Cell;
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use std::fs::{self, File, OpenOptions};
@@ -28,6 +30,18 @@ const MAX_APPLICATION_VERSION_BYTES: usize = 128;
 const MAX_RULESET_VERSION_BYTES: usize = 128;
 const IMPORT_TOKEN_TTL_MS: i64 = 15 * 60 * 1_000;
 const MAX_COMPRESSION_RATIO: u64 = 100;
+
+#[cfg(test)]
+#[derive(Clone, Copy, Eq, PartialEq)]
+enum ImportPublishFailpoint {
+    FailAfterDatabaseRename,
+    CorruptAfterDatabaseRename,
+}
+
+#[cfg(test)]
+thread_local! {
+    static IMPORT_PUBLISH_FAILPOINT: Cell<Option<ImportPublishFailpoint>> = const { Cell::new(None) };
+}
 
 /// The versioned manifest written as the only metadata entry in a `.cloudinn`
 /// archive.  Payload deliberately excludes `manifest.json` itself.
@@ -222,10 +236,13 @@ pub(crate) fn publish_archive_to_new_destination(
 #[serde(rename_all = "camelCase")]
 pub(crate) struct ImportInspection {
     pub(crate) token: String,
+    pub(crate) archive_version: u32,
     pub(crate) source_save_id: String,
     pub(crate) display_name: String,
     pub(crate) schema_version: u32,
     pub(crate) ruleset_version: String,
+    pub(crate) asset_count: usize,
+    pub(crate) total_bytes: u64,
     pub(crate) archive_sha256: String,
     pub(crate) archive_byte_length: u64,
     pub(crate) expires_at_ms: i64,
@@ -246,6 +263,11 @@ pub(crate) struct ConsumedImport {
 pub(crate) struct ImportedSave {
     pub(crate) save_id: String,
     pub(crate) display_name: String,
+    pub(crate) metadata_revision: i64,
+    pub(crate) game_revision: i64,
+    pub(crate) current_day: i64,
+    pub(crate) room_count: i64,
+    pub(crate) last_played_at_ms: i64,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -308,6 +330,7 @@ impl ArchiveImportService {
         let staging_root = app_root.join("import-staging");
         ensure_plain_directory(app_root)?;
         ensure_plain_directory(&staging_root)?;
+        cleanup_stale_import_staging(&staging_root)?;
         Ok(Self {
             app_root: app_root.to_path_buf(),
             staging_root,
@@ -368,10 +391,13 @@ impl ArchiveImportService {
                 .insert(token.clone(), staged);
             Ok(ImportInspection {
                 token,
+                archive_version: manifest.format_version,
                 source_save_id: manifest.source_save_id,
                 display_name: manifest.display_name,
                 schema_version: manifest.schema_version,
                 ruleset_version: manifest.ruleset_version,
+                asset_count: manifest.referenced_assets.len(),
+                total_bytes: manifest.payload.iter().map(|entry| entry.byte_length).sum(),
                 archive_sha256: sha256,
                 archive_byte_length: byte_length,
                 expires_at_ms,
@@ -422,6 +448,7 @@ impl ArchiveImportService {
             if manifest != staged.manifest {
                 return Err(ArchiveImportError::IntegrityMismatch);
             }
+            validate_extracted_payloads(&manifest, &staged.extracted_save_directory)?;
             validate_imported_database(&manifest, &staged.extracted_save_directory)?;
             Ok(ConsumedImport {
                 manifest,
@@ -463,6 +490,11 @@ impl ArchiveImportService {
             &chosen_name,
             now_ms,
         )?;
+        let imported_summary = read_imported_summary(
+            &consumed.extracted_save_directory,
+            &new_save_id,
+            &chosen_name,
+        )?;
 
         let saves_root = self.app_root.join("saves");
         ensure_plain_directory(&saves_root)?;
@@ -480,17 +512,27 @@ impl ArchiveImportService {
             &new_save_id,
         );
         if let Err(error) = result {
-            let _ = fs::remove_dir(&destination);
-            return Err(error);
+            // The database is intentionally published last. If a later sync
+            // or validation reports an error, the new save may nevertheless
+            // already be complete. Return success for that durable semantic
+            // outcome instead of exposing a save while reporting failure.
+            // Any genuinely invalid outcome is atomically moved out of the
+            // discoverable `saves` namespace before the error is returned.
+            if validate_published_import(&destination, &new_save_id).is_err() {
+                quarantine_failed_import(&self.app_root, &destination, &new_save_id);
+                cleanup_consumed_import(&consumed.extracted_save_directory);
+                return Err(error);
+            }
         }
-        if let Some(token_directory) = consumed.extracted_save_directory.parent() {
-            let _ = fs::remove_file(token_directory.join("package.cloudinn"));
-            let _ = fs::remove_dir(&consumed.extracted_save_directory);
-            let _ = fs::remove_dir(token_directory);
-        }
+        cleanup_consumed_import(&consumed.extracted_save_directory);
         Ok(ImportedSave {
             save_id: new_save_id,
             display_name: chosen_name,
+            metadata_revision: imported_summary.0,
+            game_revision: imported_summary.1,
+            current_day: imported_summary.2,
+            room_count: imported_summary.3,
+            last_played_at_ms: imported_summary.4,
         })
     }
 
@@ -510,6 +552,32 @@ impl ArchiveImportService {
             }
         }
     }
+}
+
+fn cleanup_stale_import_staging(staging_root: &Path) -> Result<(), ArchiveImportError> {
+    let mut changed = false;
+    for entry in fs::read_dir(staging_root).map_err(|_| ArchiveImportError::Io)? {
+        let entry = entry.map_err(|_| ArchiveImportError::Io)?;
+        let Some(name) = entry.file_name().to_str().map(str::to_owned) else {
+            continue;
+        };
+        let Ok(id) = uuid::Uuid::parse_str(&name) else {
+            continue;
+        };
+        if id.to_string() != name {
+            continue;
+        }
+        let metadata = fs::symlink_metadata(entry.path()).map_err(|_| ArchiveImportError::Io)?;
+        if metadata.file_type().is_symlink() || !metadata.is_dir() {
+            continue;
+        }
+        fs::remove_dir_all(entry.path()).map_err(|_| ArchiveImportError::Io)?;
+        changed = true;
+    }
+    if changed {
+        sync_directory_import(staging_root)?;
+    }
+    Ok(())
 }
 
 fn ensure_plain_directory(path: &Path) -> Result<(), ArchiveImportError> {
@@ -794,6 +862,7 @@ fn validate_imported_database(
     save_directory: &Path,
 ) -> Result<(), ArchiveImportError> {
     let database_path = save_directory.join("save.sqlite3");
+    reject_import_database_sidecars(&database_path)?;
     let connection = Connection::open_with_flags(
         &database_path,
         OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
@@ -823,7 +892,139 @@ fn validate_imported_database(
         return Err(ArchiveImportError::InvalidDatabase);
     }
     validate_manifest_assets_against_database(&connection, manifest)?;
+    drop(connection);
+    cleanup_import_database_sidecars(&database_path)
+}
+
+fn import_database_sidecars(database_path: &Path) -> [PathBuf; 3] {
+    ["-wal", "-shm", "-journal"].map(|suffix| {
+        let mut path = database_path.as_os_str().to_os_string();
+        path.push(suffix);
+        PathBuf::from(path)
+    })
+}
+
+fn reject_import_database_sidecars(database_path: &Path) -> Result<(), ArchiveImportError> {
+    if import_database_sidecars(database_path)
+        .iter()
+        .any(|path| fs::symlink_metadata(path).is_ok())
+    {
+        Err(ArchiveImportError::IntegrityMismatch)
+    } else {
+        Ok(())
+    }
+}
+
+fn cleanup_import_database_sidecars(database_path: &Path) -> Result<(), ArchiveImportError> {
+    for path in import_database_sidecars(database_path) {
+        match fs::remove_file(path) {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(_) => return Err(ArchiveImportError::Io),
+        }
+    }
     Ok(())
+}
+
+fn validate_extracted_payloads(
+    manifest: &ArchiveManifest,
+    save_directory: &Path,
+) -> Result<(), ArchiveImportError> {
+    let mut expected = BTreeSet::new();
+    for record in &manifest.payload {
+        let relative = if record.path == DATABASE_PATH {
+            "save.sqlite3"
+        } else {
+            record.path.as_str()
+        };
+        expected.insert(relative.to_owned());
+        let path = save_directory.join(relative);
+        let metadata =
+            fs::symlink_metadata(&path).map_err(|_| ArchiveImportError::IntegrityMismatch)?;
+        if metadata.file_type().is_symlink()
+            || !metadata.is_file()
+            || metadata.len() != record.byte_length
+            || sha256_file_import(&path)? != record.sha256
+        {
+            return Err(ArchiveImportError::IntegrityMismatch);
+        }
+    }
+    let mut actual = BTreeSet::new();
+    collect_extracted_files(save_directory, save_directory, &mut actual)?;
+    if actual != expected {
+        return Err(ArchiveImportError::IntegrityMismatch);
+    }
+    Ok(())
+}
+
+fn collect_extracted_files(
+    root: &Path,
+    directory: &Path,
+    output: &mut BTreeSet<String>,
+) -> Result<(), ArchiveImportError> {
+    for entry in fs::read_dir(directory).map_err(|_| ArchiveImportError::IntegrityMismatch)? {
+        let entry = entry.map_err(|_| ArchiveImportError::IntegrityMismatch)?;
+        let file_type = entry
+            .file_type()
+            .map_err(|_| ArchiveImportError::IntegrityMismatch)?;
+        if file_type.is_symlink() {
+            return Err(ArchiveImportError::IntegrityMismatch);
+        }
+        if file_type.is_dir() {
+            collect_extracted_files(root, &entry.path(), output)?;
+        } else if file_type.is_file() {
+            let relative = entry
+                .path()
+                .strip_prefix(root)
+                .map_err(|_| ArchiveImportError::IntegrityMismatch)?
+                .to_str()
+                .ok_or(ArchiveImportError::IntegrityMismatch)?
+                .replace(std::path::MAIN_SEPARATOR, "/");
+            if !output.insert(relative) {
+                return Err(ArchiveImportError::IntegrityMismatch);
+            }
+        } else {
+            return Err(ArchiveImportError::IntegrityMismatch);
+        }
+    }
+    Ok(())
+}
+
+fn read_imported_summary(
+    save_directory: &Path,
+    save_id: &str,
+    expected_display_name: &str,
+) -> Result<(i64, i64, i64, i64, i64), ArchiveImportError> {
+    let connection = Connection::open_with_flags(
+        save_directory.join("save.sqlite3"),
+        OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
+    )
+    .map_err(|_| ArchiveImportError::InvalidDatabase)?;
+    let summary = connection
+        .query_row(
+            "SELECT metadata.display_name,metadata.metadata_revision,saves.revision,
+                    saves.current_day,
+                    (SELECT count(*) FROM room_instances WHERE save_id=saves.save_id),
+                    MAX(metadata.created_at_ms,metadata.renamed_at_ms)
+             FROM saves JOIN save_metadata AS metadata USING(save_id)
+             WHERE saves.save_id=?1",
+            [save_id],
+            |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, i64>(1)?,
+                    row.get::<_, i64>(2)?,
+                    row.get::<_, i64>(3)?,
+                    row.get::<_, i64>(4)?,
+                    row.get::<_, i64>(5)?,
+                ))
+            },
+        )
+        .map_err(|_| ArchiveImportError::InvalidDatabase)?;
+    if summary.0 != expected_display_name {
+        return Err(ArchiveImportError::InvalidDatabase);
+    }
+    Ok((summary.1, summary.2, summary.3, summary.4, summary.5))
 }
 
 fn validate_manifest_assets_against_database(
@@ -1080,8 +1281,19 @@ fn publish_import_payload(
         fs::rename(&assets, destination.join("assets")).map_err(|_| ArchiveImportError::Io)?;
     }
     let database = staging.join("save.sqlite3");
-    fs::rename(&database, destination.join("save.sqlite3")).map_err(|_| ArchiveImportError::Io)?;
+    let published_database = destination.join("save.sqlite3");
+    fs::rename(&database, &published_database).map_err(|_| ArchiveImportError::Io)?;
+    import_publish_failpoint(&published_database)?;
     sync_directory_import(destination)?;
+    validate_published_import(destination, new_save_id)?;
+    let parent = destination.parent().ok_or(ArchiveImportError::Io)?;
+    sync_directory_import(parent)
+}
+
+fn validate_published_import(
+    destination: &Path,
+    new_save_id: &str,
+) -> Result<(), ArchiveImportError> {
     let connection = Connection::open_with_flags(
         destination.join("save.sqlite3"),
         OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
@@ -1094,9 +1306,51 @@ fn publish_import_payload(
     validate_single_save_identity(&connection, new_save_id, false)
         .map_err(|_| ArchiveImportError::InvalidDatabase)?;
     validate_asset_registry(&connection, destination)
-        .map_err(|_| ArchiveImportError::InvalidDatabase)?;
-    let parent = destination.parent().ok_or(ArchiveImportError::Io)?;
-    sync_directory_import(parent)
+        .map_err(|_| ArchiveImportError::InvalidDatabase)
+}
+
+fn quarantine_failed_import(app_root: &Path, destination: &Path, new_save_id: &str) {
+    let quarantine_root = app_root.join("import-quarantine");
+    if ensure_plain_directory(&quarantine_root).is_ok() {
+        let quarantined = quarantine_root.join(format!("{new_save_id}-{}", uuid::Uuid::new_v4()));
+        if fs::rename(destination, quarantined).is_ok() {
+            let _ = sync_directory_import(&quarantine_root);
+            if let Some(saves_root) = destination.parent() {
+                let _ = sync_directory_import(saves_root);
+            }
+            return;
+        }
+    }
+    // The destination was created by this import under a fresh UUID. If the
+    // same-filesystem quarantine rename is unavailable, deletion is the only
+    // safe fallback that keeps an invalid save out of discovery.
+    let _ = fs::remove_dir_all(destination);
+}
+
+fn cleanup_consumed_import(extracted_save_directory: &Path) {
+    if let Some(token_directory) = extracted_save_directory.parent() {
+        let _ = fs::remove_file(token_directory.join("package.cloudinn"));
+        let _ = fs::remove_dir(extracted_save_directory);
+        let _ = fs::remove_dir(token_directory);
+    }
+}
+
+#[cfg(not(test))]
+fn import_publish_failpoint(_database: &Path) -> Result<(), ArchiveImportError> {
+    Ok(())
+}
+
+#[cfg(test)]
+fn import_publish_failpoint(database: &Path) -> Result<(), ArchiveImportError> {
+    IMPORT_PUBLISH_FAILPOINT.with(|failpoint| match failpoint.take() {
+        Some(ImportPublishFailpoint::FailAfterDatabaseRename) => Err(ArchiveImportError::Io),
+        Some(ImportPublishFailpoint::CorruptAfterDatabaseRename) => {
+            fs::write(database, b"corrupt imported database")
+                .map_err(|_| ArchiveImportError::Io)?;
+            Err(ArchiveImportError::InvalidDatabase)
+        }
+        None => Ok(()),
+    })
 }
 
 fn sync_directory_import(path: &Path) -> Result<(), ArchiveImportError> {
@@ -1896,6 +2150,75 @@ mod tests {
             Connection::open(imported_directory.join("save.sqlite3")).unwrap();
         validate_current_save_database(&imported_connection).unwrap();
         validate_single_save_identity(&imported_connection, &imported.save_id, false).unwrap();
+        let persisted_summary = imported_connection
+            .query_row(
+                "SELECT metadata.metadata_revision,saves.revision,saves.current_day,
+                        (SELECT count(*) FROM room_instances WHERE save_id=saves.save_id),
+                        MAX(metadata.created_at_ms,metadata.renamed_at_ms)
+                 FROM saves JOIN save_metadata AS metadata USING(save_id)
+                 WHERE saves.save_id=?1",
+                [&imported.save_id],
+                |row| {
+                    Ok((
+                        row.get::<_, i64>(0)?,
+                        row.get::<_, i64>(1)?,
+                        row.get::<_, i64>(2)?,
+                        row.get::<_, i64>(3)?,
+                        row.get::<_, i64>(4)?,
+                    ))
+                },
+            )
+            .unwrap();
+        assert_eq!(
+            (
+                imported.metadata_revision,
+                imported.game_revision,
+                imported.current_day,
+                imported.room_count,
+                imported.last_played_at_ms,
+            ),
+            persisted_summary
+        );
+
+        // A failure after the database rename must resolve to success when the
+        // published save is already complete and strictly valid.
+        let post_rename = service.inspect_import(&archive.path, 2_100).unwrap();
+        let post_rename = service.consume_import(&post_rename.token, 2_101).unwrap();
+        IMPORT_PUBLISH_FAILPOINT.with(|failpoint| {
+            failpoint.set(Some(ImportPublishFailpoint::FailAfterDatabaseRename));
+        });
+        let recovered_success = service
+            .import_as_new_save(post_rename, Some("同步错误后的完整副本"), 2_102)
+            .unwrap();
+        let recovered_directory = app_root.join("saves").join(&recovered_success.save_id);
+        validate_published_import(&recovered_directory, &recovered_success.save_id).unwrap();
+
+        // A genuinely invalid post-rename payload must return failure only
+        // after the fresh UUID directory is no longer discoverable as a save.
+        let save_count_before_failure = fs::read_dir(&saves_root).unwrap().count();
+        let corrupted = service.inspect_import(&archive.path, 2_200).unwrap();
+        let corrupted = service.consume_import(&corrupted.token, 2_201).unwrap();
+        IMPORT_PUBLISH_FAILPOINT.with(|failpoint| {
+            failpoint.set(Some(ImportPublishFailpoint::CorruptAfterDatabaseRename));
+        });
+        assert_eq!(
+            service.import_as_new_save(corrupted, Some("损坏副本"), 2_202),
+            Err(ArchiveImportError::InvalidDatabase)
+        );
+        assert_eq!(
+            fs::read_dir(&saves_root).unwrap().count(),
+            save_count_before_failure
+        );
+        let quarantine_root = app_root.join("import-quarantine");
+        let quarantined = fs::read_dir(&quarantine_root)
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+        assert_eq!(quarantined.len(), 1);
+        assert_eq!(
+            fs::read(quarantined[0].path().join("save.sqlite3")).unwrap(),
+            b"corrupt imported database"
+        );
         assert_eq!(
             service.consume_import(&inspection.token, 2_001),
             Err(ArchiveImportError::InvalidToken)
@@ -1928,6 +2251,58 @@ mod tests {
         assert_eq!(
             service.consume_import(&tampered.token, 20_001),
             Err(ArchiveImportError::IntegrityMismatch)
+        );
+
+        let extracted_tamper = service.inspect_import(&archive.path, 30_000).unwrap();
+        let extracted_database = service
+            .inspections
+            .lock()
+            .unwrap()
+            .get(&extracted_tamper.token)
+            .unwrap()
+            .extracted_save_directory
+            .join("save.sqlite3");
+        let mut bytes = fs::read(&extracted_database).unwrap();
+        bytes.push(0);
+        fs::write(&extracted_database, bytes).unwrap();
+        assert_eq!(
+            service.consume_import(&extracted_tamper.token, 30_001),
+            Err(ArchiveImportError::IntegrityMismatch)
+        );
+
+        let unexpected_payload = service.inspect_import(&archive.path, 31_000).unwrap();
+        let extracted_root = service
+            .inspections
+            .lock()
+            .unwrap()
+            .get(&unexpected_payload.token)
+            .unwrap()
+            .extracted_save_directory
+            .clone();
+        fs::write(extracted_root.join("unexpected"), b"not declared").unwrap();
+        assert_eq!(
+            service.consume_import(&unexpected_payload.token, 31_001),
+            Err(ArchiveImportError::IntegrityMismatch)
+        );
+    }
+
+    #[test]
+    fn startup_removes_only_owned_stale_import_directories() {
+        let root = test_directory();
+        let app_root = root.0.join("app-root");
+        let staging = app_root.join("import-staging");
+        fs::create_dir_all(&staging).unwrap();
+        let stale_id = uuid::Uuid::new_v4().to_string();
+        fs::create_dir(staging.join(&stale_id)).unwrap();
+        fs::write(staging.join(&stale_id).join("package.cloudinn"), b"secret").unwrap();
+        fs::create_dir(staging.join("keep-unowned")).unwrap();
+        fs::write(staging.join("keep-unowned").join("note"), b"keep").unwrap();
+
+        let _service = ArchiveImportService::new(&app_root).unwrap();
+        assert!(!staging.join(stale_id).exists());
+        assert_eq!(
+            fs::read(staging.join("keep-unowned").join("note")).unwrap(),
+            b"keep"
         );
     }
 

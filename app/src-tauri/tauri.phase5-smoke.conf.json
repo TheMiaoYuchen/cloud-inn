@@ -1,0 +1,8 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "Cloud Inn Phase 5 Smoke",
+  "identifier": "com.cloudinn.game.phase5-smoke",
+  "bundle": {
+    "active": false
+  }
+}

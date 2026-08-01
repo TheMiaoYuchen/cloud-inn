@@ -24,6 +24,10 @@ impl ProviderTokenStatus {
     fn new(state: ProviderCredentialState) -> Self {
         Self { state }
     }
+
+    pub(crate) const fn state(self) -> ProviderCredentialState {
+        self.state
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -98,6 +102,10 @@ impl SecretToken {
     fn as_bytes(&self) -> &[u8] {
         self.0.as_bytes()
     }
+
+    pub(crate) fn expose_for_native_provider(&self) -> &str {
+        &self.0
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -115,6 +123,7 @@ pub(crate) enum StoreProbe {
 
 pub(crate) trait CredentialStore: Send + Sync + 'static {
     fn probe(&self, scope: &KeychainScope) -> Result<StoreProbe, StoreFailure>;
+    fn get(&self, scope: &KeychainScope) -> Result<Option<SecretToken>, StoreFailure>;
     fn set(&self, scope: &KeychainScope, token: &SecretToken) -> Result<(), StoreFailure>;
     fn delete(&self, scope: &KeychainScope) -> Result<bool, StoreFailure>;
 }
@@ -149,6 +158,10 @@ impl<S: CredentialStore> KeychainService<S> {
     pub fn delete_token(&self) -> Result<ProviderTokenStatus, SafeError> {
         self.store.delete(&self.scope).map_err(store_error)?;
         Ok(ProviderTokenStatus::new(ProviderCredentialState::Missing))
+    }
+
+    pub(crate) fn read_token_for_native_provider(&self) -> Result<Option<SecretToken>, SafeError> {
+        self.store.get(&self.scope).map_err(store_error)
     }
 }
 
@@ -208,6 +221,19 @@ mod platform {
             }
         }
 
+        fn get(&self, scope: &KeychainScope) -> Result<Option<SecretToken>, StoreFailure> {
+            match generic_password(lookup_options(scope)) {
+                Ok(bytes) => {
+                    let value = String::from_utf8(bytes).map_err(|_| StoreFailure::Unavailable)?;
+                    SecretToken::parse(value)
+                        .map(Some)
+                        .map_err(|_| StoreFailure::Unavailable)
+                }
+                Err(error) if error.code() == ERR_SEC_ITEM_NOT_FOUND => Ok(None),
+                Err(error) => Err(map_security_error(error)),
+            }
+        }
+
         fn set(&self, scope: &KeychainScope, token: &SecretToken) -> Result<(), StoreFailure> {
             let mut options = lookup_options(scope);
             let access_control = SecAccessControl::create_with_protection(
@@ -260,6 +286,10 @@ mod platform {
 #[cfg(not(target_os = "macos"))]
 impl CredentialStore for PlatformCredentialStore {
     fn probe(&self, _scope: &KeychainScope) -> Result<StoreProbe, StoreFailure> {
+        Err(StoreFailure::Unavailable)
+    }
+
+    fn get(&self, _scope: &KeychainScope) -> Result<Option<SecretToken>, StoreFailure> {
         Err(StoreFailure::Unavailable)
     }
 
@@ -319,6 +349,24 @@ mod tests {
             } else {
                 StoreProbe::Missing
             })
+        }
+
+        fn get(&self, _scope: &KeychainScope) -> Result<Option<SecretToken>, StoreFailure> {
+            let state = self.state.lock().unwrap();
+            if let Some(failure) = state.failure {
+                return Err(failure);
+            }
+            state
+                .token
+                .as_ref()
+                .map(|token| {
+                    String::from_utf8(token.to_vec())
+                        .map_err(|_| StoreFailure::Unavailable)
+                        .and_then(|value| {
+                            SecretToken::parse(value).map_err(|_| StoreFailure::Unavailable)
+                        })
+                })
+                .transpose()
         }
 
         fn set(&self, _scope: &KeychainScope, token: &SecretToken) -> Result<(), StoreFailure> {
@@ -412,6 +460,16 @@ mod tests {
             service.store.token_bytes().unwrap(),
             maximum.as_bytes().to_vec()
         );
+    }
+
+    #[test]
+    fn native_provider_can_read_a_zeroizing_token_without_changing_public_status() {
+        let service = service();
+        assert!(service.read_token_for_native_provider().unwrap().is_none());
+        service.set_token("native-only-token".into()).unwrap();
+        let token = service.read_token_for_native_provider().unwrap().unwrap();
+        assert_eq!(token.expose_for_native_provider(), "native-only-token");
+        assert_eq!(service.status().state, ProviderCredentialState::Available);
     }
 
     #[test]

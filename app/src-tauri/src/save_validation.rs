@@ -178,6 +178,18 @@ pub(crate) fn validate_asset_registry(
     connection: &Connection,
     save_dir: &Path,
 ) -> Result<(), SaveValidationError> {
+    validate_asset_registry_inner(connection, Some(save_dir))
+}
+
+#[allow(dead_code)]
+pub(crate) fn validate_asset_catalog(connection: &Connection) -> Result<(), SaveValidationError> {
+    validate_asset_registry_inner(connection, None)
+}
+
+fn validate_asset_registry_inner(
+    connection: &Connection,
+    save_dir: Option<&Path>,
+) -> Result<(), SaveValidationError> {
     let mut statement = connection
         .prepare(
             "SELECT relative_path,sha256,mime_type,byte_length,width,height
@@ -216,7 +228,10 @@ struct AssetRecord {
     height: i64,
 }
 
-fn validate_asset_record(save_dir: &Path, record: &AssetRecord) -> Result<(), SaveValidationError> {
+fn validate_asset_record(
+    save_dir: Option<&Path>,
+    record: &AssetRecord,
+) -> Result<(), SaveValidationError> {
     if record.sha256.len() != 64
         || !record
             .sha256
@@ -251,6 +266,10 @@ fn validate_asset_record(save_dir: &Path, record: &AssetRecord) -> Result<(), Sa
     {
         return Err(SaveValidationError::AssetRegistry);
     }
+
+    let Some(save_dir) = save_dir else {
+        return Ok(());
+    };
 
     let assets_dir = save_dir.join("assets");
     let hash_dir = assets_dir.join("sha256");
