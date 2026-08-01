@@ -1,4 +1,7 @@
 import { expect, test } from "@playwright/test";
+import { ensureBrowserSave } from "./reliabilitySetup";
+
+test.beforeEach(async ({ page }) => ensureBrowserSave(page));
 
 test("completes the prototype hotel loop from design through day two", async ({ page }) => {
   test.setTimeout(120_000);

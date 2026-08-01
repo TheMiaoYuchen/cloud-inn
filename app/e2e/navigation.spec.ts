@@ -1,4 +1,7 @@
 import { expect, test } from "@playwright/test";
+import { ensureBrowserSave } from "./reliabilitySetup";
+
+test.beforeEach(async ({ page }) => ensureBrowserSave(page));
 
 test("opens the Pixi floor canvas and returns home", async ({ page }) => {
   await page.goto("/");

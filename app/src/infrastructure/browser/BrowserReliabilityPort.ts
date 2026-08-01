@@ -170,11 +170,20 @@ export class BrowserReliabilityPort implements ReliabilityPort {
       const key = window.localStorage.key(index);
       if (!key?.startsWith(SAVE_PREFIX)) continue;
       const saveId = key.slice(SAVE_PREFIX.length);
-      const metadata = getMetadata(saveId);
-      if (!metadata) continue;
+      let metadata = getMetadata(saveId);
       try {
         const game = await this.savePort.load(saveId);
         if (!game) continue;
+        if (!metadata) {
+          const nowMs = this.now();
+          metadata = {
+            displayName: saveId === "save-1" ? "Cloud Inn" : saveId,
+            metadataRevision: 0,
+            createdAtMs: nowMs,
+            renamedAtMs: nowMs,
+          };
+          window.localStorage.setItem(`${METADATA_PREFIX}${saveId}`, JSON.stringify(metadata));
+        }
         summaries.push({ saveId, displayName: metadata.displayName, metadataRevision: metadata.metadataRevision,
           gameRevision: game.revision, currentDay: game.currentDay, roomCount: game.floor.rooms.length,
           schemaHealthy: true, recoveryAvailable: false, lastPlayedAtMs: Math.max(metadata.createdAtMs, metadata.renamedAtMs) });

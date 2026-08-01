@@ -1,10 +1,15 @@
 import { expect, test } from "@playwright/test";
+import { ensureBrowserSave } from "./reliabilitySetup";
+
+test.beforeEach(async ({ page }) => {
+  await page.addInitScript(() => localStorage.setItem("cloud-inn:e2e-day-ms", "500"));
+  await ensureBrowserSave(page);
+});
 
 test.describe("Phase 3 operations acceptance", () => {
   test.setTimeout(120_000);
   test("runs the browser closed loop through the 30-day close and restores it", async ({ page: initialPage }) => {
     let page = initialPage;
-    await page.addInitScript(() => localStorage.setItem("cloud-inn:e2e-day-ms", "500"));
     await page.goto("/#/design");
 
     // Build a Phase 2 hotel using the same accessible controls a desktop user sees.
@@ -59,14 +64,14 @@ test.describe("Phase 3 operations acceptance", () => {
 
     // Rewind only the persisted checkpoint; the application performs real bounded catch-up on reload.
     await page.evaluate(() => {
-      const key = "cloud-inn:save:save-1";
+      const key = Object.keys(localStorage).find((candidate) => candidate.startsWith("cloud-inn:save:"))!;
       const saved = JSON.parse(localStorage.getItem(key)!);
       saved.game.operations.lastOfflineCheckpointMs = Date.now() - 20 * 500;
       localStorage.setItem(key, JSON.stringify(saved));
     });
     await page.waitForTimeout(200);
     await page.evaluate(() => {
-      const key = "cloud-inn:save:save-1";
+      const key = Object.keys(localStorage).find((candidate) => candidate.startsWith("cloud-inn:save:"))!;
       const saved = JSON.parse(localStorage.getItem(key)!);
       saved.game.operations.lastOfflineCheckpointMs = Date.now() - 20 * 500;
       localStorage.setItem(key, JSON.stringify(saved));

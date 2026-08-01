@@ -7,6 +7,7 @@ import type {
 } from "../../domain/reliability/reliabilityTypes";
 import { LocalStorageSavePort } from "./LocalStorageSavePort";
 import { BrowserReliabilityPort } from "./BrowserReliabilityPort";
+import { createNewGame } from "../../domain/game/state";
 
 function fakeLocks(): LockManager {
   return {
@@ -32,6 +33,17 @@ function replaceStoredJob(
 
 describe("BrowserReliabilityPort visual reliability adapter", () => {
   beforeEach(() => window.localStorage.clear());
+
+  it("discovers a legacy browser save and adds only reliability metadata", async () => {
+    const savePort = new LocalStorageSavePort(fakeLocks());
+    await savePort.commit(0, { ...createNewGame("save-1"), revision: 1 });
+    const port = new BrowserReliabilityPort(savePort, () => 1234);
+
+    await expect(port.listSaves()).resolves.toMatchObject([
+      { saveId: "save-1", displayName: "Cloud Inn", gameRevision: 1 },
+    ]);
+    expect(window.localStorage.getItem("cloud-inn:save-metadata:save-1")).not.toBeNull();
+  });
 
   it("persists narrow provider preferences with revision CAS and derived fields", async () => {
     let nowMs = 5 * 86_400_000 + 12;

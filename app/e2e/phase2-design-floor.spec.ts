@@ -1,4 +1,7 @@
 import { expect, test } from '@playwright/test';
+import { ensureBrowserSave } from './reliabilitySetup';
+
+test.beforeEach(async ({ page }) => ensureBrowserSave(page));
 
 test('persists the phase two loop through selective sync, placement, and route reload', async ({page}) => {
   await page.goto('/#/design');
