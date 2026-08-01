@@ -36,6 +36,47 @@ fn delete_provider_token(
     service.delete_token()
 }
 
+fn current_time_ms() -> Result<i64, redaction::SafeError> {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_err(|_| redaction::SafeError::new("provider.control-invalid", "系统时间无效"))?
+        .as_millis()
+        .try_into()
+        .map_err(|_| redaction::SafeError::new("provider.control-invalid", "系统时间无效"))
+}
+
+#[tauri::command]
+fn get_provider_preferences(
+    app: tauri::AppHandle,
+) -> Result<provider_control::ProviderPreferencesProjection, redaction::SafeError> {
+    use tauri::Manager;
+    let root = app
+        .path()
+        .app_data_dir()
+        .map_err(|_| redaction::app_storage_error())?;
+    let now_ms = current_time_ms()?;
+    let store = provider_control::ProviderControlStore::new(root);
+    drop(store.bootstrap(now_ms)?);
+    store.get_preferences(now_ms)
+}
+
+#[tauri::command]
+fn update_provider_preferences(
+    app: tauri::AppHandle,
+    expected_revision: i64,
+    preferences: provider_control::WritableProviderPreferences,
+) -> Result<provider_control::ProviderPreferencesProjection, redaction::SafeError> {
+    use tauri::Manager;
+    let root = app
+        .path()
+        .app_data_dir()
+        .map_err(|_| redaction::app_storage_error())?;
+    let now_ms = current_time_ms()?;
+    let store = provider_control::ProviderControlStore::new(root);
+    drop(store.bootstrap(now_ms)?);
+    store.update_preferences(expected_revision, preferences, now_ms)
+}
+
 #[tauri::command]
 fn load_game(
     app: tauri::AppHandle,
@@ -144,7 +185,9 @@ pub fn run() {
             list_recovery_points,
             provider_token_status,
             set_provider_token,
-            delete_provider_token
+            delete_provider_token,
+            get_provider_preferences,
+            update_provider_preferences
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
