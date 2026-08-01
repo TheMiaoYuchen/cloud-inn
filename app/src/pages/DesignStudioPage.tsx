@@ -6,6 +6,12 @@ import { useReliability } from "../state/ReliabilityProvider";
 
 const FINAL_STATUSES = new Set(["adopted", "superseded", "failed-terminal", "cancelled"]);
 
+async function visualTargetFingerprint(value: unknown): Promise<string> {
+  const bytes = new TextEncoder().encode(JSON.stringify(value));
+  const digest = await crypto.subtle.digest("SHA-256", bytes);
+  return Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, "0")).join("");
+}
+
 function JobAsset({ asset }: { asset: AssetMetadata | null }) {
   const [missing, setMissing] = useState(false);
   if (!asset || missing) return <div className="missing-asset" role="img" aria-label="效果图文件缺失"><strong>效果图不可用</strong><span>文件缺失或校验失败。请前往存档管理选择恢复点。</span></div>;
@@ -49,8 +55,14 @@ export function DesignStudioPage() {
     const form = new FormData(event.currentTarget);
     const targetKind = form.get("targetKind") === "focus" ? "focus" : "master";
     const resolution = form.get("resolution") === "1k" ? "1k" : form.get("resolution") === "4k" ? "4k" : "2k";
-    const targetFingerprint = `${state.saveId}:${state.revision}:${targetKind}`;
     void run(async () => {
+      const targetFingerprint = await visualTargetFingerprint({
+        saveId: state.saveId,
+        revision: state.revision,
+        targetKind,
+        roomBlueprint: state.roomBlueprint,
+        phase4: state.phase4,
+      });
       await port.enqueueVisualJob({
         saveId: activeSaveId,
         expectedRevision: state.revision,
@@ -102,4 +114,3 @@ export function DesignStudioPage() {
     </main>
   );
 }
-
