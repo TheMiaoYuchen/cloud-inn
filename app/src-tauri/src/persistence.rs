@@ -1,3 +1,7 @@
+use crate::archive::{
+    ArchiveAssetMetadata, ArchiveManifest, ArchivePayloadFile, ArchivePayloadRecord,
+    TemporaryArchive, ARCHIVE_FORMAT_VERSION,
+};
 use crate::assets::{validate_stored_asset_path, AssetStore, StoredAsset};
 use crate::cross_database_validation::validate_issued_grants_for_save;
 use crate::provider_control::ProviderControlStore;
@@ -38,6 +42,12 @@ pub struct SaveSummary {
     last_played_at_ms: i64,
 }
 
+impl SaveSummary {
+    pub(crate) fn save_id(&self) -> &str {
+        &self.save_id
+    }
+}
+
 /// A player-visible recovery point. Package paths and checksums deliberately
 /// remain private; callers can only act on the opaque recovery identifier.
 #[derive(Clone, Debug, Serialize)]
@@ -55,6 +65,16 @@ pub struct RecoveryPointSummary {
 pub struct RestoreRecoveryResult {
     save_id: String,
     revision: i64,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct PreparedSaveExport {
+    pub(crate) archive: TemporaryArchive,
+    pub(crate) suggested_filename: String,
+    pub(crate) source_save_id: String,
+    pub(crate) display_name: String,
+    pub(crate) schema_version: u32,
+    pub(crate) ruleset_version: String,
 }
 
 /// Native-only input for publishing one generated image and attaching it to a
@@ -254,6 +274,120 @@ impl SaveRepository {
         let prepared = self.prepare_save_database(save_id)?;
         let connection = open_read_only(&prepared.path, "recovery.corrupt")?;
         read_ready_recovery_points(&connection)
+    }
+
+    /// Freezes one internally consistent export while the per-save lock is
+    /// held. The returned archive is app-owned; callers may only publish it
+    /// through the native no-clobber archive boundary after a save dialog.
+    pub(crate) fn prepare_save_export(
+        &self,
+        save_id: &str,
+    ) -> Result<PreparedSaveExport, SafeError> {
+        validate_save_id(save_id).map_err(|_| SafeError::new("save.invalid-id", "存档标识无效"))?;
+        let prepared = self.prepare_save_database(save_id)?;
+        let export_root = self.root.join("export-staging");
+        ensure_export_directory(&export_root)?;
+        let staging = export_root.join(format!("snapshot-{}", Uuid::new_v4()));
+        fs::create_dir(&staging).map_err(|_| archive_export_failed())?;
+        let mut staging_guard = OwnedDirectory::new(staging.clone());
+        let database_path = staging.join("save").join("save.sqlite3");
+        fs::create_dir(staging.join("save")).map_err(|_| archive_export_failed())?;
+        online_backup_with_error(&prepared.path, &database_path, archive_export_failed)?;
+
+        let frozen = Connection::open(&database_path).map_err(|_| archive_export_failed())?;
+        configure_migration_connection(&frozen).map_err(|_| archive_export_failed())?;
+        validate_current_save_database(&frozen).map_err(|_| archive_export_failed())?;
+        validate_single_save_identity(&frozen, save_id, false)
+            .map_err(|_| archive_export_failed())?;
+        frozen
+            .execute(
+                "DELETE FROM assets
+                 WHERE NOT EXISTS(
+                   SELECT 1 FROM asset_references
+                   WHERE asset_references.asset_id=assets.asset_id
+                 )",
+                [],
+            )
+            .map_err(|_| archive_export_failed())?;
+        let export_metadata = read_export_metadata(&frozen, save_id)?;
+        let assets = read_export_assets(&frozen)?;
+        make_single_file_durable(&frozen, &database_path).map_err(|_| archive_export_failed())?;
+        drop(frozen);
+        sync_file(&database_path).map_err(|_| archive_export_failed())?;
+
+        let save_directory = prepared.path.parent().ok_or_else(archive_export_failed)?;
+        let mut payload_files = Vec::with_capacity(assets.len() + 1);
+        let mut payload = Vec::with_capacity(assets.len() + 1);
+        let database_length = fs::metadata(&database_path)
+            .map_err(|_| archive_export_failed())?
+            .len();
+        payload.push(ArchivePayloadRecord {
+            path: "save/save.sqlite3".to_owned(),
+            sha256: sha256_file(&database_path).map_err(|_| archive_export_failed())?,
+            byte_length: database_length,
+        });
+        payload_files.push(ArchivePayloadFile {
+            archive_path: "save/save.sqlite3".to_owned(),
+            source_path: database_path,
+        });
+
+        let mut referenced_assets = Vec::with_capacity(assets.len());
+        for asset in assets {
+            let source = save_directory.join(&asset.relative_path);
+            let destination = staging.join(&asset.relative_path);
+            copy_export_asset(&source, &destination, &asset)?;
+            payload.push(ArchivePayloadRecord {
+                path: asset.relative_path.clone(),
+                sha256: asset.sha256.clone(),
+                byte_length: asset.byte_length,
+            });
+            payload_files.push(ArchivePayloadFile {
+                archive_path: asset.relative_path.clone(),
+                source_path: destination,
+            });
+            referenced_assets.push(ArchiveAssetMetadata {
+                asset_id: asset.asset_id,
+                path: asset.relative_path,
+                mime_type: asset.mime_type,
+                byte_length: asset.byte_length,
+                width: asset.width,
+                height: asset.height,
+                sha256: asset.sha256,
+            });
+        }
+        payload.sort_by(|left, right| left.path.cmp(&right.path));
+        referenced_assets.sort_by(|left, right| left.path.cmp(&right.path));
+        let manifest = ArchiveManifest {
+            format_version: ARCHIVE_FORMAT_VERSION,
+            application_version: env!("CARGO_PKG_VERSION").to_owned(),
+            schema_version: export_metadata.schema_version,
+            ruleset_version: export_metadata.ruleset_version.clone(),
+            source_save_id: save_id.to_owned(),
+            display_name: export_metadata.display_name.clone(),
+            created_at_ms: current_time_ms()?,
+            payload,
+            referenced_assets,
+        };
+        let archive =
+            crate::archive::write_temporary_archive(&export_root, &manifest, &payload_files)
+                .map_err(|_| archive_export_failed())?;
+        if let Err(error) = seal_export_archive(&archive) {
+            remove_temporary_archive(&archive);
+            return Err(error);
+        }
+        let suggested_filename = suggested_archive_filename(&export_metadata.display_name);
+        if let Err(error) = staging_guard.remove_now() {
+            remove_temporary_archive(&archive);
+            return Err(error);
+        }
+        Ok(PreparedSaveExport {
+            archive,
+            suggested_filename,
+            source_save_id: save_id.to_owned(),
+            display_name: export_metadata.display_name,
+            schema_version: export_metadata.schema_version,
+            ruleset_version: export_metadata.ruleset_version,
+        })
     }
 
     /// Restores a verified recovery package without ever exposing a path to
@@ -758,6 +892,211 @@ impl SaveRepository {
     fn open(&self, save_id: &str) -> Result<Connection, String> {
         self.open_for_commit(save_id)
     }
+}
+
+#[derive(Debug)]
+struct ExportMetadata {
+    display_name: String,
+    schema_version: u32,
+    ruleset_version: String,
+}
+
+#[derive(Debug)]
+struct ExportAsset {
+    asset_id: String,
+    relative_path: String,
+    sha256: String,
+    mime_type: String,
+    byte_length: u64,
+    width: u32,
+    height: u32,
+}
+
+fn read_export_metadata(
+    connection: &Connection,
+    save_id: &str,
+) -> Result<ExportMetadata, SafeError> {
+    let schema_version = connection
+        .query_row("PRAGMA user_version", [], |row| row.get::<_, i64>(0))
+        .map_err(|_| archive_export_failed())?
+        .try_into()
+        .map_err(|_| archive_export_failed())?;
+    let (display_name, ruleset_version) = connection
+        .query_row(
+            "SELECT metadata.display_name,saves.ruleset_version
+             FROM saves JOIN save_metadata AS metadata USING(save_id)
+             WHERE saves.save_id=?1",
+            [save_id],
+            |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
+        )
+        .map_err(|_| archive_export_failed())?;
+    Ok(ExportMetadata {
+        display_name,
+        schema_version,
+        ruleset_version,
+    })
+}
+
+fn read_export_assets(connection: &Connection) -> Result<Vec<ExportAsset>, SafeError> {
+    let mut statement = connection
+        .prepare(
+            "SELECT asset_id,relative_path,sha256,mime_type,byte_length,width,height
+             FROM assets ORDER BY relative_path,asset_id",
+        )
+        .map_err(|_| archive_export_failed())?;
+    let rows = statement
+        .query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, String>(3)?,
+                row.get::<_, i64>(4)?,
+                row.get::<_, i64>(5)?,
+                row.get::<_, i64>(6)?,
+            ))
+        })
+        .map_err(|_| archive_export_failed())?;
+    let mut assets = Vec::new();
+    for row in rows {
+        let (asset_id, relative_path, sha256, mime_type, byte_length, width, height) =
+            row.map_err(|_| archive_export_failed())?;
+        validate_stored_asset_path(&relative_path, &sha256, &mime_type)
+            .map_err(|_| archive_export_failed())?;
+        assets.push(ExportAsset {
+            asset_id,
+            relative_path,
+            sha256,
+            mime_type,
+            byte_length: byte_length
+                .try_into()
+                .map_err(|_| archive_export_failed())?,
+            width: width.try_into().map_err(|_| archive_export_failed())?,
+            height: height.try_into().map_err(|_| archive_export_failed())?,
+        });
+    }
+    Ok(assets)
+}
+
+fn copy_export_asset(
+    source: &Path,
+    destination: &Path,
+    asset: &ExportAsset,
+) -> Result<(), SafeError> {
+    let source_metadata = fs::symlink_metadata(source).map_err(|_| archive_export_failed())?;
+    if source_metadata.file_type().is_symlink()
+        || !source_metadata.is_file()
+        || source_metadata.len() != asset.byte_length
+    {
+        return Err(archive_export_failed());
+    }
+    let parent = destination.parent().ok_or_else(archive_export_failed)?;
+    fs::create_dir_all(parent).map_err(|_| archive_export_failed())?;
+    let mut input = OpenOptions::new()
+        .read(true)
+        .open(source)
+        .map_err(|_| archive_export_failed())?;
+    let mut output = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(destination)
+        .map_err(|_| archive_export_failed())?;
+    std::io::copy(&mut input, &mut output).map_err(|_| archive_export_failed())?;
+    output.sync_all().map_err(|_| archive_export_failed())?;
+    if output
+        .metadata()
+        .map_err(|_| archive_export_failed())?
+        .len()
+        != asset.byte_length
+        || sha256_file(destination).map_err(|_| archive_export_failed())? != asset.sha256
+    {
+        return Err(archive_export_failed());
+    }
+    Ok(())
+}
+
+fn suggested_archive_filename(display_name: &str) -> String {
+    let safe = display_name
+        .chars()
+        .map(|character| {
+            if character.is_control() || matches!(character, '/' | '\\' | ':' | '*') {
+                '_'
+            } else {
+                character
+            }
+        })
+        .take(60)
+        .collect::<String>();
+    format!("{safe}.cloudinn")
+}
+
+struct OwnedDirectory {
+    path: Option<PathBuf>,
+}
+
+impl OwnedDirectory {
+    fn new(path: PathBuf) -> Self {
+        Self { path: Some(path) }
+    }
+
+    fn remove_now(&mut self) -> Result<(), SafeError> {
+        if let Some(path) = self.path.take() {
+            fs::remove_dir_all(path).map_err(|_| archive_export_failed())?;
+        }
+        Ok(())
+    }
+}
+
+impl Drop for OwnedDirectory {
+    fn drop(&mut self) {
+        if let Some(path) = self.path.take() {
+            let _ = fs::remove_dir_all(path);
+        }
+    }
+}
+
+fn ensure_export_directory(directory: &Path) -> Result<(), SafeError> {
+    match fs::symlink_metadata(directory) {
+        Ok(metadata) if metadata.file_type().is_symlink() || !metadata.is_dir() => {
+            Err(archive_export_failed())
+        }
+        Ok(_) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            fs::create_dir(directory).map_err(|_| archive_export_failed())
+        }
+        Err(_) => Err(archive_export_failed()),
+    }
+}
+
+fn archive_export_failed() -> SafeError {
+    SafeError::new("archive.export-failed", "无法导出存档")
+}
+
+fn seal_export_archive(archive: &TemporaryArchive) -> Result<(), SafeError> {
+    let metadata = fs::symlink_metadata(&archive.path).map_err(|_| archive_export_failed())?;
+    if metadata.file_type().is_symlink()
+        || !metadata.is_file()
+        || metadata.len() != archive.byte_length
+        || sha256_file(&archive.path).map_err(|_| archive_export_failed())? != archive.sha256
+    {
+        return Err(archive_export_failed());
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(&archive.path, fs::Permissions::from_mode(0o444))
+            .map_err(|_| archive_export_failed())?;
+    }
+    sync_file(&archive.path).map_err(|_| archive_export_failed())
+}
+
+fn remove_temporary_archive(archive: &TemporaryArchive) {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = fs::set_permissions(&archive.path, fs::Permissions::from_mode(0o600));
+    }
+    let _ = fs::remove_file(&archive.path);
 }
 
 fn read_save_summary(connection: &Connection, save_id: &str) -> Result<SaveSummary, SafeError> {
@@ -6176,6 +6515,141 @@ mod tests {
             repository.load_game("save-1").unwrap(),
             Some(expected_forward)
         );
+    }
+
+    #[test]
+    fn phase5_export_round_trips_frozen_database_and_referenced_asset_hashes() {
+        let repository = SaveRepository::new(root("phase5-export-round-trip"));
+        repository.commit_game(0, game()).unwrap();
+        let png = png_header(19, 29);
+        let asset_id = repository
+            .store_asset_reference(
+                "save-1",
+                AssetReferenceStoreRequest {
+                    owner_kind: "generation-job",
+                    owner_id: "export-job",
+                    bytes: &png,
+                    mime_type: "image/png",
+                    width: 19,
+                    height: 29,
+                },
+            )
+            .unwrap();
+
+        let export = repository.prepare_save_export("save-1").unwrap();
+        assert_eq!(export.source_save_id, "save-1");
+        assert_eq!(
+            export.schema_version,
+            u32::try_from(SAVE_SCHEMA_VERSION).unwrap()
+        );
+        assert_eq!(export.ruleset_version, "prototype-v1");
+        assert!(export.suggested_filename.ends_with(".cloudinn"));
+        assert_eq!(
+            sha256_file(&export.archive.path).unwrap(),
+            export.archive.sha256
+        );
+        assert_eq!(
+            fs::metadata(&export.archive.path).unwrap().len(),
+            export.archive.byte_length
+        );
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(
+                fs::metadata(&export.archive.path)
+                    .unwrap()
+                    .permissions()
+                    .mode()
+                    & 0o777,
+                0o444
+            );
+        }
+
+        let import_root = root("phase5-export-round-trip-import");
+        fs::create_dir_all(&import_root).unwrap();
+        let service = crate::archive::ArchiveImportService::new(&import_root).unwrap();
+        let inspection = service.inspect_import(&export.archive.path, 1_000).unwrap();
+        assert_eq!(inspection.source_save_id, "save-1");
+        assert_eq!(inspection.schema_version, export.schema_version);
+        let consumed = service.consume_import(&inspection.token, 1_001).unwrap();
+        assert_eq!(consumed.manifest.referenced_assets.len(), 1);
+        assert_eq!(consumed.manifest.referenced_assets[0].asset_id, asset_id);
+        assert_eq!(consumed.manifest.referenced_assets[0].sha256, asset_id);
+        assert_eq!(
+            fs::read(
+                consumed
+                    .extracted_save_directory
+                    .join(&consumed.manifest.referenced_assets[0].path)
+            )
+            .unwrap(),
+            png
+        );
+    }
+
+    #[test]
+    fn phase5_export_and_commit_serialize_to_a_valid_snapshot() {
+        use std::sync::{Arc, Barrier};
+
+        let storage_root = root("phase5-export-concurrent");
+        SaveRepository::new(storage_root.clone())
+            .commit_game(0, game())
+            .unwrap();
+        let barrier = Arc::new(Barrier::new(3));
+        let export_barrier = Arc::clone(&barrier);
+        let export_root = storage_root.clone();
+        let export_thread = std::thread::spawn(move || {
+            export_barrier.wait();
+            SaveRepository::new(export_root).prepare_save_export("save-1")
+        });
+        let commit_barrier = Arc::clone(&barrier);
+        let commit_root = storage_root.clone();
+        let commit_thread = std::thread::spawn(move || {
+            commit_barrier.wait();
+            SaveRepository::new(commit_root).commit_game(1, blueprint_game(2, json!([])))
+        });
+        barrier.wait();
+        let export = export_thread.join().unwrap().unwrap();
+        commit_thread.join().unwrap().unwrap();
+
+        let import_root = root("phase5-export-concurrent-import");
+        fs::create_dir_all(&import_root).unwrap();
+        let service = crate::archive::ArchiveImportService::new(&import_root).unwrap();
+        let inspection = service.inspect_import(&export.archive.path, 2_000).unwrap();
+        let consumed = service.consume_import(&inspection.token, 2_001).unwrap();
+        let connection = open_read_only(
+            &consumed.extracted_save_directory.join("save.sqlite3"),
+            "archive.export-failed",
+        )
+        .unwrap();
+        let revision = read_save_revision_from_connection(&connection, "save-1").unwrap();
+        assert!(matches!(revision, 1 | 2));
+    }
+
+    #[test]
+    fn phase5_export_fails_closed_when_a_catalog_asset_is_missing() {
+        let repository = SaveRepository::new(root("phase5-export-missing-asset"));
+        repository.commit_game(0, game()).unwrap();
+        let png = png_header(31, 37);
+        let asset_id = repository
+            .store_asset_reference(
+                "save-1",
+                AssetReferenceStoreRequest {
+                    owner_kind: "generation-job",
+                    owner_id: "missing-export-job",
+                    bytes: &png,
+                    mime_type: "image/png",
+                    width: 31,
+                    height: 37,
+                },
+            )
+            .unwrap();
+        let asset_path =
+            repository.db_path("save-1").parent().unwrap().join(
+                crate::assets::content_addressed_relative_path(&asset_id, "image/png").unwrap(),
+            );
+        fs::remove_file(asset_path).unwrap();
+
+        assert!(repository.prepare_save_export("save-1").is_err());
     }
 
     #[test]
