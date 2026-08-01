@@ -19,5 +19,6 @@ describe("production Tauri CSP", () => {
     expect(csp["frame-src"]).toEqual(["'none'"]);
     expect(csp["child-src"]).toEqual(["'none'"]);
     expect(csp["media-src"]).toEqual(["'none'"]);
+    expect(tauriConfig.app.windows[0]?.devtools).toBe(false);
   });
 });

@@ -13,6 +13,48 @@ import { createPhase4AcceptanceState } from '../testing/phase4Fixtures';
 afterEach(() => vi.useRealTimers());
 
 describe('GameProvider flow', () => {
+  it('reloads an externally advanced save revision into the live game context', async () => {
+    const port = new InMemorySavePort();
+    const initial = { ...createNewGame('save-reload'), revision: 1 };
+    await port.commit(0, initial);
+    function Probe() {
+      const { state, reload, draft } = useGame();
+      return <><output>{state?.revision ?? 'loading'}:{draft.name || 'empty'}</output><button onClick={() => void reload()}>reload</button></>;
+    }
+    render(<GameProvider savePort={port} saveId={initial.saveId}><Probe /></GameProvider>);
+    expect(await screen.findByText('1:empty')).toBeInTheDocument();
+    await port.commit(1, { ...initial, revision: 2, roomBlueprint: { id: 'restored-room', name: '恢复后的房型', columns: 8, rows: 12, cells: [{ x: 1, y: 1, zone: 'bedroom' }], metrics: { areaSquareMeters: 1, buildCostCents: 1, suggestedRateCents: 1, businessFitBps: 1 }, visual: { status: 'idle' } } });
+
+    await userEvent.setup().click(screen.getByRole('button', { name: 'reload' }));
+
+    expect(await screen.findByText('2:恢复后的房型')).toBeInTheDocument();
+  });
+
+  it('includes commands from an old save generation in the close flush', async () => {
+    const stateA: GameState = { ...createNewGame('save-flush-a'), revision: 1, phase: 'ready', roomBlueprint: { id: 'room-type-1', name: 'Suite', columns: 8, rows: 12, cells: [], metrics: { areaSquareMeters: 24, buildCostCents: 1, suggestedRateCents: 1, businessFitBps: 1 }, visual: { status: 'idle' } } };
+    const stateB = { ...createNewGame('save-flush-b'), revision: 1 };
+    let release!: () => void;
+    const port: SavePort = {
+      load: async (saveId) => saveId === stateA.saveId ? stateA : stateB,
+      commit: async () => new Promise<void>((resolve) => { release = resolve; }),
+    };
+    function Probe() { const { commands } = useGame(); return <button onClick={() => void commands.setRate(200)}>save</button>; }
+    const view = render(<GameProvider savePort={port} saveId={stateA.saveId}><Probe /></GameProvider>);
+    await screen.findByRole('button', { name: 'save' });
+    await userEvent.setup().click(screen.getByRole('button', { name: 'save' }));
+    await act(async () => {});
+    view.rerender(<GameProvider savePort={port} saveId={stateB.saveId}><Probe /></GameProvider>);
+    let flush!: Promise<unknown>;
+    window.dispatchEvent(new CustomEvent('cloudinn:flush-requested', { detail: { settle(task: Promise<unknown>) { flush = task; } } }));
+    let finished = false;
+    void flush.then(() => { finished = true; });
+    await act(async () => {});
+    expect(finished).toBe(false);
+
+    await act(async () => release());
+
+    await expect(flush).resolves.toBeDefined();
+  });
   it('shows string errors returned by native commands', async () => {
     const initial: GameState = {
       ...createNewGame('save-native-error'),

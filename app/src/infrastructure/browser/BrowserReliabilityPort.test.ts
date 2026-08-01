@@ -34,6 +34,10 @@ function replaceStoredJob(
 describe("BrowserReliabilityPort visual reliability adapter", () => {
   beforeEach(() => window.localStorage.clear());
 
+  it("implements save asset activation as an explicit browser no-op", async () => {
+    await expect(new BrowserReliabilityPort().activateSaveAssets("save-1")).resolves.toBeUndefined();
+  });
+
   it("discovers a legacy browser save and adds only reliability metadata", async () => {
     const savePort = new LocalStorageSavePort(fakeLocks());
     await savePort.commit(0, { ...createNewGame("save-1"), revision: 1 });

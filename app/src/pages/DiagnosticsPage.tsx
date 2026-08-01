@@ -1,7 +1,8 @@
-import { useEffect, useState, type FormEvent } from "react";
-import { boundedCount, jobStatusLabel, reliabilityErrorCode } from "../application/reliabilityUi";
+import { useEffect, useRef, useState, type FormEvent } from "react";
+import { boundedCount, jobStatusLabel } from "../application/reliabilityUi";
 import type { ProviderHealth, ProviderPreferencesProjection, VisualJobProjection } from "../domain/reliability/reliabilityTypes";
 import { useReliability } from "../state/ReliabilityProvider";
+import { ReliabilityErrorNotice } from "./ReliabilityErrorNotice";
 
 export function DiagnosticsPage() {
   const { port, saves, activeSaveId } = useReliability();
@@ -9,8 +10,9 @@ export function DiagnosticsPage() {
   const [health, setHealth] = useState<ProviderHealth | null>(null);
   const [preferences, setPreferences] = useState<ProviderPreferencesProjection | null>(null);
   const [jobs, setJobs] = useState<readonly VisualJobProjection[]>([]);
-  const [errorCode, setErrorCode] = useState<string | null>(null);
+  const [operationError, setOperationError] = useState<unknown>(null);
   const [pending, setPending] = useState(false);
+  const tokenRef = useRef<HTMLInputElement>(null);
 
   const load = async () => {
     const [nextHealth, nextPreferences, nextJobs] = await Promise.all([
@@ -21,10 +23,10 @@ export function DiagnosticsPage() {
     setHealth(nextHealth);
     setPreferences(nextPreferences);
     setJobs(nextJobs.slice(-20).reverse());
-    setErrorCode(null);
+    setOperationError(null);
   };
 
-  useEffect(() => { void load().catch((error) => setErrorCode(reliabilityErrorCode(error))); }, [activeSaveId, port]);
+  useEffect(() => { void load().catch(setOperationError); }, [activeSaveId, port]);
 
   const updatePreferences = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
@@ -35,7 +37,22 @@ export function DiagnosticsPage() {
       dailyRequestCeiling: Number(form.get("dailyRequestCeiling")),
       requireSendConfirmation: form.get("requireSendConfirmation") === "on",
       allowAutomatic1kFallback: form.get("allowAutomatic1kFallback") === "on",
-    }).then(setPreferences, (error) => setErrorCode(reliabilityErrorCode(error))).finally(() => setPending(false));
+    }).then(setPreferences, setOperationError).finally(() => setPending(false));
+  };
+
+  const updateToken = async (remove: boolean) => {
+    setPending(true);
+    setOperationError(null);
+    try {
+      if (remove) await port.deleteProviderToken();
+      else await port.setProviderToken(tokenRef.current?.value ?? "");
+      await load();
+    } catch (error) {
+      setOperationError(error);
+    } finally {
+      if (tokenRef.current) tokenRef.current.value = "";
+      setPending(false);
+    }
   };
 
   return (
@@ -43,7 +60,7 @@ export function DiagnosticsPage() {
       <p className="eyebrow">安全诊断</p>
       <h1>诊断与 AI 设置</h1>
       <p className="reliability-lead">这里只显示有限的健康状态、计数和稳定状态码；不会显示令牌、文件路径、提示词、图片内容或内部错误详情。</p>
-      {errorCode && <p className="reliability-error" role="alert">诊断未完成：<code>{errorCode}</code></p>}
+      <ReliabilityErrorNotice error={operationError} prefix="诊断未完成" />
       <div className="diagnostics-grid">
         <section className="reliability-card" aria-labelledby="save-health-title">
           <h2 id="save-health-title">存档健康</h2>
@@ -55,7 +72,7 @@ export function DiagnosticsPage() {
           </dl>
         </section>
         <section className="reliability-card" aria-labelledby="provider-health-title">
-          <div className="reliability-section-title"><h2 id="provider-health-title">AI 服务</h2><button disabled={pending} onClick={() => void load().catch((error) => setErrorCode(reliabilityErrorCode(error)))}>重新检查</button></div>
+          <div className="reliability-section-title"><h2 id="provider-health-title">AI 服务</h2><button disabled={pending} onClick={() => void load().catch(setOperationError)}>重新检查</button></div>
           <dl className="fact-list">
             <div><dt>凭据</dt><dd>{health?.credential.state ?? "unknown"}</dd></div>
             <div><dt>网络</dt><dd>{health?.reachability ?? "unknown"}</dd></div>
@@ -63,6 +80,12 @@ export function DiagnosticsPage() {
             <div><dt>兼容模型</dt><dd>{health?.fallbackModelAvailable === true ? "可用" : health?.fallbackModelAvailable === false ? "不可用" : "未知"}</dd></div>
             {health?.errorCode && <div><dt>状态码</dt><dd><code>{health.errorCode}</code></dd></div>}
           </dl>
+          <form className="inline-form" onSubmit={(event) => { event.preventDefault(); void updateToken(false); }}>
+            <label htmlFor="provider-token">更新服务令牌</label>
+            <input id="provider-token" ref={tokenRef} type="password" autoComplete="off" spellCheck={false} required />
+            <button disabled={pending}>保存到钥匙串</button>
+          </form>
+          <button className="secondary-button" disabled={pending || health?.credential.state === "missing"} onClick={() => void updateToken(true)}>删除服务令牌</button>
         </section>
         {preferences && <section className="reliability-card" aria-labelledby="provider-settings-title">
           <h2 id="provider-settings-title">请求保护</h2>

@@ -1,17 +1,20 @@
 import { useRef, useState, type FormEvent } from "react";
 import { reliabilityErrorCode } from "../application/reliabilityUi";
+import type { ImportInspection } from "../domain/reliability/reliabilityTypes";
 import { useReliability } from "../state/ReliabilityProvider";
+import { ReliabilityErrorNotice } from "./ReliabilityErrorNotice";
 
 export function FirstRunPage() {
   const { port, registerSave } = useReliability();
   const nameRef = useRef<HTMLInputElement>(null);
   const tokenRef = useRef<HTMLInputElement>(null);
   const [pending, setPending] = useState(false);
-  const [notice, setNotice] = useState<string | null>(null);
+  const [error, setError] = useState<unknown>(null);
+  const [inspection, setInspection] = useState<ImportInspection | null>(null);
 
   const create = async (setupAi: boolean) => {
     setPending(true);
-    setNotice(null);
+    setError(null);
     try {
       if (setupAi) {
         const input = tokenRef.current;
@@ -23,9 +26,9 @@ export function FirstRunPage() {
         }
       }
       const save = await port.createSave(nameRef.current?.value ?? "");
-      registerSave(save);
+      await registerSave(save);
     } catch (error) {
-      setNotice(`操作未完成（${reliabilityErrorCode(error)}）`);
+      setError(error);
     } finally {
       setPending(false);
     }
@@ -57,13 +60,34 @@ export function FirstRunPage() {
             spellCheck={false}
           />
         </fieldset>
-        {notice && <p className="reliability-error" role="alert">{notice}</p>}
+        <ReliabilityErrorNotice error={error} prefix="操作未完成" />
         <div className="reliability-actions">
           <button type="button" disabled={pending} onClick={() => void create(false)}>跳过 AI，开始经营</button>
           <button type="submit" disabled={pending}>保存令牌并开始</button>
         </div>
       </form>
+      <section className="reliability-card" aria-labelledby="first-import-title">
+        <h2 id="first-import-title">已有 Cloud Inn 存档</h2>
+        <p className="muted">可以直接导入，不需要先创建临时酒店。</p>
+        <button disabled={pending} onClick={() => void (async () => {
+          setPending(true); setError(null);
+          try { setInspection(await port.inspectImport()); }
+          catch (failure) { if (reliabilityErrorCode(failure) !== "archive.cancelled") setError(failure); }
+          finally { setPending(false); }
+        })()}>导入 .cloudinn</button>
+        {inspection && <div className="import-inspection" role="status" aria-live="polite">
+          <p>已检查：{inspection.displayName} · {inspection.assetCount} 个资源</p>
+          <button disabled={pending} onClick={() => void (async () => {
+            setPending(true); setError(null);
+            try {
+              const save = await port.importSave(inspection.token);
+              await registerSave(save);
+              setInspection(null);
+            } catch (failure) { setError(failure); }
+            finally { setPending(false); }
+          })()}>确认导入为新存档</button>
+        </div>}
+      </section>
     </main>
   );
 }
-

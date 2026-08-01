@@ -1,20 +1,36 @@
 import { useEffect, useRef, useState, type FormEvent } from "react";
-import { boundedCount, reliabilityErrorCode } from "../application/reliabilityUi";
+import { boundedCount } from "../application/reliabilityUi";
 import type { RecoveryPointSummary, ImportInspection } from "../domain/reliability/reliabilityTypes";
+import { useGame } from "../state/GameProvider";
 import { useReliability } from "../state/ReliabilityProvider";
+import { ReliabilityErrorNotice } from "./ReliabilityErrorNotice";
 
 function dateLabel(value: number): string {
   return new Intl.DateTimeFormat("zh-CN", { dateStyle: "medium", timeStyle: "short" }).format(value);
 }
 
+const RECOVERY_REASON_LABELS: Readonly<Record<string, string>> = {
+  construction: "重大建设前保护",
+  settlement: "经营结算前保护",
+  "visual-adoption": "采用效果图前保护",
+  migration: "存档升级前保护",
+  restore: "恢复操作前保护",
+};
+
+function recoveryReasonLabel(reason: string): string {
+  return RECOVERY_REASON_LABELS[reason] ?? (/^[\p{Script=Han}\s，。；：、]+$/u.test(reason) ? reason : "系统安全保护");
+}
+
 export function SaveManagerPage() {
   const { port, saves, activeSaveId, selectSave, registerSave, refreshSaves } = useReliability();
   const active = saves.find((save) => save.saveId === activeSaveId) ?? null;
+  const { reload: reloadGame } = useGame();
   const createRef = useRef<HTMLInputElement>(null);
   const renameRef = useRef<HTMLInputElement>(null);
   const [recoveries, setRecoveries] = useState<readonly RecoveryPointSummary[]>([]);
   const [inspection, setInspection] = useState<ImportInspection | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
+  const [operationError, setOperationError] = useState<unknown>(null);
   const [pending, setPending] = useState(false);
 
   useEffect(() => {
@@ -22,7 +38,7 @@ export function SaveManagerPage() {
     if (!activeSaveId) { setRecoveries([]); return; }
     port.listRecoveryPoints(activeSaveId).then(
       (items) => { if (alive) setRecoveries(items); },
-      (error) => { if (alive) setNotice(`恢复点不可用（${reliabilityErrorCode(error)}）`); },
+      (error) => { if (alive) setOperationError(error); },
     );
     return () => { alive = false; };
   }, [activeSaveId, port]);
@@ -30,8 +46,9 @@ export function SaveManagerPage() {
   const run = async (operation: () => Promise<void>) => {
     setPending(true);
     setNotice(null);
+    setOperationError(null);
     try { await operation(); }
-    catch (error) { setNotice(`操作未完成（${reliabilityErrorCode(error)}）`); }
+    catch (error) { setOperationError(error); }
     finally { setPending(false); }
   };
 
@@ -40,7 +57,7 @@ export function SaveManagerPage() {
     void run(async () => {
       const save = await port.createSave(createRef.current?.value ?? "");
       if (createRef.current) createRef.current.value = "";
-      registerSave(save);
+      await registerSave(save);
       setNotice("新存档已创建");
     });
   };
@@ -50,7 +67,7 @@ export function SaveManagerPage() {
     if (!active) return;
     void run(async () => {
       const save = await port.renameSave(active.saveId, renameRef.current?.value ?? "", active.metadataRevision);
-      registerSave(save);
+      await registerSave(save);
       setNotice("存档已改名");
     });
   };
@@ -61,6 +78,7 @@ export function SaveManagerPage() {
       <h1>存档管理</h1>
       <p className="reliability-lead">创建、切换、归档或恢复存档。为避免误操作，这里不提供删除功能。</p>
       {notice && <p className="reliability-notice" role="status">{notice}</p>}
+      <ReliabilityErrorNotice error={operationError} prefix="操作未完成" />
       <div className="save-manager-layout">
         <section className="reliability-card" aria-labelledby="save-list-title">
           <h2 id="save-list-title">我的存档</h2>
@@ -70,7 +88,8 @@ export function SaveManagerPage() {
                 <button
                   className="save-choice"
                   aria-pressed={save.saveId === activeSaveId}
-                  onClick={() => selectSave(save.saveId)}
+                  disabled={pending}
+                  onClick={() => void run(() => selectSave(save.saveId))}
                 >
                   <strong>{save.displayName}</strong>
                   <span>第 {save.currentDay} 天 · {save.roomCount} 间客房</span>
@@ -113,7 +132,7 @@ export function SaveManagerPage() {
             <p>{inspection.displayName} · {boundedCount(inspection.assetCount)} 个资源</p>
             <button disabled={pending} onClick={() => void run(async () => {
               const save = await port.importSave(inspection.token);
-              registerSave(save);
+              await registerSave(save);
               setInspection(null);
               setNotice("归档已作为新存档导入");
             })}>确认导入为新存档</button>
@@ -125,11 +144,12 @@ export function SaveManagerPage() {
           <p className="muted">恢复前会自动保留当前状态；恢复不会覆盖其他存档。</p>
           {recoveries.length === 0 ? <p className="empty-state">当前没有可用恢复点。</p> : <ul className="recovery-list">
             {recoveries.map((point) => <li key={point.recoveryId}>
-              <div><strong>{point.kind === "automatic" ? "自动恢复点" : point.kind === "pre-upgrade" ? "升级前" : "恢复前"}</strong><span>{dateLabel(point.createdAtMs)}</span><small>{point.reason}</small></div>
+              <div><strong>{point.kind === "automatic" ? "自动恢复点" : point.kind === "pre-upgrade" ? "升级前" : "恢复前"}</strong><span>{dateLabel(point.createdAtMs)}</span><small>{recoveryReasonLabel(point.reason)}</small></div>
               <button disabled={pending || !active} onClick={() => void run(async () => {
                 if (!active) return;
                 await port.restoreRecoveryPoint(active.saveId, point.recoveryId);
                 await refreshSaves();
+                if (!await reloadGame()) throw { code: "save.conflict" };
                 setNotice("恢复完成，存档已重新加载");
               })}>恢复到这里</button>
             </li>)}
@@ -139,4 +159,3 @@ export function SaveManagerPage() {
     </main>
   );
 }
-

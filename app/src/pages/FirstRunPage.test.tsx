@@ -6,6 +6,22 @@ import { FirstRunPage } from "./FirstRunPage";
 import { makeReliabilityPort, TEST_SAVE } from "./reliabilityTestSupport";
 
 describe("FirstRunPage", () => {
+  it("imports an inspected archive without creating a placeholder save", async () => {
+    const inspection = { token: "inspection" as never, archiveVersion: 1 as const, sourceSaveId: TEST_SAVE.saveId, displayName: "导入酒店", schemaVersion: 1, rulesetVersion: "1", assetCount: 3, totalBytes: 10, expiresAtMs: 99 };
+    const inspectImport = vi.fn(async () => inspection);
+    const importSave = vi.fn(async () => TEST_SAVE);
+    const createSave = vi.fn(async () => TEST_SAVE);
+    const port = makeReliabilityPort({ listSaves: vi.fn(async () => []), inspectImport, importSave, createSave });
+    render(<ReliabilityProvider port={port}><FirstRunPage /></ReliabilityProvider>);
+    const user = userEvent.setup();
+
+    await user.click(await screen.findByRole("button", { name: "导入 .cloudinn" }));
+    expect(await screen.findByRole("status")).toHaveTextContent("导入酒店 · 3 个资源");
+    await user.click(screen.getByRole("button", { name: "确认导入为新存档" }));
+
+    expect(importSave).toHaveBeenCalledWith(inspection.token);
+    expect(createSave).not.toHaveBeenCalled();
+  });
   it("makes AI optional and clears the uncontrolled token after its single invoke", async () => {
     const setProviderToken = vi.fn(async () => ({ state: "available" as const }));
     const port = makeReliabilityPort({ listSaves: vi.fn(async () => []), setProviderToken });

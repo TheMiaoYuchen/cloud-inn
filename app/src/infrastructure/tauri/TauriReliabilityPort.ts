@@ -29,6 +29,10 @@ type Invoke = <T>(command: string, args?: Record<string, unknown>) => Promise<T>
 export class TauriReliabilityPort implements ReliabilityPort {
   constructor(private readonly invoke: Invoke = tauriInvoke) {}
 
+  activateSaveAssets(saveId: SaveId): Promise<void> {
+    return this.invoke<void>("activate_asset_save", { saveId });
+  }
+
   listSaves(): Promise<readonly SaveSummary[]> {
     return this.invoke<SaveSummary[]>("list_saves");
   }

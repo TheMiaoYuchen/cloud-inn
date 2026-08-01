@@ -164,6 +164,12 @@ export class BrowserReliabilityPort implements ReliabilityPort {
     });
   }
 
+  async activateSaveAssets(_saveId: SaveId): Promise<void> {
+    // Browser asset URLs are already scoped by localStorage and need no native
+    // protocol activation. Keep this explicit so every runtime honours the
+    // same save-selection contract.
+  }
+
   async listSaves(): Promise<readonly SaveSummary[]> {
     const summaries: SaveSummary[] = [];
     for (let index = 0; index < window.localStorage.length; index += 1) {
@@ -305,11 +311,11 @@ export class BrowserReliabilityPort implements ReliabilityPort {
   async chooseVisualFallback(input: ChooseVisualFallbackInput): Promise<VisualJobProjection> {
     if (input.choice !== "compatible-1k") throw new Error("provider.invalid-transition");
     const current = this.requireJob(input.saveId, input.jobId, input.expectedJobRevision);
-    if (current.resolution !== "1k" || current.status !== "needs-player-confirmation") {
+    if (current.resolution !== "1k" || (current.status !== "needs-player-confirmation" && current.status !== "needs-retry-confirmation")) {
       throw new Error("provider.invalid-transition");
     }
     return this.replaceJob(current, {
-      status: "waiting-network",
+      status: current.status === "needs-player-confirmation" ? "waiting-network" : "needs-retry-confirmation",
       selectedModel: BROWSER_FALLBACK_MODEL,
       errorCode: "network.offline",
     });

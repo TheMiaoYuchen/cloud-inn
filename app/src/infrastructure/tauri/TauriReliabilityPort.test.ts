@@ -30,6 +30,14 @@ function job(status: VisualJobProjection["status"] = "queued"): VisualJobProject
 }
 
 describe("TauriReliabilityPort", () => {
+  it("activates the native asset scope before a save becomes current", async () => {
+    const invoke = vi.fn().mockResolvedValue(undefined);
+    const port = new TauriReliabilityPort(invoke);
+
+    await expect(port.activateSaveAssets("save-1")).resolves.toBeUndefined();
+    expect(invoke).toHaveBeenCalledWith("activate_asset_save", { saveId: "save-1" });
+  });
+
   it("uses the typed native save catalog commands", async () => {
     const summary = {
       saveId: "save-1", displayName: "云岫酒店", metadataRevision: 0,

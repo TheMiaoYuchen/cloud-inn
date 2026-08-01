@@ -28,6 +28,7 @@ const TEST_PREFERENCES: ProviderPreferencesProjection = {
 
 export function makeReliabilityPort(overrides: Partial<ReliabilityPort> = {}): ReliabilityPort {
   return {
+    activateSaveAssets: vi.fn(async () => undefined),
     listSaves: vi.fn(async () => [TEST_SAVE]),
     createSave: vi.fn(async () => TEST_SAVE),
     renameSave: vi.fn(async () => ({ ...TEST_SAVE, displayName: "新名字", metadataRevision: 1 })),

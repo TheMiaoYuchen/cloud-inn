@@ -406,11 +406,16 @@ function validateVisualTree(value: unknown): void {
   const candidate = value as JsonObject;
   if ("assetPath" in candidate) {
     const path = candidate.assetPath;
-    if (typeof path !== "string" || !path.startsWith("/visuals/") || path.includes("..")) {
+    if (typeof path !== "string" || !isValidVisualAssetPath(path)) {
       throw new Error("浏览器存档已损坏，无法加载");
     }
   }
   Object.values(candidate).forEach(validateVisualTree);
+}
+
+export function isValidVisualAssetPath(value: string): boolean {
+  return (value.startsWith("/visuals/") && !value.includes(".."))
+    || /^cloudinn-asset:\/\/[0-9a-f]{64}$/u.test(value);
 }
 
 function validatePhase2(value: unknown): void {

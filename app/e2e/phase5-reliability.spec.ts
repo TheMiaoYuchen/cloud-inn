@@ -47,5 +47,5 @@ test("save manager creates and renames without offering deletion", async ({ page
   await expect(page.getByRole("button", { name: /第二家云端旅店/u })).toBeVisible();
 
   await page.getByRole("button", { name: "导出 .cloudinn" }).click();
-  await expect(page.getByRole("status")).toContainText("archive.export-failed");
+  await expect(page.getByRole("alert")).toContainText("archive.export-failed");
 });

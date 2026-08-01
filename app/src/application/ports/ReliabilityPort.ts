@@ -22,6 +22,7 @@ import type {
 } from "../../domain/reliability/reliabilityTypes";
 
 export interface ReliabilityPort {
+  activateSaveAssets(saveId: SaveId): Promise<void>;
   listSaves(): Promise<readonly SaveSummary[]>;
   createSave(displayName: string): Promise<SaveSummary>;
   renameSave(
