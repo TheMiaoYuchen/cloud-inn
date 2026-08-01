@@ -1,4 +1,6 @@
 #[allow(dead_code)]
+mod archive;
+#[allow(dead_code)]
 mod assets;
 pub mod cross_database_validation;
 pub mod generation_jobs;
