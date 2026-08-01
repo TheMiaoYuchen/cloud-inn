@@ -1,6 +1,11 @@
+pub mod cross_database_validation;
+pub mod generation_jobs;
 mod keychain;
 mod persistence;
+pub mod provider_control;
 pub mod redaction;
+mod reliability;
+mod save_validation;
 
 #[tauri::command]
 fn provider_token_status(
@@ -25,12 +30,18 @@ fn delete_provider_token(
 }
 
 #[tauri::command]
-fn load_game(app: tauri::AppHandle, save_id: String) -> Result<Option<serde_json::Value>, String> {
+fn load_game(
+    app: tauri::AppHandle,
+    save_id: String,
+) -> Result<Option<serde_json::Value>, redaction::SafeError> {
     use tauri::Manager;
-    let root = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    let root = app
+        .path()
+        .app_data_dir()
+        .map_err(|_| redaction::app_storage_error())?;
     persistence::SaveRepository::new(root)
         .load_game(&save_id)
-        .map_err(redaction::redact_error_string)
+        .map_err(redaction::persistence_load_error)
 }
 
 #[tauri::command]
@@ -38,12 +49,15 @@ fn commit_game(
     app: tauri::AppHandle,
     expected_revision: i64,
     game: serde_json::Value,
-) -> Result<(), String> {
+) -> Result<(), redaction::SafeError> {
     use tauri::Manager;
-    let root = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    let root = app
+        .path()
+        .app_data_dir()
+        .map_err(|_| redaction::app_storage_error())?;
     persistence::SaveRepository::new(root)
         .commit_game(expected_revision, game)
-        .map_err(redaction::redact_error_string)
+        .map_err(redaction::persistence_commit_error)
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]

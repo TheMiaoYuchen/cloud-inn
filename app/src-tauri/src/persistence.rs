@@ -1,11 +1,36 @@
-use rusqlite::{params, Connection, OptionalExtension, TransactionBehavior};
+use crate::cross_database_validation::validate_issued_grants_for_save;
+use crate::provider_control::ProviderControlStore;
+use crate::redaction::SafeError;
+use crate::reliability::{
+    legacy_schema_needs_repair, lock_save, validate_current_save_database, PerSaveLock,
+    SAVE_APPLICATION_ID, SAVE_SCHEMA_VERSION,
+};
+use crate::save_validation::{validate_asset_registry, validate_single_save_identity};
+use rusqlite::backup::Backup;
+use rusqlite::{params, Connection, OpenFlags, OptionalExtension, TransactionBehavior};
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+use sha2::{Digest, Sha256};
 use std::collections::{HashMap, HashSet, VecDeque};
-use std::fs;
-use std::path::PathBuf;
+use std::fs::{self, File, OpenOptions};
+use std::io::{Read, Write};
+use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 pub struct SaveRepository {
     root: PathBuf,
+}
+
+pub(crate) struct PreparedSaveDatabase {
+    path: PathBuf,
+    control_connection: Connection,
+    _save_lock: PerSaveLock,
+}
+
+impl std::fmt::Debug for PreparedSaveDatabase {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("PreparedSaveDatabase")
+    }
 }
 
 impl SaveRepository {
@@ -15,77 +40,12 @@ impl SaveRepository {
 
     pub fn load_game(&self, save_id: &str) -> Result<Option<Value>, String> {
         validate_save_id(save_id)?;
-        let conn = self.open(save_id)?;
-        let row = conn
-            .query_row(
-                "SELECT schema_version,ruleset_version,revision,phase,current_day,cash_cents,rate_cents,phase2_json,latest_report_json,operations_json,phase4_json FROM saves WHERE save_id=?1",
-                [save_id],
-                |r| {
-                    Ok((
-                        r.get::<_, i64>(0)?, r.get::<_, String>(1)?, r.get::<_, i64>(2)?,
-                        r.get::<_, String>(3)?, r.get::<_, i64>(4)?, r.get::<_, i64>(5)?,
-                        r.get::<_, i64>(6)?, r.get::<_, Option<String>>(7)?,
-                        r.get::<_, Option<String>>(8)?,
-                        r.get::<_, Option<String>>(9)?,
-                        r.get::<_, Option<String>>(10)?,
-                    ))
-                },
-            )
-            .optional()
-            .map_err(db_err)?;
-        let Some((
-            schema,
-            ruleset,
-            revision,
-            phase,
-            day,
-            cash,
-            rate,
-            phase2,
-            latest,
-            operations,
-            phase4,
-        )) = row
-        else {
+        let path = self.db_path(save_id);
+        if !database_or_journal_exists(&path)? {
             return Ok(None);
-        };
-        let blueprint = conn
-            .query_row("SELECT blueprint_id,name,columns_count,rows_count,cells_json,metrics_json,visual_json,openings_json FROM room_blueprints WHERE save_id=?1", [save_id], |r| {
-                let mut blueprint = json!({"id":r.get::<_,String>(0)?,"name":r.get::<_,String>(1)?,"columns":r.get::<_,i64>(2)?,"rows":r.get::<_,i64>(3)?,"cells":serde_json::from_str::<Value>(&r.get::<_,String>(4)?).map_err(|_| rusqlite::Error::InvalidQuery)?,"metrics":serde_json::from_str::<Value>(&r.get::<_,String>(5)?).map_err(|_| rusqlite::Error::InvalidQuery)?,"visual":serde_json::from_str::<Value>(&r.get::<_,String>(6)?).map_err(|_| rusqlite::Error::InvalidQuery)?});
-                if let Some(raw) = r.get::<_,Option<String>>(7)? {
-                    blueprint["openings"] = serde_json::from_str::<Value>(&raw).map_err(|_| rusqlite::Error::InvalidQuery)?;
-                }
-                Ok(blueprint)
-            }).optional().map_err(db_err)?;
-        let mut rooms = Vec::new();
-        let mut stmt = conn.prepare("SELECT instance_id,slot_id,blueprint_id,committed_build_cost_cents FROM room_instances WHERE save_id=?1 ORDER BY ordinal").map_err(db_err)?;
-        let rows = stmt.query_map([save_id], |r| Ok(json!({"id":r.get::<_,String>(0)?,"slotId":r.get::<_,String>(1)?,"roomBlueprintId":r.get::<_,String>(2)?,"committedBuildCostCents":r.get::<_,i64>(3)?}))).map_err(db_err)?;
-        for room in rows {
-            rooms.push(room.map_err(db_err)?);
         }
-        let mut reports = Vec::new();
-        let mut stmt = conn
-            .prepare("SELECT report_json FROM daily_reports WHERE save_id=?1 ORDER BY game_day")
-            .map_err(db_err)?;
-        let rows = stmt
-            .query_map([save_id], |r| r.get::<_, String>(0))
-            .map_err(db_err)?;
-        for report in rows {
-            reports.push(parse_json(report.map_err(db_err)?)?);
-        }
-        let latest_value = latest.map(parse_json).transpose()?;
-        let mut game = json!({"schemaVersion":schema,"rulesetVersion":ruleset,"saveId":save_id,"revision":revision,"phase":phase,"currentDay":day,"cashCents":cash,"rateCents":rate,"roomBlueprint":blueprint,"floor":{"id":"prototype-floor","rooms":rooms},"reports":reports,"latestReport":latest_value});
-        if let Some(raw) = phase2 {
-            game["phase2"] = parse_json(raw)?;
-        }
-        if let Some(raw) = operations {
-            game["operations"] = parse_json(raw)?;
-        }
-        if let Some(raw) = phase4 {
-            game["phase4"] = parse_phase4_json(raw)?;
-        }
-        validate_game(&game)?;
-        Ok(Some(game))
+        let conn = self.open_existing(save_id)?;
+        load_game_from_connection(&conn, save_id)
     }
 
     pub fn commit_game(&self, expected_revision: i64, game: Value) -> Result<(), String> {
@@ -94,7 +54,24 @@ impl SaveRepository {
         }
         let fields = validate_game(&game)?;
         let save_id = fields.save_id.clone();
-        let mut conn = self.open(&save_id)?;
+        let path = self.db_path(&save_id);
+        let database_existed =
+            existing_regular_database(&path).map_err(|error| error.to_string())?;
+        if database_existed {
+            preflight_supported_identity(&path).map_err(|error| error.to_string())?;
+        }
+        let control_connection = self
+            .bootstrap_provider_control()
+            .map_err(|error| error.to_string())?;
+        let directory = path.parent().ok_or_else(|| "存档目录无效".to_string())?;
+        ensure_save_directory(directory).map_err(|error| error.to_string())?;
+        let _save_lock = lock_save(directory).map_err(|error| error.to_string())?;
+        prepare_database_file(&path, &save_id, true).map_err(|error| error.to_string())?;
+        let mut conn = open_current_connection(&path).map_err(|error| error.to_string())?;
+        validate_opened_save(&conn, &path, &save_id, expected_revision == 0)
+            .map_err(|error| error.to_string())?;
+        validate_issued_grants_for_save(&conn, &control_connection, &save_id)
+            .map_err(|error| error.to_string())?;
         let tx = conn
             .transaction_with_behavior(TransactionBehavior::Immediate)
             .map_err(db_err)?;
@@ -114,6 +91,13 @@ impl SaveRepository {
             return Err("存档已更新，请重新加载".to_string());
         }
         tx.execute("INSERT INTO saves(save_id,schema_version,ruleset_version,revision,phase,current_day,cash_cents,rate_cents,phase2_json,latest_report_json,operations_json,phase4_json,updated_at) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,datetime('now')) ON CONFLICT(save_id) DO UPDATE SET schema_version=excluded.schema_version,ruleset_version=excluded.ruleset_version,revision=excluded.revision,phase=excluded.phase,current_day=excluded.current_day,cash_cents=excluded.cash_cents,rate_cents=excluded.rate_cents,phase2_json=excluded.phase2_json,latest_report_json=excluded.latest_report_json,operations_json=excluded.operations_json,phase4_json=excluded.phase4_json,updated_at=excluded.updated_at", params![save_id, fields.schema_version, fields.ruleset, fields.revision, fields.phase, fields.current_day, fields.cash_cents, fields.rate_cents, fields.phase2, fields.latest_report, fields.operations, fields.phase4]).map_err(db_err)?;
+        tx.execute(
+            "INSERT OR IGNORE INTO save_metadata(
+               save_id,display_name,created_at_ms,renamed_at_ms,metadata_revision
+             ) VALUES(?1,'云岫酒店 1',0,0,0)",
+            [&save_id],
+        )
+        .map_err(db_err)?;
         tx.execute("DELETE FROM room_instances WHERE save_id=?1", [&save_id])
             .map_err(db_err)?;
         tx.execute("DELETE FROM room_blueprints WHERE save_id=?1", [&save_id])
@@ -139,31 +123,1024 @@ impl SaveRepository {
     fn db_path(&self, save_id: &str) -> PathBuf {
         self.root.join("saves").join(save_id).join("save.sqlite3")
     }
-    fn open(&self, save_id: &str) -> Result<Connection, String> {
+
+    pub(crate) fn prepare_save_database(
+        &self,
+        save_id: &str,
+    ) -> Result<PreparedSaveDatabase, SafeError> {
+        validate_save_id(save_id).map_err(|_| SafeError::new("save.invalid-id", "存档标识无效"))?;
         let path = self.db_path(save_id);
-        fs::create_dir_all(path.parent().unwrap()).map_err(|e| e.to_string())?;
-        let mut conn = Connection::open(path).map_err(db_err)?;
-        conn.busy_timeout(std::time::Duration::from_millis(5000))
-            .map_err(db_err)?;
-        conn.pragma_update(None, "foreign_keys", "ON")
-            .map_err(db_err)?;
-        retry_busy(|| conn.pragma_update(None, "journal_mode", "WAL"))?;
-        conn.pragma_update(None, "synchronous", "FULL")
-            .map_err(db_err)?;
-        conn.execute_batch(include_str!("../migrations/001_initial.sql"))
-            .map_err(db_err)?;
-        conn.execute(
-            "INSERT OR IGNORE INTO schema_migrations(version,applied_at) VALUES(1,datetime('now'))",
+        let directory = path
+            .parent()
+            .ok_or_else(|| SafeError::new("migration.failed", "存档目录无效"))?;
+        validate_existing_save_directory(directory)?;
+        if existing_regular_database(&path)? {
+            preflight_supported_identity(&path)?;
+        }
+        let control_connection = self.bootstrap_provider_control()?;
+        let save_lock = lock_save(directory)?;
+        prepare_database_file(&path, save_id, false)?;
+        let validation_connection = open_read_only(&path, "migration.validation-failed")?;
+        validate_opened_save(&validation_connection, &path, save_id, false)?;
+        validate_issued_grants_for_save(&validation_connection, &control_connection, save_id)?;
+        Ok(PreparedSaveDatabase {
+            path,
+            control_connection,
+            _save_lock: save_lock,
+        })
+    }
+
+    #[cfg(test)]
+    fn prepare_for_commit(&self, save_id: &str) -> Result<(), SafeError> {
+        validate_save_id(save_id).map_err(|_| SafeError::new("save.invalid-id", "存档标识无效"))?;
+        let path = self.db_path(save_id);
+        if existing_regular_database(&path)? {
+            preflight_supported_identity(&path)?;
+        }
+        drop(self.bootstrap_provider_control()?);
+        let directory = path
+            .parent()
+            .ok_or_else(|| SafeError::new("migration.failed", "存档目录无效"))?;
+        ensure_save_directory(directory)?;
+        let _save_lock = lock_save(directory)?;
+        prepare_database_file(&path, save_id, true)
+    }
+
+    fn bootstrap_provider_control(&self) -> Result<Connection, SafeError> {
+        let now_ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_err(|_| SafeError::new("provider.control-invalid", "系统时间无效"))?
+            .as_millis()
+            .try_into()
+            .map_err(|_| SafeError::new("provider.control-invalid", "系统时间无效"))?;
+        ProviderControlStore::new(self.root.clone()).bootstrap(now_ms)
+    }
+
+    fn open_existing(&self, save_id: &str) -> Result<Connection, String> {
+        let prepared = self
+            .prepare_save_database(save_id)
+            .map_err(|error| error.to_string())?;
+        let connection =
+            open_current_connection(&prepared.path).map_err(|error| error.to_string())?;
+        validate_opened_save(&connection, &prepared.path, save_id, false)
+            .map_err(|error| error.to_string())?;
+        validate_issued_grants_for_save(&connection, &prepared.control_connection, save_id)
+            .map_err(|error| error.to_string())?;
+        Ok(connection)
+    }
+
+    #[cfg(test)]
+    fn open_for_commit(&self, save_id: &str) -> Result<Connection, String> {
+        let path = self.db_path(save_id);
+        self.prepare_for_commit(save_id)
+            .map_err(|error| error.to_string())?;
+        open_current_connection(&path).map_err(|error| error.to_string())
+    }
+
+    #[cfg(test)]
+    fn open(&self, save_id: &str) -> Result<Connection, String> {
+        self.open_for_commit(save_id)
+    }
+}
+
+fn load_game_from_connection(conn: &Connection, save_id: &str) -> Result<Option<Value>, String> {
+    let row = conn
+        .query_row(
+            "SELECT schema_version,ruleset_version,revision,phase,current_day,cash_cents,rate_cents,phase2_json,latest_report_json,operations_json,phase4_json FROM saves WHERE save_id=?1",
+            [save_id],
+            |row| {
+                Ok((
+                    row.get::<_, i64>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, i64>(2)?,
+                    row.get::<_, String>(3)?,
+                    row.get::<_, i64>(4)?,
+                    row.get::<_, i64>(5)?,
+                    row.get::<_, i64>(6)?,
+                    row.get::<_, Option<String>>(7)?,
+                    row.get::<_, Option<String>>(8)?,
+                    row.get::<_, Option<String>>(9)?,
+                    row.get::<_, Option<String>>(10)?,
+                ))
+            },
+        )
+        .optional()
+        .map_err(db_err)?;
+    let Some((
+        schema,
+        ruleset,
+        revision,
+        phase,
+        day,
+        cash,
+        rate,
+        phase2,
+        latest,
+        operations,
+        phase4,
+    )) = row
+    else {
+        return Ok(None);
+    };
+    let blueprint = conn
+        .query_row("SELECT blueprint_id,name,columns_count,rows_count,cells_json,metrics_json,visual_json,openings_json FROM room_blueprints WHERE save_id=?1", [save_id], |row| {
+            let mut blueprint = json!({"id":row.get::<_,String>(0)?,"name":row.get::<_,String>(1)?,"columns":row.get::<_,i64>(2)?,"rows":row.get::<_,i64>(3)?,"cells":serde_json::from_str::<Value>(&row.get::<_,String>(4)?).map_err(|_| rusqlite::Error::InvalidQuery)?,"metrics":serde_json::from_str::<Value>(&row.get::<_,String>(5)?).map_err(|_| rusqlite::Error::InvalidQuery)?,"visual":serde_json::from_str::<Value>(&row.get::<_,String>(6)?).map_err(|_| rusqlite::Error::InvalidQuery)?});
+            if let Some(raw) = row.get::<_,Option<String>>(7)? {
+                blueprint["openings"] = serde_json::from_str::<Value>(&raw).map_err(|_| rusqlite::Error::InvalidQuery)?;
+            }
+            Ok(blueprint)
+        }).optional().map_err(db_err)?;
+    let mut rooms = Vec::new();
+    let mut statement = conn.prepare("SELECT instance_id,slot_id,blueprint_id,committed_build_cost_cents FROM room_instances WHERE save_id=?1 ORDER BY ordinal").map_err(db_err)?;
+    let rows = statement.query_map([save_id], |row| Ok(json!({"id":row.get::<_,String>(0)?,"slotId":row.get::<_,String>(1)?,"roomBlueprintId":row.get::<_,String>(2)?,"committedBuildCostCents":row.get::<_,i64>(3)?}))).map_err(db_err)?;
+    for room in rows {
+        rooms.push(room.map_err(db_err)?);
+    }
+    let mut reports = Vec::new();
+    let mut statement = conn
+        .prepare("SELECT report_json FROM daily_reports WHERE save_id=?1 ORDER BY game_day")
+        .map_err(db_err)?;
+    let rows = statement
+        .query_map([save_id], |row| row.get::<_, String>(0))
+        .map_err(db_err)?;
+    for report in rows {
+        reports.push(parse_json(report.map_err(db_err)?)?);
+    }
+    let latest_value = latest.map(parse_json).transpose()?;
+    let mut game = json!({"schemaVersion":schema,"rulesetVersion":ruleset,"saveId":save_id,"revision":revision,"phase":phase,"currentDay":day,"cashCents":cash,"rateCents":rate,"roomBlueprint":blueprint,"floor":{"id":"prototype-floor","rooms":rooms},"reports":reports,"latestReport":latest_value});
+    if let Some(raw) = phase2 {
+        game["phase2"] = parse_json(raw)?;
+    }
+    if let Some(raw) = operations {
+        game["operations"] = parse_json(raw)?;
+    }
+    if let Some(raw) = phase4 {
+        game["phase4"] = parse_phase4_json(raw)?;
+    }
+    validate_game(&game)?;
+    Ok(Some(game))
+}
+
+fn database_or_journal_exists(path: &Path) -> Result<bool, String> {
+    match fs::symlink_metadata(path) {
+        Ok(metadata) if metadata.file_type().is_symlink() => Err("存档路径无效".to_string()),
+        Ok(metadata) if metadata.is_file() => Ok(true),
+        Ok(_) => Err("存档路径无效".to_string()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(path
+            .parent()
+            .is_some_and(|directory| upgrade_journal_path(directory).is_file())),
+        Err(_) => Err("无法检查存档".to_string()),
+    }
+}
+
+fn existing_regular_database(path: &Path) -> Result<bool, SafeError> {
+    match fs::symlink_metadata(path) {
+        Ok(metadata) if metadata.file_type().is_symlink() || !metadata.is_file() => {
+            Err(validation_migration())
+        }
+        Ok(_) => Ok(true),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
+        Err(_) => Err(validation_migration()),
+    }
+}
+
+fn validate_existing_save_directory(directory: &Path) -> Result<(), SafeError> {
+    let directory_metadata = fs::symlink_metadata(directory).map_err(|_| validation_migration())?;
+    if directory_metadata.file_type().is_symlink() || !directory_metadata.is_dir() {
+        return Err(validation_migration());
+    }
+    Ok(())
+}
+
+fn ensure_save_directory(directory: &Path) -> Result<(), SafeError> {
+    match fs::symlink_metadata(directory) {
+        Ok(metadata) if metadata.file_type().is_symlink() || !metadata.is_dir() => {
+            Err(failed_migration())
+        }
+        Ok(_) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            fs::create_dir_all(directory).map_err(|_| failed_migration())
+        }
+        Err(_) => Err(failed_migration()),
+    }
+}
+
+fn prepare_database_file(
+    path: &Path,
+    expected_save_id: &str,
+    allow_create: bool,
+) -> Result<(), SafeError> {
+    recover_interrupted_upgrade(path)?;
+    if !path.exists() {
+        return if allow_create {
+            initialize_current_database(path)
+        } else {
+            Err(SafeError::new("save.not-found", "存档不存在"))
+        };
+    }
+    let metadata = fs::symlink_metadata(path).map_err(|_| validation_migration())?;
+    if metadata.file_type().is_symlink() || !metadata.is_file() {
+        return Err(validation_migration());
+    }
+
+    let inspection = inspect_database(path)?;
+    if inspection.user_version == SAVE_SCHEMA_VERSION {
+        if inspection.application_id != SAVE_APPLICATION_ID {
+            return Err(unsupported_migration());
+        }
+        let connection = open_read_only(path, "migration.validation-failed")?;
+        validate_current_database_contents(&connection)?;
+        return Ok(());
+    }
+    if inspection.user_version != 0
+        || inspection.application_id != 0
+        || inspection.audit_version > SAVE_SCHEMA_VERSION
+    {
+        return Err(unsupported_migration());
+    }
+
+    let connection = open_read_only(path, "migration.validation-failed")?;
+    let audit_version = read_contiguous_legacy_audit_version(&connection)?;
+    if legacy_schema_needs_repair(&connection)? && audit_version >= SAVE_SCHEMA_VERSION {
+        return Err(validation_migration());
+    }
+    reject_partial_v7_schema(&connection)?;
+    validate_single_save_identity(&connection, expected_save_id, false)
+        .map_err(|_| validation_migration())?;
+    drop(connection);
+    migrate_database_clone(path, audit_version, inspection.user_version)
+}
+
+#[derive(Clone, Copy)]
+struct DatabaseInspection {
+    application_id: i64,
+    user_version: i64,
+    audit_version: i64,
+}
+
+fn preflight_supported_identity(path: &Path) -> Result<(), SafeError> {
+    let connection = open_read_only(path, "migration.validation-failed")?;
+    let application_id = connection
+        .query_row("PRAGMA application_id", [], |row| row.get::<_, i64>(0))
+        .map_err(|_| validation_migration())?;
+    let user_version = connection
+        .query_row("PRAGMA user_version", [], |row| row.get::<_, i64>(0))
+        .map_err(|_| validation_migration())?;
+    if matches!(
+        (application_id, user_version),
+        (0, 0) | (SAVE_APPLICATION_ID, SAVE_SCHEMA_VERSION)
+    ) {
+        if application_id == 0 {
+            read_contiguous_legacy_audit_version(&connection)?;
+        }
+        Ok(())
+    } else {
+        Err(unsupported_migration())
+    }
+}
+
+fn inspect_database(path: &Path) -> Result<DatabaseInspection, SafeError> {
+    let connection = open_read_only(path, "migration.validation-failed")?;
+    let application_id = connection
+        .query_row("PRAGMA application_id", [], |row| row.get::<_, i64>(0))
+        .map_err(|_| validation_migration())?;
+    let user_version = connection
+        .query_row("PRAGMA user_version", [], |row| row.get::<_, i64>(0))
+        .map_err(|_| validation_migration())?;
+    let audit_version = connection
+        .query_row(
+            "SELECT COALESCE(MAX(version),0) FROM schema_migrations",
+            [],
+            |row| row.get::<_, i64>(0),
+        )
+        .map_err(|_| validation_migration())?;
+    Ok(DatabaseInspection {
+        application_id,
+        user_version,
+        audit_version,
+    })
+}
+
+fn read_contiguous_legacy_audit_version(connection: &Connection) -> Result<i64, SafeError> {
+    let has_audit = connection
+        .prepare(
+            "SELECT 1 FROM sqlite_master
+             WHERE type='table' AND name='schema_migrations'",
+        )
+        .map_err(|_| validation_migration())?
+        .exists([])
+        .map_err(|_| validation_migration())?;
+    if !has_audit {
+        return Err(validation_migration());
+    }
+    let (count, minimum, maximum) = connection
+        .query_row(
+            "SELECT count(*),MIN(version),MAX(version) FROM schema_migrations",
+            [],
+            |row| {
+                Ok((
+                    row.get::<_, i64>(0)?,
+                    row.get::<_, Option<i64>>(1)?,
+                    row.get::<_, Option<i64>>(2)?,
+                ))
+            },
+        )
+        .map_err(|_| validation_migration())?;
+    let maximum = maximum.ok_or_else(validation_migration)?;
+    if minimum != Some(1) || !(1..SAVE_SCHEMA_VERSION).contains(&maximum) || count != maximum {
+        return Err(validation_migration());
+    }
+    Ok(maximum)
+}
+
+fn initialize_current_database(path: &Path) -> Result<(), SafeError> {
+    let partial = unique_sibling(path, "initialize.partial");
+    let mut guard = OwnedPartial::new(partial.clone());
+    let mut connection = Connection::open(&partial).map_err(|_| failed_migration())?;
+    apply_all_migrations(&mut connection)?;
+    validate_current_database_contents(&connection)?;
+    make_single_file_durable(&connection, &partial)?;
+    drop(connection);
+    publish_new_database(&partial, path)?;
+    guard.disarm();
+    Ok(())
+}
+
+fn migrate_database_clone(
+    path: &Path,
+    old_version: i64,
+    old_user_version: i64,
+) -> Result<(), SafeError> {
+    let directory = path.parent().ok_or_else(failed_migration)?;
+    let backup_directory = directory.join("pre-upgrade");
+    ensure_backup_directory(&backup_directory)?;
+    let backup_path = create_content_addressed_upgrade_backup(
+        path,
+        &backup_directory,
+        old_version,
+        old_user_version,
+    )?;
+
+    let partial = unique_sibling(path, "upgrade.partial");
+    let mut guard = OwnedPartial::new(partial.clone());
+    online_backup(&backup_path, &partial)?;
+    let mut connection = Connection::open(&partial).map_err(|_| failed_migration())?;
+    configure_migration_connection(&connection)?;
+    apply_all_migrations(&mut connection)?;
+    validate_current_database_contents(&connection)?;
+    make_single_file_durable(&connection, &partial)?;
+    drop(connection);
+    atomic_replace_database(path, &partial)?;
+    guard.disarm();
+    Ok(())
+}
+
+fn ensure_backup_directory(directory: &Path) -> Result<(), SafeError> {
+    match fs::symlink_metadata(directory) {
+        Ok(metadata) if metadata.file_type().is_symlink() || !metadata.is_dir() => {
+            Err(backup_migration())
+        }
+        Ok(_) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            fs::create_dir(directory).map_err(|_| backup_migration())?;
+            sync_directory(directory.parent().ok_or_else(backup_migration)?)
+                .map_err(|_| backup_migration())
+        }
+        Err(_) => Err(backup_migration()),
+    }
+}
+
+fn create_content_addressed_upgrade_backup(
+    source: &Path,
+    directory: &Path,
+    old_version: i64,
+    old_user_version: i64,
+) -> Result<PathBuf, SafeError> {
+    let temporary = unique_backup_path(directory, "partial");
+    let mut guard = OwnedPartial::new(temporary.clone());
+    online_backup(source, &temporary)?;
+    let backup_connection = Connection::open(&temporary).map_err(|_| backup_migration())?;
+    backup_connection
+        .pragma_update(None, "journal_mode", "DELETE")
+        .map_err(|_| backup_migration())?;
+    backup_connection
+        .pragma_update(None, "synchronous", "FULL")
+        .map_err(|_| backup_migration())?;
+    drop(backup_connection);
+    sync_file(&temporary).map_err(|_| backup_migration())?;
+    let digest = sha256_file(&temporary).map_err(|_| backup_migration())?;
+    let final_path = directory.join(format!("schema-v{old_version}-{digest}.sqlite3"));
+
+    match fs::symlink_metadata(&final_path) {
+        Ok(metadata) if metadata.file_type().is_symlink() || !metadata.is_file() => {
+            return Err(backup_migration())
+        }
+        Ok(_) => {
+            if sha256_file(&final_path).map_err(|_| backup_migration())? != digest {
+                return Err(backup_migration());
+            }
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            fs::rename(&temporary, &final_path).map_err(|_| backup_migration())?;
+            guard.disarm();
+            sync_directory(directory).map_err(|_| backup_migration())?;
+        }
+        Err(_) => return Err(backup_migration()),
+    }
+    validate_upgrade_backup(&final_path, old_user_version)?;
+    Ok(final_path)
+}
+
+fn validate_upgrade_backup(path: &Path, old_version: i64) -> Result<(), SafeError> {
+    let connection = open_read_only(path, "migration.backup-failed")?;
+    let integrity = connection
+        .query_row("PRAGMA integrity_check", [], |row| row.get::<_, String>(0))
+        .map_err(|_| backup_migration())?;
+    let user_version = connection
+        .query_row("PRAGMA user_version", [], |row| row.get::<_, i64>(0))
+        .map_err(|_| backup_migration())?;
+    if integrity != "ok" || user_version != old_version {
+        return Err(backup_migration());
+    }
+    Ok(())
+}
+
+fn sha256_file(path: &Path) -> std::io::Result<String> {
+    let mut file = OpenOptions::new().read(true).open(path)?;
+    let mut hasher = Sha256::new();
+    let mut buffer = [0_u8; 64 * 1024];
+    loop {
+        let read = file.read(&mut buffer)?;
+        if read == 0 {
+            break;
+        }
+        hasher.update(&buffer[..read]);
+    }
+    let digest = hasher.finalize();
+    let mut encoded = String::with_capacity(digest.len() * 2);
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    for byte in digest {
+        encoded.push(char::from(HEX[usize::from(byte >> 4)]));
+        encoded.push(char::from(HEX[usize::from(byte & 0x0f)]));
+    }
+    Ok(encoded)
+}
+
+fn unique_backup_path(directory: &Path, label: &str) -> PathBuf {
+    let nonce = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos();
+    directory.join(format!(
+        ".schema-v7.{label}.{}.{nonce}.sqlite3",
+        std::process::id()
+    ))
+}
+
+fn apply_all_migrations(connection: &mut Connection) -> Result<(), SafeError> {
+    connection
+        .execute_batch(include_str!("../migrations/001_initial.sql"))
+        .map_err(|_| failed_migration())?;
+    connection
+        .execute(
+            "INSERT OR IGNORE INTO schema_migrations(version,applied_at)
+             VALUES(1,datetime('now'))",
             [],
         )
-        .map_err(db_err)?;
-        migrate_legacy(&mut conn)?;
-        migrate_phase2(&mut conn)?;
-        migrate_blueprint_openings(&mut conn)?;
-        migrate_operations(&mut conn)?;
-        migrate_phase4(&mut conn)?;
-        Ok(conn)
+        .map_err(|_| failed_migration())?;
+    migrate_legacy(connection).map_err(|_| failed_migration())?;
+    migrate_phase2(connection).map_err(|_| failed_migration())?;
+    migrate_blueprint_openings(connection).map_err(|_| failed_migration())?;
+    migrate_operations(connection).map_err(|_| failed_migration())?;
+    migrate_phase4(connection).map_err(|_| failed_migration())?;
+    canonicalize_core_schema(connection)?;
+    let transaction = connection
+        .transaction_with_behavior(TransactionBehavior::Immediate)
+        .map_err(|_| failed_migration())?;
+    transaction
+        .execute_batch(include_str!("../migrations/007_reliability.sql"))
+        .map_err(|_| failed_migration())?;
+    transaction
+        .execute(
+            "INSERT OR IGNORE INTO schema_migrations(version,applied_at)
+             VALUES(7,datetime('now'))",
+            [],
+        )
+        .map_err(|_| failed_migration())?;
+    transaction
+        .pragma_update(None, "application_id", SAVE_APPLICATION_ID)
+        .map_err(|_| failed_migration())?;
+    transaction
+        .pragma_update(None, "user_version", SAVE_SCHEMA_VERSION)
+        .map_err(|_| failed_migration())?;
+    transaction.commit().map_err(|_| failed_migration())
+}
+
+fn canonicalize_core_schema(connection: &mut Connection) -> Result<(), SafeError> {
+    connection
+        .pragma_update(None, "foreign_keys", "OFF")
+        .map_err(|_| failed_migration())?;
+    let transaction = connection
+        .transaction_with_behavior(TransactionBehavior::Immediate)
+        .map_err(|_| failed_migration())?;
+    transaction
+        .execute_batch(
+            "DROP TRIGGER IF EXISTS saves_phase4_json_insert_check;
+             DROP TRIGGER IF EXISTS saves_phase4_json_update_check;
+             DROP INDEX IF EXISTS room_blueprints_save_blueprint;
+             ALTER TABLE daily_reports RENAME TO daily_reports_pre_v7;
+             ALTER TABLE room_instances RENAME TO room_instances_pre_v7;
+             ALTER TABLE room_blueprints RENAME TO room_blueprints_pre_v7;
+             ALTER TABLE saves RENAME TO saves_pre_v7;",
+        )
+        .map_err(|_| failed_migration())?;
+    transaction
+        .execute_batch(include_str!("../migrations/001_initial.sql"))
+        .map_err(|_| failed_migration())?;
+    transaction
+        .execute_batch(
+            "ALTER TABLE room_blueprints ADD COLUMN openings_json TEXT;
+             ALTER TABLE saves ADD COLUMN operations_json TEXT;
+             INSERT INTO saves(
+               save_id,schema_version,ruleset_version,revision,phase,current_day,
+               cash_cents,rate_cents,phase2_json,latest_report_json,phase4_json,
+               updated_at,operations_json
+             )
+             SELECT
+               save_id,schema_version,ruleset_version,revision,phase,current_day,
+               cash_cents,rate_cents,phase2_json,latest_report_json,phase4_json,
+               updated_at,operations_json
+             FROM saves_pre_v7;
+             INSERT INTO room_blueprints(
+               save_id,blueprint_id,name,columns_count,rows_count,cells_json,
+               metrics_json,visual_json,openings_json
+             )
+             SELECT
+               save_id,blueprint_id,name,columns_count,rows_count,cells_json,
+               metrics_json,visual_json,openings_json
+             FROM room_blueprints_pre_v7;
+             INSERT INTO room_instances(
+               save_id,instance_id,slot_id,blueprint_id,ordinal,
+               committed_build_cost_cents
+             )
+             SELECT
+               save_id,instance_id,slot_id,blueprint_id,ordinal,
+               committed_build_cost_cents
+             FROM room_instances_pre_v7;
+             INSERT INTO daily_reports(save_id,game_day,report_json)
+             SELECT save_id,game_day,report_json FROM daily_reports_pre_v7;
+             DROP TABLE daily_reports_pre_v7;
+             DROP TABLE room_instances_pre_v7;
+             DROP TABLE room_blueprints_pre_v7;
+             DROP TABLE saves_pre_v7;
+             CREATE UNIQUE INDEX room_blueprints_save_blueprint
+               ON room_blueprints(save_id, blueprint_id);
+             CREATE TRIGGER saves_phase4_json_insert_check
+             BEFORE INSERT ON saves
+             WHEN NEW.phase4_json IS NOT NULL
+              AND (NOT json_valid(NEW.phase4_json) OR json_type(NEW.phase4_json) <> 'object')
+             BEGIN
+               SELECT RAISE(ABORT, 'phase4_json must be a valid JSON object');
+             END;
+             CREATE TRIGGER saves_phase4_json_update_check
+             BEFORE UPDATE OF phase4_json ON saves
+             WHEN NEW.phase4_json IS NOT NULL
+              AND (NOT json_valid(NEW.phase4_json) OR json_type(NEW.phase4_json) <> 'object')
+             BEGIN
+               SELECT RAISE(ABORT, 'phase4_json must be a valid JSON object');
+             END;",
+        )
+        .map_err(|_| failed_migration())?;
+    transaction.commit().map_err(|_| failed_migration())?;
+    connection
+        .pragma_update(None, "foreign_keys", "ON")
+        .map_err(|_| failed_migration())
+}
+
+fn validate_current_database_contents(connection: &Connection) -> Result<(), SafeError> {
+    validate_current_save_database(connection)?;
+    let mut statement = connection
+        .prepare("SELECT save_id FROM saves ORDER BY save_id")
+        .map_err(|_| validation_migration())?;
+    let save_ids = statement
+        .query_map([], |row| row.get::<_, String>(0))
+        .map_err(|_| validation_migration())?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|_| validation_migration())?;
+    drop(statement);
+    for save_id in save_ids {
+        load_game_from_connection(connection, &save_id)
+            .map_err(|error| validation_migration().with_detail(&error))?
+            .ok_or_else(validation_migration)?;
     }
+    Ok(())
+}
+
+fn validate_opened_save(
+    connection: &Connection,
+    database_path: &Path,
+    expected_save_id: &str,
+    allow_empty: bool,
+) -> Result<(), SafeError> {
+    validate_single_save_identity(connection, expected_save_id, allow_empty)
+        .map_err(|_| validation_migration())?;
+    let save_directory = database_path.parent().ok_or_else(validation_migration)?;
+    validate_asset_registry(connection, save_directory).map_err(|_| validation_migration())
+}
+
+fn reject_partial_v7_schema(connection: &Connection) -> Result<(), SafeError> {
+    let placeholders = crate::reliability::V7_TABLES
+        .iter()
+        .map(|_| "?")
+        .collect::<Vec<_>>()
+        .join(",");
+    let query = format!(
+        "SELECT count(*) FROM sqlite_master
+         WHERE type='table' AND name IN ({placeholders})"
+    );
+    let count = connection
+        .query_row(
+            &query,
+            rusqlite::params_from_iter(crate::reliability::V7_TABLES.iter()),
+            |row| row.get::<_, i64>(0),
+        )
+        .map_err(|_| validation_migration())?;
+    if count != 0 {
+        return Err(validation_migration().with_detail("旧版存档包含部分 v7 表"));
+    }
+    let allowed = [
+        "schema_migrations",
+        "saves",
+        "room_blueprints",
+        "room_instances",
+        "daily_reports",
+        "room_blueprints_save_blueprint",
+        "saves_phase4_json_insert_check",
+        "saves_phase4_json_update_check",
+    ]
+    .into_iter()
+    .collect::<HashSet<_>>();
+    let mut statement = connection
+        .prepare(
+            "SELECT name FROM sqlite_master
+             WHERE type IN ('table','index','trigger','view')
+               AND name NOT LIKE 'sqlite_autoindex_%'",
+        )
+        .map_err(|_| validation_migration())?;
+    let names = statement
+        .query_map([], |row| row.get::<_, String>(0))
+        .map_err(|_| validation_migration())?;
+    for name in names {
+        if !allowed.contains(name.map_err(|_| validation_migration())?.as_str()) {
+            return Err(validation_migration().with_detail("旧版存档包含未知结构对象"));
+        }
+    }
+    Ok(())
+}
+
+fn online_backup(source_path: &Path, destination_path: &Path) -> Result<(), SafeError> {
+    let source = open_read_only(source_path, "migration.backup-failed")?;
+    let mut destination = Connection::open(destination_path).map_err(|_| backup_migration())?;
+    let backup = Backup::new(&source, &mut destination).map_err(|_| backup_migration())?;
+    backup
+        .run_to_completion(128, Duration::from_millis(1), None)
+        .map_err(|_| backup_migration())?;
+    drop(backup);
+    drop(destination);
+    drop(source);
+    Ok(())
+}
+
+fn open_read_only(path: &Path, code: &'static str) -> Result<Connection, SafeError> {
+    Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY)
+        .map_err(|_| SafeError::new(code, "无法只读检查存档"))
+}
+
+fn configure_migration_connection(connection: &Connection) -> Result<(), SafeError> {
+    connection
+        .busy_timeout(Duration::from_millis(5_000))
+        .map_err(|_| failed_migration())?;
+    connection
+        .pragma_update(None, "foreign_keys", "ON")
+        .map_err(|_| failed_migration())?;
+    connection
+        .pragma_update(None, "synchronous", "FULL")
+        .map_err(|_| failed_migration())
+}
+
+fn open_current_connection(path: &Path) -> Result<Connection, SafeError> {
+    let connection = Connection::open(path).map_err(|_| validation_migration())?;
+    connection
+        .busy_timeout(Duration::from_millis(5_000))
+        .map_err(|_| validation_migration())?;
+    connection
+        .pragma_update(None, "foreign_keys", "ON")
+        .map_err(|_| validation_migration())?;
+    retry_busy(|| connection.pragma_update(None, "journal_mode", "WAL"))
+        .map_err(|_| validation_migration())?;
+    connection
+        .pragma_update(None, "synchronous", "FULL")
+        .map_err(|_| validation_migration())?;
+    validate_current_database_contents(&connection)?;
+    Ok(connection)
+}
+
+fn make_single_file_durable(connection: &Connection, path: &Path) -> Result<(), SafeError> {
+    connection
+        .pragma_update(None, "journal_mode", "DELETE")
+        .map_err(|_| failed_migration())?;
+    connection
+        .pragma_update(None, "synchronous", "FULL")
+        .map_err(|_| failed_migration())?;
+    sync_file(path).map_err(|_| failed_migration())
+}
+
+fn publish_new_database(partial: &Path, active: &Path) -> Result<(), SafeError> {
+    fs::rename(partial, active).map_err(|_| failed_migration())?;
+    let directory = active.parent().ok_or_else(failed_migration)?;
+    sync_directory(directory).map_err(|_| failed_migration())
+}
+
+fn atomic_replace_database(active: &Path, partial: &Path) -> Result<(), SafeError> {
+    let rollback = unique_sibling(active, "rollback");
+    let directory = active.parent().ok_or_else(failed_migration)?;
+    let journal = UpgradeJournal::new(partial, &rollback)?;
+    write_upgrade_journal(directory, &journal)?;
+
+    fs::rename(active, &rollback).map_err(|_| failed_migration())?;
+    if move_sidecar_if_present(active, &rollback, "-wal")
+        .and_then(|()| move_sidecar_if_present(active, &rollback, "-shm"))
+        .and_then(|()| sync_directory(directory).map_err(|_| failed_migration()))
+        .is_err()
+    {
+        restore_rollback_group(active, &rollback)?;
+        return Err(failed_migration());
+    }
+    if fs::rename(partial, active).is_err() {
+        restore_rollback_group(active, &rollback)?;
+        return Err(failed_migration());
+    }
+    if sync_directory(directory).is_err() {
+        restore_rollback_group(active, &rollback)?;
+        return Err(failed_migration());
+    }
+    if let Err(error) = open_read_only(active, "migration.validation-failed")
+        .and_then(|connection| validate_current_database_contents(&connection))
+    {
+        restore_rollback_group(active, &rollback)?;
+        return Err(error);
+    }
+    remove_database_group(&rollback);
+    remove_upgrade_journal(directory);
+    sync_directory(directory).map_err(|_| failed_migration())?;
+    Ok(())
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+struct UpgradeJournal {
+    version: u8,
+    partial_name: String,
+    rollback_name: String,
+}
+
+impl UpgradeJournal {
+    fn new(partial: &Path, rollback: &Path) -> Result<Self, SafeError> {
+        Ok(Self {
+            version: 1,
+            partial_name: safe_file_name(partial)?,
+            rollback_name: safe_file_name(rollback)?,
+        })
+    }
+
+    fn validate(&self) -> Result<(), SafeError> {
+        if self.version != 1
+            || !valid_owned_database_name(&self.partial_name, "partial")
+            || !valid_owned_database_name(&self.rollback_name, "rollback")
+        {
+            return Err(failed_migration());
+        }
+        Ok(())
+    }
+}
+
+fn recover_interrupted_upgrade(active: &Path) -> Result<(), SafeError> {
+    let directory = active.parent().ok_or_else(failed_migration)?;
+    let journal_path = upgrade_journal_path(directory);
+    let bytes = match fs::read(&journal_path) {
+        Ok(bytes) => bytes,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(_) => return Err(failed_migration()),
+    };
+    let journal =
+        serde_json::from_slice::<UpgradeJournal>(&bytes).map_err(|_| failed_migration())?;
+    journal.validate()?;
+    let partial = directory.join(&journal.partial_name);
+    let rollback = directory.join(&journal.rollback_name);
+
+    let new_is_valid = if active.is_file() {
+        open_read_only(active, "migration.validation-failed")
+            .and_then(|connection| validate_current_database_contents(&connection))
+            .is_ok()
+    } else {
+        false
+    };
+    if new_is_valid {
+        remove_database_group(&rollback);
+        remove_database_group(&partial);
+        remove_upgrade_journal(directory);
+        sync_directory(directory).map_err(|_| failed_migration())?;
+        return Ok(());
+    }
+
+    if !rollback.is_file() {
+        if active.is_file()
+            && (append_suffix(&rollback, "-wal").is_file()
+                || append_suffix(&rollback, "-shm").is_file())
+        {
+            restore_sidecar_if_present(active, &rollback, "-wal")?;
+            restore_sidecar_if_present(active, &rollback, "-shm")?;
+            sync_directory(directory).map_err(|_| failed_migration())?;
+        }
+        if active.is_file() && legacy_database_is_intact(active) {
+            remove_database_group(&partial);
+            remove_upgrade_journal(directory);
+            sync_directory(directory).map_err(|_| failed_migration())?;
+            return Ok(());
+        }
+        return Err(failed_migration());
+    }
+    restore_rollback_group(active, &rollback)?;
+    remove_database_group(&partial);
+    Ok(())
+}
+
+fn legacy_database_is_intact(path: &Path) -> bool {
+    let Ok(connection) = open_read_only(path, "migration.validation-failed") else {
+        return false;
+    };
+    let application_id = connection
+        .query_row("PRAGMA application_id", [], |row| row.get::<_, i64>(0))
+        .ok();
+    let user_version = connection
+        .query_row("PRAGMA user_version", [], |row| row.get::<_, i64>(0))
+        .ok();
+    if application_id != Some(0)
+        || user_version != Some(0)
+        || read_contiguous_legacy_audit_version(&connection).is_err()
+        || reject_partial_v7_schema(&connection).is_err()
+    {
+        return false;
+    }
+    connection
+        .query_row("PRAGMA integrity_check", [], |row| row.get::<_, String>(0))
+        .is_ok_and(|result| result == "ok")
+}
+
+fn restore_rollback_group(active: &Path, rollback: &Path) -> Result<(), SafeError> {
+    let _ = fs::remove_file(active);
+    fs::rename(rollback, active).map_err(|_| failed_migration())?;
+    restore_sidecar_if_present(active, rollback, "-wal")?;
+    restore_sidecar_if_present(active, rollback, "-shm")?;
+    let directory = active.parent().ok_or_else(failed_migration)?;
+    sync_directory(directory).map_err(|_| failed_migration())?;
+    remove_upgrade_journal(directory);
+    sync_directory(directory).map_err(|_| failed_migration())
+}
+
+fn move_sidecar_if_present(active: &Path, rollback: &Path, suffix: &str) -> Result<(), SafeError> {
+    let source = append_suffix(active, suffix);
+    if source.exists() {
+        fs::rename(source, append_suffix(rollback, suffix)).map_err(|_| failed_migration())?;
+    }
+    Ok(())
+}
+
+fn restore_sidecar_if_present(
+    active: &Path,
+    rollback: &Path,
+    suffix: &str,
+) -> Result<(), SafeError> {
+    let source = append_suffix(rollback, suffix);
+    if source.exists() {
+        let destination = append_suffix(active, suffix);
+        let _ = fs::remove_file(&destination);
+        fs::rename(source, destination).map_err(|_| failed_migration())?;
+    }
+    Ok(())
+}
+
+fn remove_database_group(main: &Path) {
+    let _ = fs::remove_file(main);
+    let _ = fs::remove_file(append_suffix(main, "-wal"));
+    let _ = fs::remove_file(append_suffix(main, "-shm"));
+}
+
+fn append_suffix(path: &Path, suffix: &str) -> PathBuf {
+    let mut name = path.as_os_str().to_os_string();
+    name.push(suffix);
+    PathBuf::from(name)
+}
+
+fn write_upgrade_journal(directory: &Path, journal: &UpgradeJournal) -> Result<(), SafeError> {
+    let temporary = directory.join(".cloud-inn.upgrade-journal.partial");
+    let final_path = upgrade_journal_path(directory);
+    let bytes = serde_json::to_vec(journal).map_err(|_| failed_migration())?;
+    let mut file = OpenOptions::new()
+        .create(true)
+        .truncate(true)
+        .write(true)
+        .open(&temporary)
+        .map_err(|_| failed_migration())?;
+    file.write_all(&bytes).map_err(|_| failed_migration())?;
+    file.sync_all().map_err(|_| failed_migration())?;
+    drop(file);
+    fs::rename(&temporary, &final_path).map_err(|_| failed_migration())?;
+    sync_directory(directory).map_err(|_| failed_migration())
+}
+
+fn remove_upgrade_journal(directory: &Path) {
+    let _ = fs::remove_file(upgrade_journal_path(directory));
+    let _ = fs::remove_file(directory.join(".cloud-inn.upgrade-journal.partial"));
+}
+
+fn upgrade_journal_path(directory: &Path) -> PathBuf {
+    directory.join(".cloud-inn.upgrade-journal.json")
+}
+
+fn safe_file_name(path: &Path) -> Result<String, SafeError> {
+    path.file_name()
+        .and_then(|name| name.to_str())
+        .filter(|name| !name.is_empty())
+        .map(str::to_owned)
+        .ok_or_else(failed_migration)
+}
+
+fn valid_owned_database_name(name: &str, label: &str) -> bool {
+    name.starts_with(".save.")
+        && name.contains(&format!(".{label}."))
+        && name.ends_with(".sqlite3")
+        && !name.contains('/')
+        && !name.contains('\\')
+        && !name.contains("..")
+}
+
+fn sync_file(path: &Path) -> std::io::Result<()> {
+    OpenOptions::new().read(true).open(path)?.sync_all()
+}
+
+fn sync_directory(path: &Path) -> std::io::Result<()> {
+    File::open(path)?.sync_all()
+}
+
+fn unique_sibling(path: &Path, label: &str) -> PathBuf {
+    let nonce = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos();
+    path.with_file_name(format!(
+        ".save.{}.{label}.{nonce}.sqlite3",
+        std::process::id()
+    ))
+}
+
+struct OwnedPartial {
+    path: Option<PathBuf>,
+}
+
+impl OwnedPartial {
+    fn new(path: PathBuf) -> Self {
+        Self { path: Some(path) }
+    }
+
+    fn disarm(&mut self) {
+        self.path = None;
+    }
+}
+
+impl Drop for OwnedPartial {
+    fn drop(&mut self) {
+        if let Some(path) = self.path.take() {
+            let _ = fs::remove_file(&path);
+            let _ = fs::remove_file(path.with_extension("sqlite3-wal"));
+            let _ = fs::remove_file(path.with_extension("sqlite3-shm"));
+        }
+    }
+}
+
+fn unsupported_migration() -> SafeError {
+    SafeError::new("migration.unsupported-version", "存档版本不受此版本支持")
+}
+
+fn backup_migration() -> SafeError {
+    SafeError::new("migration.backup-failed", "迁移前备份失败")
+}
+
+fn failed_migration() -> SafeError {
+    SafeError::new("migration.failed", "存档迁移失败")
+}
+
+fn validation_migration() -> SafeError {
+    SafeError::new("migration.validation-failed", "迁移后存档验证失败")
 }
 
 fn retry_busy<T>(mut operation: impl FnMut() -> rusqlite::Result<T>) -> Result<T, String> {
@@ -3186,6 +4163,48 @@ mod tests {
         fs::create_dir_all(&p).unwrap();
         p
     }
+
+    fn create_v6_database(repository: &SaveRepository) -> PathBuf {
+        let path = repository.db_path("save-1");
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        let mut connection = Connection::open(&path).unwrap();
+        connection
+            .execute_batch(include_str!("../migrations/001_initial.sql"))
+            .unwrap();
+        connection
+            .execute(
+                "INSERT INTO schema_migrations(version,applied_at)
+                 VALUES(1,'fixture')",
+                [],
+            )
+            .unwrap();
+        migrate_legacy(&mut connection).unwrap();
+        migrate_phase2(&mut connection).unwrap();
+        migrate_blueprint_openings(&mut connection).unwrap();
+        migrate_operations(&mut connection).unwrap();
+        migrate_phase4(&mut connection).unwrap();
+        connection
+            .execute(
+                "INSERT INTO saves(
+                   save_id,schema_version,ruleset_version,revision,phase,
+                   current_day,cash_cents,rate_cents,phase2_json,
+                   latest_report_json,operations_json,phase4_json,updated_at
+                 ) VALUES(
+                   'save-1',1,'prototype-v1',1,'design',
+                   0,100,10,NULL,NULL,NULL,NULL,'fixture'
+                 )",
+                [],
+            )
+            .unwrap();
+        connection.pragma_update(None, "application_id", 0).unwrap();
+        connection.pragma_update(None, "user_version", 0).unwrap();
+        connection
+            .pragma_update(None, "journal_mode", "DELETE")
+            .unwrap();
+        drop(connection);
+        path
+    }
+
     fn game() -> Value {
         json!({"schemaVersion":1,"rulesetVersion":"prototype-v1","saveId":"save-1","revision":1,"phase":"design","currentDay":0,"cashCents":100,"rateCents":10,"roomBlueprint":null,"floor":{"id":"prototype-floor","rooms":[]},"reports":[],"latestReport":null})
     }
@@ -3374,15 +4393,595 @@ mod tests {
     fn creates_and_migrates_new_db() {
         let r = SaveRepository::new(root("migrate"));
         assert_eq!(r.load_game("save-1").unwrap(), None);
-        assert!(r.db_path("save-1").exists());
+        assert!(!r.db_path("save-1").exists());
+        assert!(!r.db_path("save-1").parent().unwrap().exists());
+        r.commit_game(0, game()).unwrap();
+        assert!(r.db_path("save-1").is_file());
         assert_eq!(
             r.open("save-1")
                 .unwrap()
                 .query_row::<i64, _, _>("SELECT count(*) FROM schema_migrations", [], |x| x.get(0))
                 .unwrap(),
-            6
+            7
         );
     }
+
+    #[test]
+    fn phase5_v6_clone_migration_seeds_exact_metadata_runtime_and_backup() {
+        let repository = SaveRepository::new(root("phase5-v6"));
+        let path = create_v6_database(&repository);
+
+        repository.prepare_save_database("save-1").unwrap();
+
+        let connection = Connection::open(&path).unwrap();
+        assert_eq!(
+            connection
+                .query_row("PRAGMA application_id", [], |row| row.get::<_, i64>(0))
+                .unwrap(),
+            SAVE_APPLICATION_ID
+        );
+        assert_eq!(
+            connection
+                .query_row("PRAGMA user_version", [], |row| row.get::<_, i64>(0))
+                .unwrap(),
+            SAVE_SCHEMA_VERSION
+        );
+        assert_eq!(
+            connection
+                .query_row(
+                    "SELECT save_id,display_name,created_at_ms,renamed_at_ms,metadata_revision
+                     FROM save_metadata",
+                    [],
+                    |row| Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, i64>(2)?,
+                        row.get::<_, i64>(3)?,
+                        row.get::<_, i64>(4)?,
+                    )),
+                )
+                .unwrap(),
+            ("save-1".into(), "云岫酒店 1".into(), 0, 0, 0)
+        );
+        assert_eq!(
+            connection
+                .query_row(
+                    "SELECT singleton,session_id,clean_shutdown,last_durable_revision,
+                            coordinator_epoch,last_observed_wall_ms,updated_at_ms
+                     FROM runtime_session",
+                    [],
+                    |row| Ok((
+                        row.get::<_, i64>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, i64>(2)?,
+                        row.get::<_, i64>(3)?,
+                        row.get::<_, i64>(4)?,
+                        row.get::<_, i64>(5)?,
+                        row.get::<_, i64>(6)?,
+                    )),
+                )
+                .unwrap(),
+            (1, "migration-bootstrap".into(), 1, 1, 0, 0, 0)
+        );
+        drop(connection);
+
+        assert_eq!(
+            repository.load_game("save-1").unwrap().unwrap()["saveId"],
+            "save-1"
+        );
+        let backup_directory = path.parent().unwrap().join("pre-upgrade");
+        let backups = fs::read_dir(&backup_directory)
+            .unwrap()
+            .map(|entry| entry.unwrap().path())
+            .filter(|candidate| {
+                candidate
+                    .file_name()
+                    .and_then(|name| name.to_str())
+                    .is_some_and(|name| {
+                        name.starts_with("schema-v6-") && name.ends_with(".sqlite3")
+                    })
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(backups.len(), 1);
+        let backup_connection =
+            Connection::open_with_flags(&backups[0], OpenFlags::SQLITE_OPEN_READ_ONLY).unwrap();
+        assert_eq!(
+            backup_connection
+                .query_row("PRAGMA user_version", [], |row| row.get::<_, i64>(0))
+                .unwrap(),
+            0
+        );
+        assert_eq!(
+            backup_connection
+                .query_row(
+                    "SELECT revision FROM saves WHERE save_id='save-1'",
+                    [],
+                    |row| row.get::<_, i64>(0),
+                )
+                .unwrap(),
+            1
+        );
+    }
+
+    #[test]
+    fn phase5_repeated_current_open_is_byte_stable_and_creates_no_backup() {
+        let repository = SaveRepository::new(root("phase5-repeat"));
+        repository.commit_game(0, game()).unwrap();
+        let path = repository.db_path("save-1");
+        let before = fs::read(&path).unwrap();
+
+        repository.prepare_save_database("save-1").unwrap();
+        repository.prepare_save_database("save-1").unwrap();
+
+        assert_eq!(fs::read(&path).unwrap(), before);
+        assert!(!path.parent().unwrap().join("pre-upgrade").exists());
+    }
+
+    #[test]
+    fn phase5_unknown_load_creates_nothing_and_current_without_control_fails_closed() {
+        let app_root = root("phase5-control-order");
+        let repository = SaveRepository::new(app_root.clone());
+        assert_eq!(repository.load_game("unknown-save").unwrap(), None);
+        assert!(!app_root.join("saves/unknown-save").exists());
+        assert!(!app_root
+            .join(crate::provider_control::PROVIDER_CONTROL_FILENAME)
+            .exists());
+
+        repository.commit_game(0, game()).unwrap();
+        let control_path = app_root.join(crate::provider_control::PROVIDER_CONTROL_FILENAME);
+        assert!(control_path.is_file());
+        fs::remove_file(&control_path).unwrap();
+        let database_before = fs::read(repository.db_path("save-1")).unwrap();
+
+        let error = repository.prepare_save_database("save-1").unwrap_err();
+
+        assert!(
+            error.to_string().contains("provider.control-invalid"),
+            "{error}"
+        );
+        assert_eq!(
+            fs::read(repository.db_path("save-1")).unwrap(),
+            database_before
+        );
+        assert!(!control_path.exists());
+    }
+
+    #[test]
+    fn phase5_first_commit_recovers_a_durable_empty_database() {
+        let app_root = root("phase5-empty-first-commit");
+        let repository = SaveRepository::new(app_root);
+        drop(repository.bootstrap_provider_control().unwrap());
+        let path = repository.db_path("save-1");
+        ensure_save_directory(path.parent().unwrap()).unwrap();
+        let _save_lock = lock_save(path.parent().unwrap()).unwrap();
+        initialize_current_database(&path).unwrap();
+        assert_eq!(
+            Connection::open(&path)
+                .unwrap()
+                .query_row("SELECT count(*) FROM saves", [], |row| row.get::<_, i64>(0))
+                .unwrap(),
+            0
+        );
+        drop(_save_lock);
+
+        repository.commit_game(0, game()).unwrap();
+
+        assert_eq!(
+            repository.load_game("save-1").unwrap().unwrap()["revision"],
+            1
+        );
+    }
+
+    #[test]
+    fn phase5_legacy_identity_mismatch_fails_before_backup_or_swap() {
+        let repository = SaveRepository::new(root("phase5-legacy-identity"));
+        let path = create_v6_database(&repository);
+        let connection = Connection::open(&path).unwrap();
+        connection
+            .execute("UPDATE saves SET save_id='other-save'", [])
+            .unwrap();
+        drop(connection);
+        let before = fs::read(&path).unwrap();
+
+        let error = repository.prepare_save_database("save-1").unwrap_err();
+
+        assert!(
+            error.to_string().contains("migration.validation-failed"),
+            "{error}"
+        );
+        assert_eq!(fs::read(&path).unwrap(), before);
+        assert!(!path.parent().unwrap().join("pre-upgrade").exists());
+    }
+
+    #[test]
+    fn phase5_open_enforces_cross_database_issued_grant_identity() {
+        let app_root = root("phase5-cross-database");
+        let repository = SaveRepository::new(app_root.clone());
+        repository.commit_game(0, game()).unwrap();
+        let fingerprint = "a".repeat(64);
+        let save_connection = repository.open("save-1").unwrap();
+        save_connection
+            .execute(
+                "INSERT INTO generation_jobs(
+                   job_id,save_id,target_kind,target_fingerprint,request_fingerprint,
+                   request_json,status,selected_model,created_at_ms,updated_at_ms
+                 ) VALUES(
+                   'job-1','save-1','master','target-1',?1,
+                   '{}','queued','model-1',1,1
+                 )",
+                [&fingerprint],
+            )
+            .unwrap();
+        drop(save_connection);
+        let control_connection = ProviderControlStore::new(app_root)
+            .open_validated()
+            .unwrap();
+        control_connection
+            .execute(
+                "INSERT INTO provider_send_grants(
+                   grant_id,save_id,job_id,job_revision,attempt_sequence,model,
+                   request_fingerprint,quota_day,source,state,issued_at_ms
+                 ) VALUES(
+                   'grant-1','save-1','job-1',0,1,'model-1',
+                   ?1,0,'player-confirmed','issued',1
+                 )",
+                [&fingerprint],
+            )
+            .unwrap();
+        drop(control_connection);
+
+        assert!(repository.load_game("save-1").is_ok());
+
+        let save_connection = Connection::open(repository.db_path("save-1")).unwrap();
+        save_connection
+            .execute(
+                "UPDATE generation_jobs SET job_revision=1 WHERE job_id='job-1'",
+                [],
+            )
+            .unwrap();
+        drop(save_connection);
+
+        let error = repository.load_game("save-1").unwrap_err();
+        assert!(error.contains("provider.control-invalid"), "{error}");
+    }
+
+    #[test]
+    fn phase5_forced_migration_failure_leaves_original_byte_identical() {
+        let repository = SaveRepository::new(root("phase5-forced-failure"));
+        let path = create_v6_database(&repository);
+        let connection = Connection::open(&path).unwrap();
+        connection
+            .execute(
+                "INSERT INTO room_blueprints(
+                   save_id,blueprint_id,name,columns_count,rows_count,
+                   cells_json,metrics_json,visual_json,openings_json
+                 ) VALUES(
+                   'save-1','broken-blueprint','Broken',1,1,
+                   'not-json','{}','{}',NULL
+                 )",
+                [],
+            )
+            .unwrap();
+        drop(connection);
+        let before = fs::read(&path).unwrap();
+
+        let error = repository.prepare_save_database("save-1").unwrap_err();
+
+        assert!(error.to_string().contains("migration.validation-failed"));
+        assert_eq!(fs::read(&path).unwrap(), before);
+        assert_eq!(
+            fs::read_dir(path.parent().unwrap().join("pre-upgrade"))
+                .unwrap()
+                .filter_map(Result::ok)
+                .filter(|entry| entry
+                    .file_name()
+                    .to_string_lossy()
+                    .starts_with("schema-v6-"))
+                .count(),
+            1
+        );
+        let connection = Connection::open(&path).unwrap();
+        assert_eq!(
+            connection
+                .query_row("PRAGMA user_version", [], |row| row.get::<_, i64>(0))
+                .unwrap(),
+            0
+        );
+    }
+
+    #[test]
+    fn phase5_wrong_application_id_and_future_version_are_read_only_rejections() {
+        for (name, application_id, user_version) in [("wrong-app", 1234, 0), ("future", 0, 8)] {
+            let repository = SaveRepository::new(root(name));
+            let path = create_v6_database(&repository);
+            let connection = Connection::open(&path).unwrap();
+            connection
+                .pragma_update(None, "application_id", application_id)
+                .unwrap();
+            connection
+                .pragma_update(None, "user_version", user_version)
+                .unwrap();
+            drop(connection);
+            let before = fs::read(&path).unwrap();
+
+            let error = repository.prepare_save_database("save-1").unwrap_err();
+
+            assert!(error.to_string().contains("migration.unsupported-version"));
+            assert_eq!(fs::read(&path).unwrap(), before);
+        }
+    }
+
+    #[test]
+    fn phase5_startup_restores_active_missing_upgrade_journal() {
+        let repository = SaveRepository::new(root("phase5-journal-restore"));
+        let path = create_v6_database(&repository);
+        repository.bootstrap_provider_control().unwrap();
+        let directory = path.parent().unwrap();
+        let rollback = unique_sibling(&path, "rollback");
+        let partial = unique_sibling(&path, "upgrade.partial");
+        let wal_connection = Connection::open(&path).unwrap();
+        wal_connection
+            .pragma_update(None, "journal_mode", "WAL")
+            .unwrap();
+        wal_connection
+            .pragma_update(None, "wal_autocheckpoint", 0)
+            .unwrap();
+        wal_connection
+            .execute("UPDATE saves SET revision=2 WHERE save_id='save-1'", [])
+            .unwrap();
+        let main_bytes = fs::read(&path).unwrap();
+        let wal_bytes = fs::read(append_suffix(&path, "-wal")).unwrap();
+        let shm_bytes = fs::read(append_suffix(&path, "-shm")).unwrap();
+        drop(wal_connection);
+        fs::write(&path, &main_bytes).unwrap();
+        fs::write(append_suffix(&path, "-wal"), &wal_bytes).unwrap();
+        fs::write(append_suffix(&path, "-shm"), &shm_bytes).unwrap();
+        online_backup(&path, &partial).unwrap();
+        let journal = UpgradeJournal::new(&partial, &rollback).unwrap();
+        write_upgrade_journal(directory, &journal).unwrap();
+        fs::rename(&path, &rollback).unwrap();
+        fs::rename(
+            append_suffix(&path, "-wal"),
+            append_suffix(&rollback, "-wal"),
+        )
+        .unwrap();
+
+        recover_interrupted_upgrade(&path).unwrap();
+
+        assert_eq!(
+            Connection::open(&path)
+                .unwrap()
+                .query_row(
+                    "SELECT revision FROM saves WHERE save_id='save-1'",
+                    [],
+                    |row| row.get::<_, i64>(0),
+                )
+                .unwrap(),
+            2
+        );
+        assert!(!upgrade_journal_path(directory).exists());
+        assert!(!rollback.exists());
+
+        repository.prepare_save_database("save-1").unwrap();
+
+        assert!(path.is_file());
+        assert!(!upgrade_journal_path(directory).exists());
+        assert!(!rollback.exists());
+        assert_eq!(
+            Connection::open(&path)
+                .unwrap()
+                .query_row("PRAGMA user_version", [], |row| row.get::<_, i64>(0))
+                .unwrap(),
+            7
+        );
+        assert_eq!(
+            fs::read_dir(directory.join("pre-upgrade"))
+                .unwrap()
+                .filter_map(Result::ok)
+                .filter(|entry| entry
+                    .file_name()
+                    .to_string_lossy()
+                    .starts_with("schema-v6-"))
+                .count(),
+            1
+        );
+        assert_ne!(fs::read(&path).unwrap(), main_bytes);
+    }
+
+    #[test]
+    fn phase5_recovery_resumes_after_main_restore_before_wal_restore() {
+        let repository = SaveRepository::new(root("phase5-journal-resume-sidecars"));
+        let path = create_v6_database(&repository);
+        drop(repository.bootstrap_provider_control().unwrap());
+        let directory = path.parent().unwrap();
+        let rollback = unique_sibling(&path, "rollback");
+        let partial = unique_sibling(&path, "upgrade.partial");
+        let wal_connection = Connection::open(&path).unwrap();
+        wal_connection
+            .pragma_update(None, "journal_mode", "WAL")
+            .unwrap();
+        wal_connection
+            .pragma_update(None, "wal_autocheckpoint", 0)
+            .unwrap();
+        wal_connection
+            .execute("UPDATE saves SET revision=2 WHERE save_id='save-1'", [])
+            .unwrap();
+        let main_bytes = fs::read(&path).unwrap();
+        let wal_bytes = fs::read(append_suffix(&path, "-wal")).unwrap();
+        let shm_bytes = fs::read(append_suffix(&path, "-shm")).unwrap();
+        drop(wal_connection);
+        fs::write(&path, &main_bytes).unwrap();
+        fs::write(append_suffix(&path, "-wal"), &wal_bytes).unwrap();
+        fs::write(append_suffix(&path, "-shm"), &shm_bytes).unwrap();
+        online_backup(&path, &partial).unwrap();
+        write_upgrade_journal(
+            directory,
+            &UpgradeJournal::new(&partial, &rollback).unwrap(),
+        )
+        .unwrap();
+        fs::rename(&path, &rollback).unwrap();
+        fs::rename(
+            append_suffix(&path, "-wal"),
+            append_suffix(&rollback, "-wal"),
+        )
+        .unwrap();
+        fs::rename(
+            append_suffix(&path, "-shm"),
+            append_suffix(&rollback, "-shm"),
+        )
+        .unwrap();
+        fs::rename(&rollback, &path).unwrap();
+
+        recover_interrupted_upgrade(&path).unwrap();
+
+        assert_eq!(
+            Connection::open(&path)
+                .unwrap()
+                .query_row(
+                    "SELECT revision FROM saves WHERE save_id='save-1'",
+                    [],
+                    |row| row.get::<_, i64>(0),
+                )
+                .unwrap(),
+            2
+        );
+        assert!(!upgrade_journal_path(directory).exists());
+        assert!(!append_suffix(&rollback, "-wal").exists());
+        assert!(!append_suffix(&rollback, "-shm").exists());
+    }
+
+    #[test]
+    fn phase5_preupgrade_backup_name_changes_when_source_changes() {
+        let repository = SaveRepository::new(root("phase5-backup-hash"));
+        let path = create_v6_database(&repository);
+        let backup_directory = path.parent().unwrap().join("pre-upgrade");
+        ensure_backup_directory(&backup_directory).unwrap();
+        let first =
+            create_content_addressed_upgrade_backup(&path, &backup_directory, 6, 0).unwrap();
+        let first_bytes = fs::read(&first).unwrap();
+
+        let connection = Connection::open(&path).unwrap();
+        connection
+            .execute("UPDATE saves SET revision=2 WHERE save_id='save-1'", [])
+            .unwrap();
+        drop(connection);
+        let second =
+            create_content_addressed_upgrade_backup(&path, &backup_directory, 6, 0).unwrap();
+
+        assert_ne!(first, second);
+        assert_eq!(fs::read(&first).unwrap(), first_bytes);
+        assert_ne!(fs::read(&first).unwrap(), fs::read(&second).unwrap());
+    }
+
+    #[test]
+    fn phase5_pre_swap_journal_cleans_partial_and_retries_safely() {
+        let repository = SaveRepository::new(root("phase5-journal-pre-swap"));
+        let path = create_v6_database(&repository);
+        repository.bootstrap_provider_control().unwrap();
+        let directory = path.parent().unwrap();
+        let rollback = unique_sibling(&path, "rollback");
+        let partial = unique_sibling(&path, "upgrade.partial");
+        online_backup(&path, &partial).unwrap();
+        let journal = UpgradeJournal::new(&partial, &rollback).unwrap();
+        write_upgrade_journal(directory, &journal).unwrap();
+        repository.prepare_save_database("save-1").unwrap();
+
+        assert!(!upgrade_journal_path(directory).exists());
+        assert!(!partial.exists());
+        assert_eq!(
+            Connection::open(&path)
+                .unwrap()
+                .query_row("PRAGMA user_version", [], |row| row.get::<_, i64>(0))
+                .unwrap(),
+            7
+        );
+    }
+
+    #[test]
+    fn phase5_post_publish_journal_keeps_valid_new_database() {
+        let repository = SaveRepository::new(root("phase5-journal-post-publish"));
+        let path = create_v6_database(&repository);
+        repository.bootstrap_provider_control().unwrap();
+        let directory = path.parent().unwrap();
+        let rollback = unique_sibling(&path, "rollback");
+        let partial = unique_sibling(&path, "upgrade.partial");
+        online_backup(&path, &partial).unwrap();
+        let mut partial_connection = Connection::open(&partial).unwrap();
+        configure_migration_connection(&partial_connection).unwrap();
+        apply_all_migrations(&mut partial_connection).unwrap();
+        validate_current_database_contents(&partial_connection).unwrap();
+        make_single_file_durable(&partial_connection, &partial).unwrap();
+        drop(partial_connection);
+        let journal = UpgradeJournal::new(&partial, &rollback).unwrap();
+        write_upgrade_journal(directory, &journal).unwrap();
+        fs::rename(&path, &rollback).unwrap();
+        fs::rename(&partial, &path).unwrap();
+        sync_directory(directory).unwrap();
+
+        recover_interrupted_upgrade(&path).unwrap();
+
+        assert!(!upgrade_journal_path(directory).exists());
+        assert!(!rollback.exists());
+        assert_eq!(
+            Connection::open(&path)
+                .unwrap()
+                .query_row("PRAGMA user_version", [], |row| row.get::<_, i64>(0))
+                .unwrap(),
+            7
+        );
+    }
+
+    #[test]
+    fn phase5_missing_rollback_with_corrupt_active_preserves_journal() {
+        let repository = SaveRepository::new(root("phase5-journal-corrupt-active"));
+        let path = create_v6_database(&repository);
+        repository.bootstrap_provider_control().unwrap();
+        let directory = path.parent().unwrap();
+        let rollback = unique_sibling(&path, "rollback");
+        let partial = unique_sibling(&path, "upgrade.partial");
+        online_backup(&path, &partial).unwrap();
+        let journal = UpgradeJournal::new(&partial, &rollback).unwrap();
+        write_upgrade_journal(directory, &journal).unwrap();
+        fs::write(&path, b"corrupt-active").unwrap();
+
+        assert!(repository.prepare_save_database("save-1").is_err());
+        assert_eq!(fs::read(&path).unwrap(), b"corrupt-active");
+        assert!(upgrade_journal_path(directory).is_file());
+        assert!(partial.is_file());
+    }
+
+    #[test]
+    fn phase5_generation_job_constraints_reject_null_and_invalid_target_kind() {
+        let repository = SaveRepository::new(root("phase5-job-constraints"));
+        repository.commit_game(0, game()).unwrap();
+        let connection = repository.open("save-1").unwrap();
+        let fingerprint = "a".repeat(64);
+        for target_kind in [None, Some("unknown")] {
+            let result = connection.execute(
+                "INSERT INTO generation_jobs(
+                   job_id,save_id,target_kind,target_fingerprint,request_fingerprint,
+                   request_json,status,created_at_ms,updated_at_ms
+                 ) VALUES(?1,'save-1',?2,'target',?3,'{}','queued',0,0)",
+                params![
+                    format!("job-{}", target_kind.unwrap_or("null")),
+                    target_kind,
+                    fingerprint
+                ],
+            );
+            assert!(result.is_err());
+        }
+        for status in ["ready-for-review", "adopted"] {
+            let result = connection.execute(
+                "INSERT INTO generation_jobs(
+                   job_id,save_id,target_kind,target_fingerprint,request_fingerprint,
+                   request_json,status,asset_id,created_at_ms,updated_at_ms
+                 ) VALUES(?1,'save-1','master','target',?2,'{}',?3,NULL,0,0)",
+                params![format!("job-{status}"), fingerprint, status],
+            );
+            assert!(result.is_err());
+        }
+    }
+
     #[test]
     fn operations_are_optional_and_minimal_state_is_valid() {
         assert!(validate_game(&game()).is_ok());
@@ -4227,8 +5826,11 @@ mod tests {
         );
         next["cashCents"] = json!(888);
         let error = r.commit_game(1, next).unwrap_err();
-        assert!(error.contains("forced"));
-        assert_eq!(r.load_game("save-1").unwrap(), Some(prior));
+        assert!(error.contains("migration.validation-failed"), "{error}");
+        assert_eq!(
+            load_game_from_connection(&conn, "save-1").unwrap(),
+            Some(prior)
+        );
     }
     #[test]
     fn invalid_save_id_rejected() {
@@ -5534,7 +7136,7 @@ mod tests {
     }
 
     #[test]
-    fn phase4_minimal_migrates_old_schema_and_loads_without_envelope() {
+    fn current_v7_rejects_a_missing_phase4_schema_without_repair() {
         let repository = SaveRepository::new(root("phase4-old-schema"));
         repository.commit_game(0, game()).unwrap();
         let conn = repository.open("save-1").unwrap();
@@ -5547,10 +7149,11 @@ mod tests {
         .unwrap();
         drop(conn);
 
-        let loaded = repository.load_game("save-1").unwrap().unwrap();
-
-        assert!(loaded.get("phase4").is_none());
-        let conn = repository.open("save-1").unwrap();
+        let before = fs::read(repository.db_path("save-1")).unwrap();
+        let error = repository.load_game("save-1").unwrap_err();
+        assert!(error.contains("migration.validation-failed"), "{error}");
+        assert_eq!(fs::read(repository.db_path("save-1")).unwrap(), before);
+        let conn = Connection::open(repository.db_path("save-1")).unwrap();
         assert_eq!(
             conn.query_row::<i64, _, _>(
                 "SELECT count(*) FROM pragma_table_info('saves') WHERE name='phase4_json'",
@@ -5558,26 +7161,12 @@ mod tests {
                 |row| row.get(0),
             )
             .unwrap(),
-            1
+            0
         );
-        let saves_sql = conn
-            .query_row::<String, _, _>(
-                "SELECT sql FROM sqlite_master WHERE type='table' AND name='saves'",
-                [],
-                |row| row.get(0),
-            )
-            .unwrap();
-        assert!(saves_sql.contains("json_valid(phase4_json)"), "{saves_sql}");
-        assert!(conn
-            .execute(
-                "UPDATE saves SET phase4_json='[]' WHERE save_id='save-1'",
-                [],
-            )
-            .is_err());
     }
 
     #[test]
-    fn phase4_migration_repairs_an_existing_unconstrained_column() {
+    fn current_v7_rejects_an_unconstrained_phase4_column_without_repair() {
         let repository = SaveRepository::new(root("phase4-unconstrained-schema"));
         repository.commit_game(0, game()).unwrap();
         let conn = repository.open("save-1").unwrap();
@@ -5590,15 +7179,9 @@ mod tests {
         .unwrap();
         drop(conn);
 
-        repository.open("save-1").unwrap();
-
-        let conn = Connection::open(repository.db_path("save-1")).unwrap();
-        assert!(conn
-            .execute(
-                "UPDATE saves SET phase4_json='[]' WHERE save_id='save-1'",
-                [],
-            )
-            .is_err());
-        repository.open("save-1").unwrap();
+        let before = fs::read(repository.db_path("save-1")).unwrap();
+        let error = repository.open("save-1").unwrap_err();
+        assert!(error.contains("migration.validation-failed"), "{error}");
+        assert_eq!(fs::read(repository.db_path("save-1")).unwrap(), before);
     }
 }

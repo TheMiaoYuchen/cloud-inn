@@ -43,6 +43,10 @@ static DATA_URI: LazyLock<Regex> = LazyLock::new(|| {
 static LONG_BASE64: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"(?:[A-Za-z0-9+/_-]{128,}={0,2})").expect("base64 redaction regex")
 });
+static SQL_STATEMENT: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"(?i)\b(?:select|insert|update|delete|create|alter|drop|pragma)\b")
+        .expect("SQL detail detection regex")
+});
 
 #[derive(Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -66,6 +70,95 @@ impl SafeError {
         self.detail = Some(redact_bounded(detail, MAX_ERROR_DETAIL_CHARS));
         self
     }
+}
+
+pub fn persistence_load_error(error: String) -> SafeError {
+    persistence_error(error, "unknown.unexpected")
+}
+
+pub fn persistence_commit_error(error: String) -> SafeError {
+    persistence_error(error, "save.corrupt")
+}
+
+pub fn app_storage_error() -> SafeError {
+    SafeError::new("unknown.unexpected", "无法访问应用存储")
+}
+
+fn persistence_error(error: String, fallback_code: &'static str) -> SafeError {
+    let code = embedded_persistence_code(&error).unwrap_or_else(|| {
+        if error.contains("存档标识无效") {
+            "save.invalid-id"
+        } else if error.contains("存档已更新") || error.contains("存档版本无效") {
+            "save.conflict"
+        } else if error.contains("存档数据损坏") || error.contains("存档路径无效") {
+            "save.corrupt"
+        } else if error.contains("database is locked")
+            || error.contains("database is busy")
+            || error.contains("存档正被另一个操作使用")
+        {
+            "save.locked"
+        } else if error.contains("数据库操作失败") || error.contains("无法检查存档") {
+            "unknown.unexpected"
+        } else {
+            fallback_code
+        }
+    });
+    let mut safe = SafeError::new(code, persistence_message(code));
+    safe.detail = Some(safe_persistence_detail(&error));
+    safe
+}
+
+fn embedded_persistence_code(error: &str) -> Option<&'static str> {
+    let (_, code) = error.strip_suffix(')')?.rsplit_once(" (")?;
+    match code {
+        "save.not-found" => Some("save.not-found"),
+        "save.invalid-id" => Some("save.invalid-id"),
+        "save.invalid-name" => Some("save.invalid-name"),
+        "save.conflict" => Some("save.conflict"),
+        "save.locked" => Some("save.locked"),
+        "save.corrupt" => Some("save.corrupt"),
+        "migration.unsupported-version" => Some("migration.unsupported-version"),
+        "migration.backup-failed" => Some("migration.backup-failed"),
+        "migration.failed" => Some("migration.failed"),
+        "migration.validation-failed" => Some("migration.validation-failed"),
+        "provider.control-invalid" => Some("provider.control-invalid"),
+        "unknown.unexpected" => Some("unknown.unexpected"),
+        _ => None,
+    }
+}
+
+fn persistence_message(code: &str) -> &'static str {
+    match code {
+        "save.not-found" => "存档不存在",
+        "save.invalid-id" => "存档标识无效",
+        "save.invalid-name" => "存档名称无效",
+        "save.conflict" => "存档已更新，请重新加载",
+        "save.locked" => "存档正被另一个操作使用",
+        "save.corrupt" => "存档数据损坏",
+        "migration.unsupported-version" => "存档版本不受此版本支持",
+        "migration.backup-failed" => "迁移前备份失败",
+        "migration.failed" => "存档迁移失败",
+        "migration.validation-failed" => "迁移后存档验证失败",
+        "provider.control-invalid" => "图片服务计费控制记录无效或不可用",
+        _ => "发生了未预期的内部错误",
+    }
+}
+
+fn safe_persistence_detail(error: &str) -> String {
+    let lower = error.to_ascii_lowercase();
+    let contains_path = lower.contains("file:")
+        || lower.contains(":\\")
+        || lower.contains(":/")
+        || error
+            .split(|character: char| {
+                character.is_whitespace()
+                    || matches!(character, '"' | '\'' | '(' | ')' | '[' | ']' | '=')
+            })
+            .any(|segment| segment.starts_with('/'));
+    if contains_path || SQL_STATEMENT.is_match(error) {
+        return REDACTED.to_string();
+    }
+    redact_bounded(error, MAX_ERROR_DETAIL_CHARS)
 }
 
 impl fmt::Debug for SafeError {
@@ -278,6 +371,54 @@ mod tests {
             assert!(!rendered.contains(SENTINEL), "{rendered}");
             assert!(rendered.chars().count() < 1_300, "{rendered}");
         }
+    }
+
+    #[test]
+    fn persistence_errors_serialize_with_stable_codes_and_safe_details() {
+        let cases = [
+            (
+                persistence_load_error("存档迁移失败 (migration.failed)".to_string()),
+                "migration.failed",
+            ),
+            (
+                persistence_load_error("存档标识无效".to_string()),
+                "save.invalid-id",
+            ),
+            (
+                persistence_commit_error("存档已更新，请重新加载".to_string()),
+                "save.conflict",
+            ),
+            (
+                persistence_load_error("经营存档数据损坏".to_string()),
+                "save.corrupt",
+            ),
+        ];
+        for (error, expected_code) in cases {
+            let serialized = serde_json::to_value(error).unwrap();
+            assert_eq!(serialized["code"], expected_code);
+            assert!(serialized["message"]
+                .as_str()
+                .is_some_and(|value| !value.is_empty()));
+            assert!(serialized["detail"].as_str().is_some());
+        }
+    }
+
+    #[test]
+    fn persistence_error_detail_never_exposes_paths_sql_or_secrets_and_is_bounded() {
+        let raw = format!(
+            "数据库操作失败: SELECT token FROM saves at /Users/example/Cloud Inn/save.sqlite3\n\
+             Authorization: Bearer {SENTINEL} {}",
+            "x".repeat(2_000)
+        );
+        let serialized = serde_json::to_string(&persistence_load_error(raw)).unwrap();
+        assert!(serialized.contains("unknown.unexpected"), "{serialized}");
+        assert!(!serialized.contains("/Users/"), "{serialized}");
+        assert!(
+            !serialized.to_ascii_lowercase().contains("select "),
+            "{serialized}"
+        );
+        assert!(!serialized.contains(SENTINEL), "{serialized}");
+        assert!(serialized.chars().count() < 1_300, "{serialized}");
     }
 
     #[test]
