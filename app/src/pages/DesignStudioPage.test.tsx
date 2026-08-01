@@ -5,7 +5,7 @@ import { createNewGame } from "../domain/game/state";
 import type { VisualJobProjection } from "../domain/reliability/reliabilityTypes";
 import { InMemorySavePort } from "../infrastructure/memory/InMemorySavePort";
 import { GameProvider, useGame } from "../state/GameProvider";
-import { ReliabilityProvider } from "../state/ReliabilityProvider";
+import { ReliabilityProvider, useReliability } from "../state/ReliabilityProvider";
 import { DesignStudioPage } from "./DesignStudioPage";
 import { makeReliabilityPort, TEST_SAVE } from "./reliabilityTestSupport";
 
@@ -102,5 +102,42 @@ describe("DesignStudioPage", () => {
     expect(await screen.findAllByRole("button", { name: "重试" })).toHaveLength(2);
     expect(screen.getByRole("button", { name: "改用兼容 1K" })).toBeInTheDocument();
     expect(screen.getAllByText("下次可重试")).toHaveLength(3);
+  });
+
+  it("does not let an old action reload jobs after switching saves", async () => {
+    const saveB = { ...TEST_SAVE, saveId: "save-b" as typeof TEST_SAVE.saveId, displayName: "B" };
+    const stateA = { ...createNewGame(TEST_SAVE.saveId), revision: 1 };
+    const stateB = { ...createNewGame(saveB.saveId), revision: 1 };
+    const savePort = new InMemorySavePort();
+    await savePort.commit(0, stateA);
+    await savePort.commit(0, stateB);
+    const retryable = {
+      jobId: "job-a", saveId: TEST_SAVE.saveId, jobRevision: 1, status: "failed-retryable", targetKind: "master",
+      targetFingerprint: "target-a", requestFingerprint: "request-a", resolution: "2k", selectedModel: null,
+      attemptCount: 1, nextAttemptAtMs: null, asset: null, errorCode: "network.timeout", responseAmbiguous: false, createdAtMs: 1, updatedAtMs: 1,
+    } as VisualJobProjection;
+    const bJob = { ...retryable, jobId: "job-b", saveId: saveB.saveId, status: "cancelled", targetFingerprint: "target-b" } as VisualJobProjection;
+    let finishRetry!: () => void;
+    const listVisualJobs = vi.fn(async (saveId) => saveId === TEST_SAVE.saveId ? [retryable] : [bJob]);
+    const retryVisualJob = vi.fn(() => new Promise<VisualJobProjection>((resolve) => {
+      finishRetry = () => resolve({ ...retryable, status: "queued", jobRevision: 2 });
+    }));
+    const port = makeReliabilityPort({ listSaves: vi.fn(async () => [TEST_SAVE, saveB]), listVisualJobs, retryVisualJob });
+    function Experience() {
+      const { activeSaveId, selectSave } = useReliability();
+      if (!activeSaveId) return null;
+      return <GameProvider savePort={savePort} saveId={activeSaveId}><button onClick={() => void selectSave(saveB.saveId)}>切到 B</button><DesignStudioPage /></GameProvider>;
+    }
+    render(<ReliabilityProvider port={port}><Experience /></ReliabilityProvider>);
+    await userEvent.setup().click(await screen.findByRole("button", { name: "重试" }));
+    await userEvent.setup().click(screen.getByRole("button", { name: "切到 B" }));
+    expect(await screen.findByText("已取消")).toBeInTheDocument();
+    const aCallsBeforeCompletion = listVisualJobs.mock.calls.filter(([saveId]) => saveId === TEST_SAVE.saveId).length;
+
+    await act(async () => finishRetry());
+    await act(async () => {});
+
+    expect(screen.getByText("已取消")).toBeInTheDocument();
+    expect(listVisualJobs.mock.calls.filter(([saveId]) => saveId === TEST_SAVE.saveId)).toHaveLength(aCallsBeforeCompletion);
   });
 });

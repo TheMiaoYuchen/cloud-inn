@@ -1,34 +1,73 @@
 import { expect, test } from "@playwright/test";
+import { projectHotelInventory } from "../src/domain/building/hotelInventory";
+import { createApprovedOperations } from "../src/domain/operations/operationsFixtures";
+import { settleHotelDay } from "../src/domain/operations/settleHotelDay";
 import { createPhase4AcceptanceState } from "../src/testing/phase4Fixtures";
+import { ensureBrowserSave } from "./reliabilitySetup";
 
 const soakMinutes = Number(process.env.CLOUD_INN_SOAK_MINUTES ?? 0);
+
+function maximumFixture(saveId: string) {
+  const state = createPhase4AcceptanceState(saveId);
+  state.revision = 1;
+  state.phase = "open";
+  state.operations = createApprovedOperations();
+  const settled = settleHotelDay({
+    day: 1,
+    seed: state.saveId,
+    cashCents: state.cashCents,
+    operations: state.operations,
+    offers: projectHotelInventory(state).rooms,
+    phase4: state.phase4!,
+  });
+  state.currentDay = 1;
+  state.cashCents = settled.cashCents;
+  state.operations = { ...settled.operations, timeSpeed: 0, lastOfflineCheckpointMs: Date.now() };
+  state.phase4 = settled.phase4;
+  return {
+    state,
+    guestFloorId: state.phase4.floors.find(({ rooms }) => rooms.length > 0)!.id,
+  };
+}
 
 test("keeps the maximum hotel responsive for the configured soak window", async ({ page }) => {
   test.skip(!Number.isFinite(soakMinutes) || soakMinutes <= 0, "release soak only");
   test.setTimeout((soakMinutes + 2) * 60_000);
-  const fixture = createPhase4AcceptanceState("save-1");
-  const guestFloorId = fixture.phase4?.floors.find((floor) => floor.use === "guest")?.id;
-  expect(guestFloorId).toBeTruthy();
-  await page.addInitScript(({ fixture }) => {
-    localStorage.setItem("cloud-inn:save:save-1", JSON.stringify({
+  await ensureBrowserSave(page);
+  const saveId = await page.evaluate(() => {
+    const key = Object.keys(localStorage).find((candidate) => candidate.startsWith("cloud-inn:save:"));
+    if (!key) throw new Error("browser save catalog was not created");
+    return key.slice("cloud-inn:save:".length);
+  });
+  const fixture = maximumFixture(saveId);
+  await page.evaluate(({ fixture, saveId }) => {
+    localStorage.setItem(`cloud-inn:save:${saveId}`, JSON.stringify({
       formatVersion: 1,
       writeToken: "phase5-soak",
-      game: fixture,
+      game: fixture.state,
     }));
-  }, { fixture });
-  await page.goto(`/#/building?floorId=${encodeURIComponent(guestFloorId!)}`);
-  await expect(page.getByTestId("pixi-canvas")).toBeVisible();
+  }, { fixture, saveId });
+  await page.reload();
+  await page.goto(`/#/building?floorId=${encodeURIComponent(fixture.guestFloorId)}`);
+  await expect(page.getByTestId("floor-scene")).toHaveCount(1);
+  await expect(page.getByTestId("hotel-flow-canvas")).toHaveCount(1);
+  const host = page.getByTestId("hotel-flow-host");
+  await expect(host).toBeVisible();
+  expect(Number(await host.getAttribute("data-flow-sprite-count"))).toBeGreaterThan(0);
 
   const deadline = Date.now() + soakMinutes * 60_000;
   let cycle = 0;
   while (Date.now() < deadline) {
-    await expect(page.getByTestId("pixi-canvas")).toBeVisible();
+    await expect(host).toBeVisible();
     await expect(page.getByRole("navigation", { name: "主导航" })).toBeVisible();
+    const tickBefore = Number(await host.getAttribute("data-flow-animation-tick"));
     await page.waitForTimeout(10_000);
+    const tickAfter = Number(await host.getAttribute("data-flow-animation-tick"));
+    expect(tickAfter).toBeGreaterThan(tickBefore);
     cycle += 1;
     if (cycle % 30 === 0) {
       await page.reload();
-      await expect(page.getByTestId("pixi-canvas")).toBeVisible();
+      await expect(page.getByTestId("hotel-flow-host")).toBeVisible();
     }
   }
 });

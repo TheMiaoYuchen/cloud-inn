@@ -24,6 +24,11 @@ export function DesignStudioPage() {
   const { state, reload: reloadGame } = useGame();
   const promptRef = useRef<HTMLTextAreaElement>(null);
   const latestListRequestRef = useRef(0);
+  const saveLifecycleRef = useRef({ saveId: activeSaveId, generation: 0 });
+  if (saveLifecycleRef.current.saveId !== activeSaveId) {
+    saveLifecycleRef.current = { saveId: activeSaveId, generation: saveLifecycleRef.current.generation + 1 };
+  }
+  const saveGeneration = saveLifecycleRef.current.generation;
   const [jobs, setJobs] = useState<readonly VisualJobProjection[]>([]);
   const [notice, setNotice] = useState<string | null>(null);
   const [operationError, setOperationError] = useState<unknown>(null);
@@ -31,9 +36,10 @@ export function DesignStudioPage() {
 
   const reload = async () => {
     if (!activeSaveId) return;
+    if (saveLifecycleRef.current.generation !== saveGeneration) return;
     const request = ++latestListRequestRef.current;
     const next = await port.listVisualJobs(activeSaveId);
-    if (latestListRequestRef.current === request) setJobs(next);
+    if (saveLifecycleRef.current.generation === saveGeneration && latestListRequestRef.current === request) setJobs(next);
   };
 
   useEffect(() => {

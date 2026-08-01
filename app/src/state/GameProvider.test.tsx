@@ -13,6 +13,45 @@ import { createPhase4AcceptanceState } from '../testing/phase4Fixtures';
 afterEach(() => vi.useRealTimers());
 
 describe('GameProvider flow', () => {
+  it('rejects a reload callback captured by an older save generation', async () => {
+    const stateA = { ...createNewGame('save-reload-a'), revision: 1 };
+    const stateB = { ...createNewGame('save-reload-b'), revision: 4 };
+    const load = vi.fn(async (saveId) => saveId === stateA.saveId ? stateA : stateB);
+    const port: SavePort = { load, commit: async () => undefined };
+    let capturedReload!: () => Promise<boolean>;
+    function Probe({ capture }: { capture: boolean }) {
+      const { state, reload } = useGame();
+      if (capture) capturedReload = reload;
+      return <output>{state?.saveId ?? 'loading'}</output>;
+    }
+    const view = render(<GameProvider savePort={port} saveId={stateA.saveId}><Probe capture /></GameProvider>);
+    expect(await screen.findByText(stateA.saveId)).toBeInTheDocument();
+    const oldReload = capturedReload;
+    view.rerender(<GameProvider savePort={port} saveId={stateB.saveId}><Probe capture={false} /></GameProvider>);
+    expect(await screen.findByText(stateB.saveId)).toBeInTheDocument();
+
+    await expect(oldReload()).resolves.toBe(false);
+
+    expect(screen.getByText(stateB.saveId)).toBeInTheDocument();
+    expect(load.mock.calls.filter(([saveId]) => saveId === stateA.saveId)).toHaveLength(1);
+  });
+
+  it('rejects commands enqueued after close flushing begins', async () => {
+    const initial: GameState = { ...createNewGame('save-closing'), revision: 1, phase: 'ready', roomBlueprint: { id: 'room-type-1', name: 'Suite', columns: 8, rows: 12, cells: [], metrics: { areaSquareMeters: 24, buildCostCents: 1, suggestedRateCents: 1, businessFitBps: 1 }, visual: { status: 'idle' } } };
+    const commit = vi.fn(async () => undefined);
+    const port: SavePort = { load: async () => initial, commit };
+    let save!: () => Promise<boolean>;
+    function Probe() { save = useGame().commands.setRate.bind(null, 200); return <span>ready</span>; }
+    render(<GameProvider savePort={port} saveId={initial.saveId}><Probe /></GameProvider>);
+    await screen.findByText('ready');
+    let flush!: Promise<unknown>;
+    window.dispatchEvent(new CustomEvent('cloudinn:flush-requested', { detail: { settle(task: Promise<unknown>) { flush = task; } } }));
+
+    await expect(save()).resolves.toBe(false);
+    await expect(flush).resolves.toBeDefined();
+    expect(commit).not.toHaveBeenCalled();
+  });
+
   it('reloads an externally advanced save revision into the live game context', async () => {
     const port = new InMemorySavePort();
     const initial = { ...createNewGame('save-reload'), revision: 1 };
