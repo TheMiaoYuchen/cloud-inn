@@ -7,6 +7,27 @@ import { DiagnosticsPage } from "./DiagnosticsPage";
 import { makeReliabilityPort, TEST_SAVE } from "./reliabilityTestSupport";
 
 describe("DiagnosticsPage", () => {
+  it("turns provider health error codes into player guidance", async () => {
+    const port = makeReliabilityPort({
+      checkProvider: vi.fn(async () => ({
+        credential: { state: "missing" as const },
+        reachability: "unknown" as const,
+        primaryModelAvailable: null,
+        fallbackModelAvailable: null,
+        checkedAtMs: null,
+        errorCode: "keychain.missing" as const,
+      })),
+    });
+    render(<ReliabilityProvider port={port}><DiagnosticsPage /></ReliabilityProvider>);
+
+    expect(await screen.findByRole("alert")).toHaveTextContent("AI 服务需要处理");
+    expect(screen.getByRole("alert")).toHaveTextContent("尚未设置图片服务凭据");
+    expect(screen.getByRole("alert")).toHaveTextContent("离线游戏功能保持完整");
+    expect(screen.getByRole("alert")).toHaveTextContent("可在设置中添加凭据");
+    expect(screen.getByText("未设置")).toBeInTheDocument();
+    expect(screen.getAllByText("未知")).toHaveLength(3);
+  });
+
   it("renders at most twenty redacted job facts and stable codes", async () => {
     const jobs = Array.from({ length: 25 }, (_, index) => ({
       jobId: `job-${index}`, saveId: TEST_SAVE.saveId, jobRevision: 1, status: "failed-terminal", targetKind: "master",

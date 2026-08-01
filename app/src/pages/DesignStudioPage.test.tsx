@@ -91,7 +91,9 @@ describe("DesignStudioPage", () => {
     } as const;
     const jobs = [
       { ...base, jobId: "blocked", status: "blocked-no-credential", resolution: "2k" },
-      { ...base, jobId: "fallback", status: "needs-player-confirmation", resolution: "1k" },
+      { ...base, jobId: "fallback", status: "needs-player-confirmation", resolution: "1k", selectedModel: "gemini-3.1-flash-image", errorCode: "provider.model-unavailable" },
+      { ...base, jobId: "ambiguous", status: "needs-retry-confirmation", resolution: "1k", selectedModel: "gemini-3.1-flash-image", errorCode: "network.timeout", responseAmbiguous: true },
+      { ...base, jobId: "fallback-ready", status: "ready-for-review", resolution: "1k", selectedModel: "gemini-2.5-flash-image" },
       { ...base, jobId: "failed", status: "failed-retryable", resolution: "1k" },
     ] as VisualJobProjection[];
     const port = makeReliabilityPort({ listVisualJobs: vi.fn(async () => jobs) });
@@ -100,8 +102,61 @@ describe("DesignStudioPage", () => {
     render(<ReliabilityProvider port={port}><GameProvider savePort={savePort}><DesignStudioPage /></GameProvider></ReliabilityProvider>);
 
     expect(await screen.findAllByRole("button", { name: "重试" })).toHaveLength(2);
-    expect(screen.getByRole("button", { name: "改用兼容 1K" })).toBeInTheDocument();
-    expect(screen.getAllByText("下次可重试")).toHaveLength(3);
+    expect(screen.getByRole("button", { name: "确认额外请求并改用兼容 1K" })).toBeInTheDocument();
+    expect(screen.getAllByText("下次可重试")).toHaveLength(5);
+    expect(screen.getAllByText("主模型 · gemini-3.1-flash-image")).toHaveLength(2);
+    expect(screen.getByText("兼容模型 · gemini-2.5-flash-image")).toBeInTheDocument();
+    expect(screen.getByText(/占用今日额度，发起一次新的兼容 1K 请求/)).toBeInTheDocument();
+  });
+
+  it("enables focus only after master adoption and sends that exact asset reference", async () => {
+    const masterAssetId = "a".repeat(64);
+    const baseState = createNewGame(TEST_SAVE.saveId);
+    const state = {
+      ...baseState,
+      revision: 1,
+      roomBlueprint: {
+        id: "room-type-1" as never,
+        name: "Suite",
+        columns: 8,
+        rows: 12,
+        cells: [],
+        metrics: { areaSquareMeters: 24, buildCostCents: 100 as never, suggestedRateCents: 200 as never, businessFitBps: 8_000 as never },
+        visual: { status: "ready" as const, assetPath: `cloudinn-asset://${masterAssetId}` },
+      },
+    };
+    const queued = {
+      jobId: "focus-job", saveId: TEST_SAVE.saveId, jobRevision: 0, status: "queued", targetKind: "focus",
+      targetFingerprint: "target", requestFingerprint: "request", resolution: "1k", selectedModel: null,
+      attemptCount: 0, nextAttemptAtMs: null, asset: null, errorCode: null, responseAmbiguous: false, createdAtMs: 1, updatedAtMs: 1,
+    } as VisualJobProjection;
+    const enqueueVisualJob = vi.fn(async () => queued);
+    const port = makeReliabilityPort({ enqueueVisualJob, listVisualJobs: vi.fn(async () => []) });
+    const savePort = new InMemorySavePort();
+    await savePort.commit(0, state);
+    render(<ReliabilityProvider port={port}><GameProvider savePort={savePort}><DesignStudioPage /></GameProvider></ReliabilityProvider>);
+    const user = userEvent.setup();
+
+    await user.type(await screen.findByLabelText("描述想要的氛围与材质"), "浴室材质细节");
+    await user.selectOptions(screen.getByLabelText("画面类型"), "focus");
+    await user.selectOptions(screen.getByLabelText("分辨率"), "1k");
+    await user.click(screen.getByRole("button", { name: "加入生成队列" }));
+
+    expect(enqueueVisualJob).toHaveBeenCalledWith(expect.objectContaining({
+      request: expect.objectContaining({
+        targetKind: "focus",
+        referenceAssetIds: [masterAssetId],
+      }),
+    }));
+  });
+
+  it("disables focus generation until a master image has been adopted", async () => {
+    const savePort = new InMemorySavePort();
+    await savePort.commit(0, { ...createNewGame(TEST_SAVE.saveId), revision: 1 });
+    render(<ReliabilityProvider port={makeReliabilityPort()}><GameProvider savePort={savePort}><DesignStudioPage /></GameProvider></ReliabilityProvider>);
+
+    expect(await screen.findByRole("option", { name: "局部细节" })).toBeDisabled();
+    expect(screen.getByText(/先生成并采用主效果图/)).toBeInTheDocument();
   });
 
   it("does not let an old action reload jobs after switching saves", async () => {

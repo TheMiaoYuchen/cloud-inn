@@ -1,11 +1,34 @@
 import { useEffect, useRef, useState, type FormEvent } from "react";
 import { jobStatusLabel } from "../application/reliabilityUi";
-import type { AssetMetadata, VisualJobProjection } from "../domain/reliability/reliabilityTypes";
+import type { AssetId, AssetMetadata, VisualJobProjection } from "../domain/reliability/reliabilityTypes";
 import { useGame } from "../state/GameProvider";
 import { useReliability } from "../state/ReliabilityProvider";
 import { ReliabilityErrorNotice } from "./ReliabilityErrorNotice";
 
 const FINAL_STATUSES = new Set(["adopted", "superseded", "failed-terminal", "cancelled"]);
+const PRIMARY_MODEL = "gemini-3.1-flash-image";
+const FALLBACK_MODEL = "gemini-2.5-flash-image";
+
+function selectedModelLabel(model: string | null): string {
+  if (model === PRIMARY_MODEL) return `主模型 · ${model}`;
+  if (model === FALLBACK_MODEL) return `兼容模型 · ${model}`;
+  return model ? `其他模型 · ${model}` : "尚未选择";
+}
+
+function adoptedMasterAssetId(state: ReturnType<typeof useGame>["state"]): AssetId | null {
+  const visual = state?.roomBlueprint?.visual;
+  if (visual?.status !== "ready") return null;
+  const match = /^cloudinn-asset:\/\/([a-f0-9]{64})$/u.exec(visual.assetPath);
+  return match ? match[1] as AssetId : null;
+}
+
+function canChooseExplicitFallback(job: VisualJobProjection): boolean {
+  return job.resolution === "1k"
+    && job.status === "needs-player-confirmation"
+    && job.errorCode === "provider.model-unavailable"
+    && !job.responseAmbiguous
+    && job.selectedModel === PRIMARY_MODEL;
+}
 
 async function visualTargetFingerprint(value: unknown): Promise<string> {
   const bytes = new TextEncoder().encode(JSON.stringify(value));
@@ -33,6 +56,7 @@ export function DesignStudioPage() {
   const [notice, setNotice] = useState<string | null>(null);
   const [operationError, setOperationError] = useState<unknown>(null);
   const [pending, setPending] = useState(false);
+  const masterAssetId = adoptedMasterAssetId(state);
 
   const reload = async () => {
     if (!activeSaveId) return;
@@ -87,6 +111,9 @@ export function DesignStudioPage() {
     const targetKind = form.get("targetKind") === "focus" ? "focus" : "master";
     const resolution = form.get("resolution") === "1k" ? "1k" : form.get("resolution") === "4k" ? "4k" : "2k";
     void run(async () => {
+      if (targetKind === "focus" && !masterAssetId) {
+        throw { code: "provider.invalid-transition" };
+      }
       const targetFingerprint = await visualTargetFingerprint({
         saveId: state.saveId,
         revision: state.revision,
@@ -98,7 +125,12 @@ export function DesignStudioPage() {
         saveId: activeSaveId,
         expectedRevision: state.revision,
         targetFingerprint,
-        request: { targetKind, prompt: promptRef.current?.value ?? "", resolution, referenceAssetIds: [] },
+        request: {
+          targetKind,
+          prompt: promptRef.current?.value ?? "",
+          resolution,
+          referenceAssetIds: targetKind === "focus" ? [masterAssetId!] : [],
+        },
       });
       if (promptRef.current) promptRef.current.value = "";
       setNotice("效果图任务已加入持久队列");
@@ -116,10 +148,11 @@ export function DesignStudioPage() {
         <label htmlFor="visual-prompt">描述想要的氛围与材质</label>
         <textarea id="visual-prompt" name="prompt" ref={promptRef} required maxLength={12_000} rows={4} />
         <div className="generation-options">
-          <label>画面类型<select name="targetKind"><option value="master">主效果图</option><option value="focus">局部细节</option></select></label>
+          <label>画面类型<select name="targetKind"><option value="master">主效果图</option><option value="focus" disabled={!masterAssetId}>局部细节</option></select></label>
           <label>分辨率<select name="resolution" defaultValue="2k"><option value="1k">1K</option><option value="2k">2K</option><option value="4k">4K</option></select></label>
           <button disabled={pending || !state}>加入生成队列</button>
         </div>
+        {!masterAssetId && <p className="muted">请先生成并采用主效果图，之后才能创建引用该图片的局部细节。</p>}
       </form>
 
       <section aria-labelledby="visual-jobs-title">
@@ -129,15 +162,16 @@ export function DesignStudioPage() {
             <div className="job-heading"><strong>{job.targetKind === "master" ? "主效果图" : "局部细节"}</strong><span className={`job-status status-${job.status}`}>{jobStatusLabel(job.status)}</span></div>
             {(job.status === "ready-for-review" || job.status === "adopted") && <JobAsset asset={job.asset} />}
             <dl className="fact-list compact">
-              <div><dt>生成线路</dt><dd>{job.selectedModel ? (job.status.includes("fallback") ? "兼容模型" : "已选择模型") : "尚未选择"}</dd></div>
+              <div><dt>生成线路</dt><dd>{selectedModelLabel(job.selectedModel)}</dd></div>
               <div><dt>已用尝试</dt><dd>{job.attemptCount} / 3</dd></div>
               {job.nextAttemptAtMs !== null && <div><dt>下次可重试</dt><dd>{new Intl.DateTimeFormat("zh-CN", { dateStyle: "short", timeStyle: "medium" }).format(job.nextAttemptAtMs)}</dd></div>}
               {job.errorCode && <div><dt>状态码</dt><dd><code>{job.errorCode}</code></dd></div>}
             </dl>
+            {canChooseExplicitFallback(job) && <p className="muted">主模型已确认不可用。继续会占用今日额度，发起一次新的兼容 1K 请求。</p>}
             <div className="reliability-actions">
               {job.status === "needs-player-confirmation" && <button disabled={pending} onClick={() => void run(() => port.confirmVisualSend({ saveId: job.saveId, jobId: job.jobId, expectedJobRevision: job.jobRevision }))}>确认发送请求</button>}
               {(job.status === "failed-retryable" || job.status === "waiting-network" || job.status === "blocked-no-credential" || job.status === "needs-retry-confirmation") && <button disabled={pending} onClick={() => void run(() => port.retryVisualJob({ saveId: job.saveId, jobId: job.jobId, expectedJobRevision: job.jobRevision }))}>{job.status === "needs-retry-confirmation" ? "确认重试" : "重试"}</button>}
-              {job.resolution === "1k" && (job.status === "needs-player-confirmation" || job.status === "needs-retry-confirmation") && <button disabled={pending} onClick={() => void run(() => port.chooseVisualFallback({ saveId: job.saveId, jobId: job.jobId, expectedJobRevision: job.jobRevision, choice: "compatible-1k" }))}>改用兼容 1K</button>}
+              {canChooseExplicitFallback(job) && <button disabled={pending} onClick={() => void run(() => port.chooseVisualFallback({ saveId: job.saveId, jobId: job.jobId, expectedJobRevision: job.jobRevision, choice: "compatible-1k" }))}>确认额外请求并改用兼容 1K</button>}
               {job.status === "ready-for-review" && state && <button disabled={pending} onClick={() => void run(async () => {
                 await port.confirmVisualAdoption({ saveId: job.saveId, jobId: job.jobId, expectedJobRevision: job.jobRevision, expectedRevision: state.revision, targetFingerprint: job.targetFingerprint });
                 if (!await reloadGame({ resetDraft: false })) throw { code: "save.conflict" };

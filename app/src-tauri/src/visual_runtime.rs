@@ -165,6 +165,7 @@ impl VisualRuntimeService {
         if game_revision != expected_revision {
             return Err(stale_save());
         }
+        self.require_authoritative_master_reference(&connection, save_id, &request)?;
         let request_json = serde_json::to_string(&request).map_err(|_| invalid_request())?;
         let request_fingerprint = sha256_hex(request_json.as_bytes());
         let job_id = Uuid::new_v4().to_string();
@@ -394,11 +395,10 @@ impl VisualRuntimeService {
         let current = self.require_job(&connection, save_id, job_id)?;
         require_revision(&current, expected_job_revision)?;
         if current.resolution != VisualResolution::OneK
-            || !matches!(
-                current.status,
-                GenerationJobStatus::NeedsPlayerConfirmation
-                    | GenerationJobStatus::NeedsRetryConfirmation
-            )
+            || current.status != GenerationJobStatus::NeedsPlayerConfirmation
+            || current.error_code.as_deref() != Some("provider.model-unavailable")
+            || current.response_ambiguous
+            || current.selected_model.as_deref() != Some(PRIMARY_MODEL)
         {
             return Err(invalid_transition());
         }
@@ -676,6 +676,70 @@ impl VisualRuntimeService {
             .join("saves")
             .join(save_id)
             .join("save.sqlite3")
+    }
+
+    fn require_authoritative_master_reference(
+        &self,
+        connection: &Connection,
+        save_id: &str,
+        request: &VisualJobRequest,
+    ) -> Result<(), SafeError> {
+        if request.target_kind != VisualTargetKind::Focus {
+            return Ok(());
+        }
+        let [reference_asset_id] = request.reference_asset_ids.as_slice() else {
+            return Err(invalid_transition());
+        };
+        let visual_json: String = connection
+            .query_row(
+                "SELECT visual_json FROM room_blueprints WHERE save_id=?1",
+                [save_id],
+                |row| row.get(0),
+            )
+            .map_err(|_| invalid_transition())?;
+        let visual: Value = serde_json::from_str(&visual_json).map_err(|_| save_error())?;
+        let resolver_url = visual
+            .as_object()
+            .filter(|value| value.get("status").and_then(Value::as_str) == Some("ready"))
+            .and_then(|value| value.get("assetPath"))
+            .and_then(Value::as_str)
+            .ok_or_else(invalid_transition)?;
+        let authoritative_asset_id = resolver_url
+            .strip_prefix("cloudinn-asset://")
+            .filter(|asset_id| !asset_id.is_empty() && !asset_id.contains('/'))
+            .ok_or_else(invalid_transition)?;
+        if reference_asset_id != authoritative_asset_id {
+            return Err(invalid_transition());
+        }
+        let (relative_path, sha256): (String, String) = connection
+            .query_row(
+                "SELECT relative_path,sha256 FROM assets WHERE asset_id=?1",
+                [authoritative_asset_id],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .map_err(|_| invalid_transition())?;
+        let registered: i64 = connection
+            .query_row(
+                "SELECT count(*) FROM asset_references
+                 WHERE owner_kind='visual-target' AND asset_id=?1",
+                [authoritative_asset_id],
+                |row| row.get(0),
+            )
+            .map_err(|_| save_error())?;
+        if registered < 1 {
+            return Err(invalid_transition());
+        }
+        let bytes = fs::read(
+            self.app_root
+                .join("saves")
+                .join(save_id)
+                .join(relative_path),
+        )
+        .map_err(|_| SafeError::new("asset.not-found", "主效果图文件不存在"))?;
+        if sha256_hex(&bytes) != sha256 {
+            return Err(SafeError::new("asset.corrupt", "主效果图校验失败"));
+        }
+        Ok(())
     }
 
     fn require_job(
@@ -1667,6 +1731,7 @@ fn control_error() -> SafeError {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::os::unix::fs::PermissionsExt;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::{mpsc, Arc, Mutex};
     use std::time::Duration;
@@ -1840,6 +1905,67 @@ mod tests {
         }
     }
 
+    fn focus_request(reference_asset_ids: Vec<String>) -> VisualJobRequest {
+        VisualJobRequest {
+            target_kind: VisualTargetKind::Focus,
+            prompt: "A close view of the adopted room".to_owned(),
+            resolution: VisualResolution::OneK,
+            reference_asset_ids,
+        }
+    }
+
+    fn adopt_master(
+        service: &VisualRuntimeService,
+        save_id: &str,
+        target_fingerprint: &str,
+    ) -> String {
+        let repository = SaveRepository::new(service.app_root.clone());
+        let mut game = repository.load_game(save_id).unwrap().unwrap();
+        game["revision"] = json!(1);
+        game["roomBlueprint"] = json!({
+            "id": "room-type-1",
+            "name": "Suite",
+            "columns": 8,
+            "rows": 12,
+            "cells": [],
+            "metrics": {
+                "areaSquareMeters": 24,
+                "buildCostCents": 100,
+                "suggestedRateCents": 200,
+                "businessFitBps": 8000
+            },
+            "visual": { "status": "idle" }
+        });
+        repository.commit_game(0, game).unwrap();
+        let queued = service
+            .enqueue_visual_job(save_id, request(), 1, target_fingerprint, 10)
+            .unwrap();
+        service
+            .confirm_visual_send(save_id, &queued.job_id, queued.job_revision, 11)
+            .unwrap();
+        let ready = service
+            .run_one_with(
+                save_id,
+                &queued.job_id,
+                &FakeTokens(Some("token".to_owned())),
+                &FakeProvider::successful(),
+                12,
+            )
+            .unwrap();
+        let asset_id = ready.asset.as_ref().unwrap().asset_id.clone();
+        service
+            .confirm_visual_adoption(
+                save_id,
+                &queued.job_id,
+                ready.job_revision,
+                1,
+                target_fingerprint,
+                13,
+            )
+            .unwrap();
+        asset_id
+    }
+
     fn serialized_code(error: &SafeError) -> String {
         serde_json::to_value(error)
             .expect("serialize safe error")
@@ -1861,6 +1987,76 @@ mod tests {
         assert_eq!(job.job_revision, 0);
         assert_eq!(job.request_fingerprint.len(), 64);
         assert_eq!(service.list_visual_jobs(&save_id).unwrap(), vec![job]);
+    }
+
+    #[test]
+    fn focus_enqueue_requires_the_exact_current_adopted_master_asset() {
+        let (_root, service, save_id) = setup("focus-master-reference");
+        let absent = service
+            .enqueue_visual_job(&save_id, focus_request(Vec::new()), 0, &"f".repeat(64), 9)
+            .unwrap_err();
+        assert_eq!(serialized_code(&absent), "provider.invalid-transition");
+
+        let master_asset_id = adopt_master(&service, &save_id, &"a".repeat(64));
+        let wrong = service
+            .enqueue_visual_job(
+                &save_id,
+                focus_request(vec!["b".repeat(64)]),
+                2,
+                &"f".repeat(64),
+                14,
+            )
+            .unwrap_err();
+        assert_eq!(serialized_code(&wrong), "provider.invalid-transition");
+
+        let focus = service
+            .enqueue_visual_job(
+                &save_id,
+                focus_request(vec![master_asset_id.clone()]),
+                2,
+                &"f".repeat(64),
+                15,
+            )
+            .unwrap();
+        assert_eq!(focus.target_kind, VisualTargetKind::Focus);
+        let request_json: String = Connection::open(service.save_path(&save_id))
+            .unwrap()
+            .query_row(
+                "SELECT request_json FROM generation_jobs WHERE job_id=?1",
+                [&focus.job_id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let persisted: VisualJobRequest = serde_json::from_str(&request_json).unwrap();
+        assert_eq!(persisted.reference_asset_ids, vec![master_asset_id.clone()]);
+
+        let relative_path: String = Connection::open(service.save_path(&save_id))
+            .unwrap()
+            .query_row(
+                "SELECT relative_path FROM assets WHERE asset_id=?1",
+                [&master_asset_id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let asset_path = service
+            .app_root
+            .join("saves")
+            .join(&save_id)
+            .join(relative_path);
+        let mut permissions = fs::metadata(&asset_path).unwrap().permissions();
+        permissions.set_mode(0o600);
+        fs::set_permissions(&asset_path, permissions).unwrap();
+        fs::write(asset_path, b"corrupt-master").unwrap();
+        let corrupt = service
+            .enqueue_visual_job(
+                &save_id,
+                focus_request(vec![master_asset_id]),
+                2,
+                &"e".repeat(64),
+                16,
+            )
+            .unwrap_err();
+        assert_eq!(serialized_code(&corrupt), "asset.corrupt");
     }
 
     #[test]
@@ -2156,6 +2352,50 @@ mod tests {
     }
 
     #[test]
+    fn explicit_fallback_requires_proven_primary_unavailability() {
+        for (label, status, error_code, ambiguous) in [
+            (
+                "fresh-confirmation",
+                "needs-player-confirmation",
+                None,
+                false,
+            ),
+            (
+                "ambiguous-timeout",
+                "needs-retry-confirmation",
+                Some("network.timeout"),
+                true,
+            ),
+        ] {
+            let (_root, service, save_id) = setup(label);
+            let queued = service
+                .enqueue_visual_job(&save_id, request(), 0, &"a".repeat(64), 10)
+                .unwrap();
+            let (prepared, connection) = service.open_save(&save_id).unwrap();
+            connection
+                .execute(
+                    "UPDATE generation_jobs
+                     SET status=?1,selected_model=?2,error_code=?3,response_ambiguous=?4
+                     WHERE job_id=?5",
+                    params![status, PRIMARY_MODEL, error_code, ambiguous, queued.job_id],
+                )
+                .unwrap();
+            drop(connection);
+            drop(prepared);
+            let error = service
+                .choose_visual_fallback(
+                    &save_id,
+                    &queued.job_id,
+                    queued.job_revision,
+                    FallbackChoice::CompatibleOneK,
+                    20,
+                )
+                .unwrap_err();
+            assert_eq!(serialized_code(&error), "provider.invalid-transition");
+        }
+    }
+
+    #[test]
     fn fallback_route_is_preserved_across_delay_and_requires_a_new_exact_grant() {
         let (root, service, save_id) = setup("fallback-retry-route");
         let queued = service
@@ -2164,9 +2404,11 @@ mod tests {
         let (prepared, connection) = service.open_save(&save_id).unwrap();
         connection
             .execute(
-                "UPDATE generation_jobs SET status='needs-player-confirmation'
-                 WHERE job_id=?1",
-                [&queued.job_id],
+                "UPDATE generation_jobs
+                 SET status='needs-player-confirmation',selected_model=?1,
+                     error_code='provider.model-unavailable',response_ambiguous=0
+                 WHERE job_id=?2",
+                params![PRIMARY_MODEL, queued.job_id],
             )
             .unwrap();
         drop(connection);

@@ -4,6 +4,20 @@ import type { ProviderHealth, ProviderPreferencesProjection, VisualJobProjection
 import { useReliability } from "../state/ReliabilityProvider";
 import { ReliabilityErrorNotice } from "./ReliabilityErrorNotice";
 
+const CREDENTIAL_LABELS: Readonly<Record<string, string>> = {
+  missing: "未设置",
+  available: "可用",
+  locked: "钥匙串已锁定",
+  denied: "访问被拒绝",
+  unavailable: "暂不可用",
+};
+
+const REACHABILITY_LABELS: Readonly<Record<string, string>> = {
+  unknown: "未知",
+  reachable: "可连接",
+  unreachable: "无法连接",
+};
+
 export function DiagnosticsPage() {
   const { port, saves, activeSaveId } = useReliability();
   const active = saves.find((save) => save.saveId === activeSaveId) ?? null;
@@ -61,6 +75,7 @@ export function DiagnosticsPage() {
       <h1>诊断与 AI 设置</h1>
       <p className="reliability-lead">这里只显示有限的健康状态、计数和稳定状态码；不会显示令牌、文件路径、提示词、图片内容或内部错误详情。</p>
       <ReliabilityErrorNotice error={operationError} prefix="诊断未完成" />
+      <ReliabilityErrorNotice error={health?.errorCode} prefix="AI 服务需要处理" />
       <div className="diagnostics-grid">
         <section className="reliability-card" aria-labelledby="save-health-title">
           <h2 id="save-health-title">存档健康</h2>
@@ -74,8 +89,8 @@ export function DiagnosticsPage() {
         <section className="reliability-card" aria-labelledby="provider-health-title">
           <div className="reliability-section-title"><h2 id="provider-health-title">AI 服务</h2><button disabled={pending} onClick={() => void load().catch(setOperationError)}>重新检查</button></div>
           <dl className="fact-list">
-            <div><dt>凭据</dt><dd>{health?.credential.state ?? "unknown"}</dd></div>
-            <div><dt>网络</dt><dd>{health?.reachability ?? "unknown"}</dd></div>
+            <div><dt>凭据</dt><dd>{health ? CREDENTIAL_LABELS[health.credential.state] ?? "未知" : "检查中…"}</dd></div>
+            <div><dt>网络</dt><dd>{health ? REACHABILITY_LABELS[health.reachability] ?? "未知" : "检查中…"}</dd></div>
             <div><dt>主模型</dt><dd>{health?.primaryModelAvailable === true ? "可用" : health?.primaryModelAvailable === false ? "不可用" : "未知"}</dd></div>
             <div><dt>兼容模型</dt><dd>{health?.fallbackModelAvailable === true ? "可用" : health?.fallbackModelAvailable === false ? "不可用" : "未知"}</dd></div>
             {health?.errorCode && <div><dt>状态码</dt><dd><code>{health.errorCode}</code></dd></div>}
