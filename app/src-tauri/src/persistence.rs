@@ -1,3 +1,4 @@
+use crate::assets::{validate_stored_asset_path, AssetStore, StoredAsset};
 use crate::cross_database_validation::validate_issued_grants_for_save;
 use crate::provider_control::ProviderControlStore;
 use crate::recovery::{RecoveryId, RecoveryPackage, RecoveryReason};
@@ -47,6 +48,18 @@ pub struct RecoveryPointSummary {
     restore_revision: i64,
     reason: String,
     created_at_ms: i64,
+}
+
+/// Native-only input for publishing one generated image and attaching it to a
+/// domain owner. The repository derives both the catalog identity and file
+/// path from the verified bytes; callers never supply either value.
+pub(crate) struct AssetReferenceStoreRequest<'a> {
+    pub(crate) owner_kind: &'a str,
+    pub(crate) owner_id: &'a str,
+    pub(crate) bytes: &'a [u8],
+    pub(crate) mime_type: &'a str,
+    pub(crate) width: u32,
+    pub(crate) height: u32,
 }
 
 pub(crate) struct PreparedSaveDatabase {
@@ -178,6 +191,49 @@ impl SaveRepository {
             return Err(SafeError::new("save.conflict", "存档已更新，请重新加载"));
         }
         read_save_summary(&connection, save_id)
+    }
+
+    /// Stores a verified image under the save's content-addressed asset
+    /// directory, then records its immutable catalog entry and owner
+    /// reference in one SQLite transaction. The filesystem publish happens
+    /// first: an interrupted catalog write can only leave an unreferenced,
+    /// content-addressed file, never a database row that points at a partial
+    /// payload.
+    #[allow(dead_code)]
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn store_asset_reference(
+        &self,
+        save_id: &str,
+        request: AssetReferenceStoreRequest<'_>,
+    ) -> Result<String, SafeError> {
+        validate_asset_owner(request.owner_kind, request.owner_id)?;
+        let prepared = self.prepare_save_database(save_id)?;
+        let save_directory = prepared
+            .path
+            .parent()
+            .ok_or_else(|| SafeError::new("save.corrupt", "存档目录无效"))?;
+        let asset = AssetStore::new(save_directory)
+            .store(
+                request.bytes,
+                request.mime_type,
+                request.width,
+                request.height,
+            )
+            .map_err(|_| SafeError::new("save.corrupt", "资源内容无效"))?;
+        let mut connection = open_current_connection(&prepared.path)?;
+        let transaction = connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(|_| SafeError::new("save.corrupt", "无法记录资源"))?;
+        let asset_id = persist_verified_asset_reference(
+            &transaction,
+            &asset,
+            request.owner_kind,
+            request.owner_id,
+        )?;
+        transaction
+            .commit()
+            .map_err(|_| SafeError::new("save.corrupt", "无法记录资源"))?;
+        Ok(asset_id)
     }
 
     /// Lists only catalog rows that have been promoted to `ready` and whose
@@ -791,6 +847,121 @@ fn ensure_recovery_directory(directory: &Path) -> Result<(), SafeError> {
 
 fn recovery_corrupt() -> SafeError {
     SafeError::new("recovery.corrupt", "恢复点记录无效")
+}
+
+/// Persists the catalog half of an asset publish. Callers must have already
+/// placed `asset` at its canonical path with [`AssetStore`], and must commit
+/// the transaction themselves. Keeping this crate-private transaction API
+/// separate from byte publication lets job coordination atomically attach an
+/// asset reference alongside its own state transition.
+pub(crate) fn persist_verified_asset_reference(
+    transaction: &rusqlite::Transaction<'_>,
+    asset: &StoredAsset,
+    owner_kind: &str,
+    owner_id: &str,
+) -> Result<String, SafeError> {
+    validate_asset_owner(owner_kind, owner_id)?;
+    validate_verified_stored_asset(asset)?;
+    let asset_id = asset.sha256.clone();
+    let created_at_ms = current_time_ms()?;
+
+    transaction
+        .execute(
+            "INSERT INTO assets(
+               asset_id,relative_path,sha256,mime_type,byte_length,width,height,created_at_ms
+            ) VALUES(?1,?2,?3,?4,?5,?6,?7,?8)
+             ON CONFLICT(asset_id) DO NOTHING",
+            params![
+                &asset_id,
+                &asset.relative_path,
+                &asset.sha256,
+                &asset.mime_type,
+                i64::try_from(asset.byte_length)
+                    .map_err(|_| SafeError::new("save.corrupt", "资源内容无效"))?,
+                i64::from(asset.width),
+                i64::from(asset.height),
+                created_at_ms,
+            ],
+        )
+        .map_err(|_| SafeError::new("save.corrupt", "无法记录资源"))?;
+
+    let (relative_path, sha256, mime_type, byte_length, width, height): (
+        String,
+        String,
+        String,
+        i64,
+        i64,
+        i64,
+    ) = transaction
+        .query_row(
+            "SELECT relative_path,sha256,mime_type,byte_length,width,height
+             FROM assets WHERE asset_id=?1",
+            [&asset_id],
+            |row| {
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get(4)?,
+                    row.get(5)?,
+                ))
+            },
+        )
+        .map_err(|_| SafeError::new("save.corrupt", "资源记录无效"))?;
+    let recorded = StoredAsset {
+        sha256,
+        relative_path,
+        mime_type,
+        byte_length: byte_length
+            .try_into()
+            .map_err(|_| SafeError::new("save.corrupt", "资源记录无效"))?,
+        width: width
+            .try_into()
+            .map_err(|_| SafeError::new("save.corrupt", "资源记录无效"))?,
+        height: height
+            .try_into()
+            .map_err(|_| SafeError::new("save.corrupt", "资源记录无效"))?,
+    };
+    if recorded != *asset || validate_verified_stored_asset(&recorded).is_err() {
+        return Err(SafeError::new("save.corrupt", "资源记录无效"));
+    }
+
+    transaction
+        .execute(
+            "INSERT INTO asset_references(owner_kind,owner_id,asset_id)
+             VALUES(?1,?2,?3)
+             ON CONFLICT(owner_kind,owner_id,asset_id) DO NOTHING",
+            params![owner_kind, owner_id, &asset_id],
+        )
+        .map_err(|_| SafeError::new("save.corrupt", "无法记录资源引用"))?;
+    Ok(asset_id)
+}
+
+fn validate_asset_owner(owner_kind: &str, owner_id: &str) -> Result<(), SafeError> {
+    if owner_kind.is_empty()
+        || owner_kind.len() > 64
+        || !owner_kind
+            .bytes()
+            .all(|byte| byte.is_ascii_lowercase() || byte == b'-')
+        || owner_id.is_empty()
+        || owner_id.len() > 256
+    {
+        return Err(SafeError::new("save.corrupt", "资源引用无效"));
+    }
+    Ok(())
+}
+
+fn validate_verified_stored_asset(asset: &StoredAsset) -> Result<(), SafeError> {
+    validate_stored_asset_path(&asset.relative_path, &asset.sha256, &asset.mime_type)
+        .map_err(|_| SafeError::new("save.corrupt", "资源内容无效"))?;
+    if !(1..=100_663_296).contains(&asset.byte_length)
+        || !(1..=16_384).contains(&asset.width)
+        || !(1..=16_384).contains(&asset.height)
+    {
+        return Err(SafeError::new("save.corrupt", "资源内容无效"));
+    }
+    Ok(())
 }
 
 /// Records the durable outbox half of an automatic recovery point. The caller
@@ -4865,6 +5036,15 @@ mod tests {
     fn game() -> Value {
         json!({"schemaVersion":1,"rulesetVersion":"prototype-v1","saveId":"save-1","revision":1,"phase":"design","currentDay":0,"cashCents":100,"rateCents":10,"roomBlueprint":null,"floor":{"id":"prototype-floor","rooms":[]},"reports":[],"latestReport":null})
     }
+
+    fn png_header(width: u32, height: u32) -> Vec<u8> {
+        let mut bytes = vec![
+            137, 80, 78, 71, 13, 10, 26, 10, 0, 0, 0, 13, b'I', b'H', b'D', b'R',
+        ];
+        bytes.extend_from_slice(&width.to_be_bytes());
+        bytes.extend_from_slice(&height.to_be_bytes());
+        bytes
+    }
     fn operations_departments() -> Value {
         json!({
             "frontOffice": {"id":"frontOffice","staffing":0,"dailyBudgetCents":0,"trainingBps":0,"serviceStandardBps":5000},
@@ -5116,6 +5296,141 @@ mod tests {
                 .map(|summary| summary.save_id)
                 .collect::<Vec<_>>(),
             vec![valid.save_id]
+        );
+    }
+
+    #[test]
+    fn phase5_asset_store_records_a_verified_asset_and_deduplicated_reference() {
+        let repository = SaveRepository::new(root("phase5-asset-reference"));
+        let save = repository
+            .create_save(Some("资源引用".to_string()))
+            .unwrap();
+        let bytes = png_header(17, 23);
+
+        let first = repository
+            .store_asset_reference(
+                &save.save_id,
+                AssetReferenceStoreRequest {
+                    owner_kind: "generation-job",
+                    owner_id: "job-1",
+                    bytes: &bytes,
+                    mime_type: "image/png",
+                    width: 17,
+                    height: 23,
+                },
+            )
+            .unwrap();
+        let second = repository
+            .store_asset_reference(
+                &save.save_id,
+                AssetReferenceStoreRequest {
+                    owner_kind: "generation-job",
+                    owner_id: "job-1",
+                    bytes: &bytes,
+                    mime_type: "image/png",
+                    width: 17,
+                    height: 23,
+                },
+            )
+            .unwrap();
+        assert_eq!(first, second);
+
+        let connection = open_current_connection(&repository.db_path(&save.save_id)).unwrap();
+        let asset = connection
+            .query_row(
+                "SELECT asset_id,relative_path,sha256,mime_type,byte_length,width,height
+                 FROM assets WHERE asset_id=?1",
+                [&first],
+                |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, String>(2)?,
+                        row.get::<_, String>(3)?,
+                        row.get::<_, i64>(4)?,
+                        row.get::<_, i64>(5)?,
+                        row.get::<_, i64>(6)?,
+                    ))
+                },
+            )
+            .unwrap();
+        assert_eq!(asset.0, first);
+        assert_eq!(asset.0, asset.2);
+        assert_eq!(
+            asset.1,
+            format!("assets/sha256/{}/{}.png", &first[..2], first)
+        );
+        assert_eq!(asset.3, "image/png");
+        assert_eq!((asset.4, asset.5, asset.6), (bytes.len() as i64, 17, 23));
+        assert_eq!(
+            connection
+                .query_row(
+                    "SELECT count(*) FROM asset_references
+                     WHERE owner_kind='generation-job' AND owner_id='job-1' AND asset_id=?1",
+                    [&first],
+                    |row| row.get::<_, i64>(0),
+                )
+                .unwrap(),
+            1
+        );
+        assert_eq!(
+            fs::read(
+                repository
+                    .db_path(&save.save_id)
+                    .parent()
+                    .unwrap()
+                    .join(&asset.1)
+            )
+            .unwrap(),
+            bytes
+        );
+    }
+
+    #[test]
+    fn phase5_asset_reference_rejects_conflicting_existing_asset_metadata() {
+        let repository = SaveRepository::new(root("phase5-asset-metadata-conflict"));
+        let save = repository
+            .create_save(Some("资源冲突".to_string()))
+            .unwrap();
+        let bytes = png_header(17, 23);
+        let save_directory = repository
+            .db_path(&save.save_id)
+            .parent()
+            .unwrap()
+            .to_path_buf();
+        let stored = AssetStore::new(&save_directory)
+            .store(&bytes, "image/png", 17, 23)
+            .unwrap();
+        let mut connection = open_current_connection(&repository.db_path(&save.save_id)).unwrap();
+        connection
+            .execute(
+                "INSERT INTO assets(
+                   asset_id,relative_path,sha256,mime_type,byte_length,width,height,created_at_ms
+                ) VALUES(?1,?2,?3,?4,?5,?6,?7,0)",
+                params![
+                    &stored.sha256,
+                    &stored.relative_path,
+                    &stored.sha256,
+                    &stored.mime_type,
+                    i64::try_from(stored.byte_length).unwrap(),
+                    18_i64,
+                    i64::from(stored.height),
+                ],
+            )
+            .unwrap();
+        let transaction = connection.transaction().unwrap();
+        let error =
+            persist_verified_asset_reference(&transaction, &stored, "generation-job", "job-1")
+                .unwrap_err();
+        assert!(error.to_string().ends_with("(save.corrupt)"));
+        transaction.rollback().unwrap();
+        assert_eq!(
+            connection
+                .query_row("SELECT count(*) FROM asset_references", [], |row| {
+                    row.get::<_, i64>(0)
+                })
+                .unwrap(),
+            0
         );
     }
 
