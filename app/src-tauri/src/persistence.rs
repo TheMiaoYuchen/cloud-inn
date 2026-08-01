@@ -1,6 +1,6 @@
 use crate::cross_database_validation::validate_issued_grants_for_save;
 use crate::provider_control::ProviderControlStore;
-use crate::recovery::{RecoveryId, RecoveryReason};
+use crate::recovery::{RecoveryId, RecoveryPackage, RecoveryReason};
 use crate::redaction::SafeError;
 use crate::reliability::{
     legacy_schema_needs_repair, lock_save, normalize_display_name, validate_current_save_database,
@@ -502,6 +502,64 @@ fn valid_recovery_sha256(value: &str) -> bool {
 
 fn recovery_corrupt() -> SafeError {
     SafeError::new("recovery.corrupt", "恢复点记录无效")
+}
+
+/// Records the durable outbox half of an automatic recovery point. The caller
+/// owns the surrounding game transaction, so the recovery row cannot become
+/// visible unless the revision it protects commits with it.
+///
+/// The package has already been constructed and verified on disk by
+/// `recovery`; this boundary still validates all values persisted into SQLite
+/// and derives the catalog path from the opaque identifier rather than from a
+/// filesystem path supplied by a caller.
+#[allow(dead_code)]
+pub(crate) fn record_pending_automatic_recovery_point(
+    transaction: &rusqlite::Transaction<'_>,
+    recovery_id: &RecoveryId,
+    package: &RecoveryPackage,
+    origin_commit_revision: i64,
+    restore_revision: i64,
+    reason: RecoveryReason,
+) -> Result<(), SafeError> {
+    let recovery_id = RecoveryId::parse(recovery_id.as_str()).map_err(|_| recovery_corrupt())?;
+    if package.path.file_name().and_then(|name| name.to_str()) != Some(recovery_id.as_str()) {
+        return Err(recovery_corrupt());
+    }
+    let verified_package =
+        crate::recovery::verify_database_preimage(&package.path).map_err(|_| recovery_corrupt())?;
+    let expected_origin_revision = restore_revision
+        .checked_add(1)
+        .ok_or_else(recovery_corrupt)?;
+    if origin_commit_revision != expected_origin_revision
+        || !valid_recovery_sha256(&verified_package.package_sha256)
+        || !valid_recovery_sha256(&verified_package.manifest_sha256)
+    {
+        return Err(recovery_corrupt());
+    }
+    let created_at_ms = current_time_ms()?;
+    let relative_path = format!("recovery-packages/{}", recovery_id.as_str());
+    if !valid_recovery_relative_path(&relative_path) {
+        return Err(recovery_corrupt());
+    }
+    transaction
+        .execute(
+            "INSERT INTO recovery_points(
+               recovery_id,kind,origin_commit_revision,restore_revision,reason,status,
+               relative_path,package_sha256,manifest_sha256,created_at_ms
+             ) VALUES(?1,'automatic',?2,?3,?4,'pending',?5,?6,?7,?8)",
+            params![
+                recovery_id.as_str(),
+                origin_commit_revision,
+                restore_revision,
+                reason.as_storage_value(),
+                relative_path,
+                verified_package.package_sha256,
+                verified_package.manifest_sha256,
+                created_at_ms,
+            ],
+        )
+        .map_err(|_| recovery_corrupt())?;
+    Ok(())
 }
 
 fn current_time_ms() -> Result<i64, SafeError> {
@@ -4805,6 +4863,109 @@ mod tests {
                 ],
             )
             .unwrap();
+    }
+
+    fn verified_recovery_package(
+        repository: &SaveRepository,
+        save_id: &str,
+        recovery_id: &RecoveryId,
+    ) -> RecoveryPackage {
+        let pending = repository.root.join("recovery-pending");
+        fs::create_dir(&pending).unwrap();
+        crate::recovery::create_database_preimage(
+            &repository.db_path(save_id),
+            &pending,
+            recovery_id,
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn phase5_pending_recovery_row_rolls_back_with_its_game_transaction() {
+        let repository = SaveRepository::new(root("phase5-recovery-pending-rollback"));
+        let save = repository
+            .create_save(Some("恢复事务".to_string()))
+            .unwrap();
+        let recovery_id = RecoveryId::parse("pending-rollback").unwrap();
+        let package = verified_recovery_package(&repository, &save.save_id, &recovery_id);
+        let mut connection = open_current_connection(&repository.db_path(&save.save_id)).unwrap();
+
+        let transaction = connection.transaction().unwrap();
+        record_pending_automatic_recovery_point(
+            &transaction,
+            &recovery_id,
+            &package,
+            1,
+            0,
+            RecoveryReason::Construction,
+        )
+        .unwrap();
+        transaction.rollback().unwrap();
+
+        let count = connection
+            .query_row(
+                "SELECT count(*) FROM recovery_points WHERE recovery_id=?1",
+                [recovery_id.as_str()],
+                |row| row.get::<_, i64>(0),
+            )
+            .unwrap();
+        assert_eq!(count, 0);
+    }
+
+    #[test]
+    fn phase5_pending_recovery_row_commits_with_verified_package_metadata() {
+        let repository = SaveRepository::new(root("phase5-recovery-pending-commit"));
+        let save = repository
+            .create_save(Some("恢复事务".to_string()))
+            .unwrap();
+        let recovery_id = RecoveryId::parse("pending-commit").unwrap();
+        let package = verified_recovery_package(&repository, &save.save_id, &recovery_id);
+        let expected_package_sha256 = package.package_sha256.clone();
+        let expected_manifest_sha256 = package.manifest_sha256.clone();
+        let mut connection = open_current_connection(&repository.db_path(&save.save_id)).unwrap();
+
+        let transaction = connection.transaction().unwrap();
+        record_pending_automatic_recovery_point(
+            &transaction,
+            &recovery_id,
+            &package,
+            1,
+            0,
+            RecoveryReason::Settlement,
+        )
+        .unwrap();
+        transaction.commit().unwrap();
+
+        let row = connection
+            .query_row(
+                "SELECT kind,origin_commit_revision,restore_revision,reason,status,
+                        relative_path,package_sha256,manifest_sha256,created_at_ms
+                 FROM recovery_points WHERE recovery_id=?1",
+                [recovery_id.as_str()],
+                |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, i64>(1)?,
+                        row.get::<_, i64>(2)?,
+                        row.get::<_, String>(3)?,
+                        row.get::<_, String>(4)?,
+                        row.get::<_, String>(5)?,
+                        row.get::<_, String>(6)?,
+                        row.get::<_, String>(7)?,
+                        row.get::<_, i64>(8)?,
+                    ))
+                },
+            )
+            .unwrap();
+        assert_eq!(row.0, "automatic");
+        assert_eq!(row.1, 1);
+        assert_eq!(row.2, 0);
+        assert_eq!(row.3, "settlement");
+        assert_eq!(row.4, "pending");
+        assert_eq!(row.5, "recovery-packages/pending-commit");
+        assert_eq!(row.6, expected_package_sha256);
+        assert_eq!(row.7, expected_manifest_sha256);
+        assert!(row.8 >= 0);
     }
 
     #[test]

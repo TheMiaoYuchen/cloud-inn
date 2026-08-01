@@ -74,7 +74,7 @@ pub(crate) fn create_database_preimage(
     outcome
 }
 
-fn verify_database_preimage(path: &Path) -> io::Result<RecoveryPackage> {
+pub(crate) fn verify_database_preimage(path: &Path) -> io::Result<RecoveryPackage> {
     require_directory(path)?;
     let database = path.join(DATABASE_PAYLOAD_PATH);
     require_regular_file(&database)?;
