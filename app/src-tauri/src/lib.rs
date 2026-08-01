@@ -15,6 +15,7 @@ mod recovery;
 pub mod redaction;
 mod reliability;
 mod save_validation;
+mod shell;
 
 #[tauri::command]
 fn provider_token_status(
@@ -176,8 +177,10 @@ pub fn run() {
             let service = keychain::platform_service(&app.config().identifier)
                 .map_err(|error| std::io::Error::other(error.to_string()))?;
             app.manage(service);
+            shell::install(app)?;
             Ok(())
         })
+        .on_menu_event(|app, event| shell::handle_menu(app, event.id().as_ref()))
         .invoke_handler(tauri::generate_handler![
             load_game,
             commit_game,
