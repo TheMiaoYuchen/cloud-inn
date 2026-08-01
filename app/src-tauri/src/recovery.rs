@@ -1,8 +1,209 @@
 use sha2::{Digest, Sha256};
 use std::fmt;
+use std::fs::{self, File, OpenOptions};
+use std::io::{self, Read, Write};
+use std::path::{Path, PathBuf};
 
 pub(crate) const MAX_RECOVERY_ID_LENGTH: usize = 128;
 pub(crate) const MAX_PAYLOAD_PATH_LENGTH: usize = 1_024;
+const DATABASE_PAYLOAD_PATH: &str = "database.sqlite3";
+const MANIFEST_PATH: &str = "manifest.json";
+
+/// A sealed recovery package written beneath the caller-selected, same-volume
+/// pending directory.  The directory is intentionally opaque to UI callers.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct RecoveryPackage {
+    pub(crate) path: PathBuf,
+    pub(crate) package_sha256: String,
+    pub(crate) manifest_sha256: String,
+}
+
+/// Copies one committed database into a new, sealed recovery package.  Asset
+/// payloads are added by the write coordinator later; this narrow primitive
+/// deliberately has no knowledge of save layout or database schema.
+pub(crate) fn create_database_preimage(
+    source_database: &Path,
+    same_volume_pending_directory: &Path,
+    recovery_id: &RecoveryId,
+) -> io::Result<RecoveryPackage> {
+    require_regular_file(source_database)?;
+    require_directory(same_volume_pending_directory)?;
+    require_same_volume(source_database, same_volume_pending_directory)?;
+
+    let source_digest = sha256_file(source_database)?;
+    let temporary = same_volume_pending_directory.join(format!(
+        ".{}.partial-{}",
+        recovery_id.as_str(),
+        uuid::Uuid::new_v4()
+    ));
+    fs::create_dir(&temporary)?;
+
+    let outcome = (|| {
+        let database = temporary.join(DATABASE_PAYLOAD_PATH);
+        copy_and_sync(source_database, &database)?;
+        if sha256_file(source_database)? != source_digest
+            || sha256_file(&database)? != source_digest
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "source changed while packaging",
+            ));
+        }
+        let length = fs::metadata(&database)?.len();
+        let record = PayloadRecord::new(DATABASE_PAYLOAD_PATH, &source_digest, length)
+            .map_err(validation_io)?;
+        let package_digest =
+            package_sha256(std::slice::from_ref(&record)).map_err(validation_io)?;
+        let manifest = database_manifest(&record, &package_digest);
+        let manifest_path = temporary.join(MANIFEST_PATH);
+        write_new_and_sync(&manifest_path, manifest.as_bytes())?;
+        seal_file(&database)?;
+        seal_file(&manifest_path)?;
+        sync_directory(&temporary)?;
+        seal_directory(&temporary)?;
+        sync_directory(same_volume_pending_directory)?;
+
+        let destination = same_volume_pending_directory.join(recovery_id.as_str());
+        fs::rename(&temporary, &destination)?;
+        sync_directory(same_volume_pending_directory)?;
+        verify_database_preimage(&destination)
+    })();
+    if outcome.is_err() {
+        let _ = fs::remove_dir_all(&temporary);
+    }
+    outcome
+}
+
+fn verify_database_preimage(path: &Path) -> io::Result<RecoveryPackage> {
+    require_directory(path)?;
+    let database = path.join(DATABASE_PAYLOAD_PATH);
+    require_regular_file(&database)?;
+    let digest = sha256_file(&database)?;
+    let record = PayloadRecord::new(
+        DATABASE_PAYLOAD_PATH,
+        &digest,
+        fs::metadata(&database)?.len(),
+    )
+    .map_err(validation_io)?;
+    let package_digest = package_sha256(std::slice::from_ref(&record)).map_err(validation_io)?;
+    let manifest = fs::read(path.join(MANIFEST_PATH))?;
+    let expected = database_manifest(&record, &package_digest);
+    if manifest != expected.as_bytes() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "recovery manifest mismatch",
+        ));
+    }
+    Ok(RecoveryPackage {
+        path: path.to_owned(),
+        package_sha256: package_digest,
+        manifest_sha256: manifest_sha256(&manifest),
+    })
+}
+
+fn database_manifest(record: &PayloadRecord, package_digest: &str) -> String {
+    format!(
+        "{{\"formatVersion\":1,\"payload\":[{{\"path\":\"{}\",\"sha256\":\"{}\",\"byteLength\":{}}}],\"packageSha256\":\"{}\"}}\n",
+        record.normalized_path, record.sha256, record.byte_length, package_digest
+    )
+}
+
+fn copy_and_sync(source: &Path, destination: &Path) -> io::Result<()> {
+    let mut input = File::open(source)?;
+    let mut output = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(destination)?;
+    io::copy(&mut input, &mut output)?;
+    output.flush()?;
+    output.sync_all()
+}
+
+fn write_new_and_sync(path: &Path, bytes: &[u8]) -> io::Result<()> {
+    let mut file = OpenOptions::new().write(true).create_new(true).open(path)?;
+    file.write_all(bytes)?;
+    file.sync_all()
+}
+
+fn sha256_file(path: &Path) -> io::Result<String> {
+    let mut file = File::open(path)?;
+    let mut hasher = Sha256::new();
+    let mut buffer = [0_u8; 64 * 1024];
+    loop {
+        let count = file.read(&mut buffer)?;
+        if count == 0 {
+            break;
+        }
+        hasher.update(&buffer[..count]);
+    }
+    Ok(hex_digest(hasher.finalize()))
+}
+
+fn require_regular_file(path: &Path) -> io::Result<()> {
+    let metadata = fs::symlink_metadata(path)?;
+    if metadata.file_type().is_symlink() || !metadata.is_file() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "expected regular file",
+        ));
+    }
+    Ok(())
+}
+
+fn require_directory(path: &Path) -> io::Result<()> {
+    let metadata = fs::symlink_metadata(path)?;
+    if metadata.file_type().is_symlink() || !metadata.is_dir() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "expected directory",
+        ));
+    }
+    Ok(())
+}
+
+#[cfg(unix)]
+fn require_same_volume(source: &Path, directory: &Path) -> io::Result<()> {
+    use std::os::unix::fs::MetadataExt;
+    if fs::metadata(source)?.dev() != fs::metadata(directory)?.dev() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "pending directory is on another volume",
+        ));
+    }
+    Ok(())
+}
+
+#[cfg(not(unix))]
+fn require_same_volume(_: &Path, _: &Path) -> io::Result<()> {
+    Ok(())
+}
+
+fn sync_directory(path: &Path) -> io::Result<()> {
+    File::open(path)?.sync_all()
+}
+
+#[cfg(unix)]
+fn seal_file(path: &Path) -> io::Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+    fs::set_permissions(path, fs::Permissions::from_mode(0o444))
+}
+#[cfg(not(unix))]
+fn seal_file(_: &Path) -> io::Result<()> {
+    Ok(())
+}
+#[cfg(unix)]
+fn seal_directory(path: &Path) -> io::Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+    fs::set_permissions(path, fs::Permissions::from_mode(0o555))
+}
+#[cfg(not(unix))]
+fn seal_directory(_: &Path) -> io::Result<()> {
+    Ok(())
+}
+
+fn validation_io(error: RecoveryValidationError) -> io::Error {
+    io::Error::new(io::ErrorKind::InvalidData, error)
+}
 
 /// An app-generated recovery identifier.  It deliberately contains no path
 /// information: callers can only resolve it through the recovery catalog.
@@ -197,10 +398,14 @@ fn is_lowercase_sha256(value: &str) -> bool {
 }
 
 fn sha256_hex(bytes: &[u8]) -> String {
+    hex_digest(Sha256::digest(bytes))
+}
+
+fn hex_digest(digest: impl AsRef<[u8]>) -> String {
     const HEX: &[u8; 16] = b"0123456789abcdef";
-    let digest = Sha256::digest(bytes);
+    let digest = digest.as_ref();
     let mut encoded = String::with_capacity(digest.len() * 2);
-    for byte in digest {
+    for &byte in digest {
         encoded.push(char::from(HEX[usize::from(byte >> 4)]));
         encoded.push(char::from(HEX[usize::from(byte & 0x0f)]));
     }
@@ -210,6 +415,7 @@ fn sha256_hex(bytes: &[u8]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fs;
 
     const A: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
     const B: &str = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
@@ -308,5 +514,78 @@ mod tests {
             "8dd6702fa6968f38249e331d52a2e2a5fdc8ef6adc0f0174afcfbbee17b3323d"
         );
         assert_ne!(manifest_sha256(compact), manifest_sha256(with_newline));
+    }
+
+    fn test_root(name: &str) -> PathBuf {
+        let path = std::env::temp_dir().join(format!(
+            "cloud-inn-recovery-{name}-{}-{}",
+            std::process::id(),
+            uuid::Uuid::new_v4()
+        ));
+        fs::create_dir_all(&path).unwrap();
+        path
+    }
+
+    #[test]
+    fn database_preimage_is_sealed_and_has_a_deterministic_verified_manifest() {
+        let root = test_root("preimage");
+        let source = root.join("source.sqlite3");
+        let pending = root.join("pending");
+        fs::create_dir(&pending).unwrap();
+        let bytes = b"SQLite format 3\0database payload";
+        fs::write(&source, bytes).unwrap();
+        let source_before = fs::read(&source).unwrap();
+
+        let package =
+            create_database_preimage(&source, &pending, &RecoveryId::parse("point-1").unwrap())
+                .unwrap();
+        assert_eq!(
+            fs::read(&source).unwrap(),
+            source_before,
+            "packaging must not alter its source"
+        );
+        assert_eq!(
+            fs::read(package.path.join(DATABASE_PAYLOAD_PATH)).unwrap(),
+            bytes
+        );
+        assert_eq!(verify_database_preimage(&package.path).unwrap(), package);
+        let manifest = fs::read(package.path.join(MANIFEST_PATH)).unwrap();
+        assert_eq!(package.manifest_sha256, manifest_sha256(&manifest));
+        assert!(std::str::from_utf8(&manifest)
+            .unwrap()
+            .contains(&package.package_sha256));
+        assert!(fs::metadata(package.path.join(DATABASE_PAYLOAD_PATH))
+            .unwrap()
+            .permissions()
+            .readonly());
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn database_preimage_detects_manifest_tampering() {
+        let root = test_root("tamper");
+        let source = root.join("source.sqlite3");
+        let pending = root.join("pending");
+        fs::create_dir(&pending).unwrap();
+        fs::write(&source, b"database payload").unwrap();
+        let package =
+            create_database_preimage(&source, &pending, &RecoveryId::parse("point-2").unwrap())
+                .unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(&package.path, fs::Permissions::from_mode(0o755)).unwrap();
+            fs::set_permissions(
+                package.path.join(MANIFEST_PATH),
+                fs::Permissions::from_mode(0o644),
+            )
+            .unwrap();
+        }
+        fs::write(package.path.join(MANIFEST_PATH), b"tampered").unwrap();
+        assert_eq!(
+            verify_database_preimage(&package.path).unwrap_err().kind(),
+            io::ErrorKind::InvalidData
+        );
+        let _ = fs::remove_dir_all(&root);
     }
 }
