@@ -104,6 +104,36 @@ pub(crate) fn verify_database_preimage(path: &Path) -> io::Result<RecoveryPackag
     })
 }
 
+/// Removes exactly one app-owned, sealed recovery package after its catalog
+/// row has been durably deleted.  The path is derived exclusively from the
+/// opaque recovery ID and both package digests are rechecked immediately
+/// before removal, so a caller can never use rotation to remove an unrelated
+/// directory.
+pub(crate) fn remove_verified_database_preimage(
+    recovery_directory: &Path,
+    recovery_id: &RecoveryId,
+    expected_package_sha256: &str,
+    expected_manifest_sha256: &str,
+) -> io::Result<()> {
+    require_directory(recovery_directory)?;
+    let package_path = recovery_directory.join(recovery_id.as_str());
+    let package = verify_database_preimage(&package_path)?;
+    if package.package_sha256 != expected_package_sha256
+        || package.manifest_sha256 != expected_manifest_sha256
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "recovery package identity mismatch",
+        ));
+    }
+    unseal_directory_for_move(&package_path)?;
+    fs::remove_dir_all(&package_path)?;
+    if package_path.exists() {
+        return Err(io::Error::other("recovery package removal incomplete"));
+    }
+    sync_directory(recovery_directory)
+}
+
 /// Promotes a sealed package from the app-owned pending directory into the
 /// app-owned recovery catalog.  The package is verified before and after the
 /// same-volume rename, so callers can safely retry after a crash between the

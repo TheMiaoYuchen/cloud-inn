@@ -252,6 +252,68 @@ impl SaveRepository {
         transaction.commit().map_err(|_| recovery_corrupt())
     }
 
+    /// Keeps the newest twenty ready automatic recovery points.  It never
+    /// considers manual/pre-migration points or incomplete records.  Every
+    /// candidate package is verified before its catalog row is deleted; a
+    /// missing, substituted, or malformed package therefore leaves the
+    /// catalog entirely untouched.
+    #[allow(dead_code)]
+    pub(crate) fn rotate_ready_automatic_recovery_points(
+        &self,
+        save_id: &str,
+    ) -> Result<(), SafeError> {
+        const AUTOMATIC_RECOVERY_RETENTION: i64 = 20;
+
+        validate_save_id(save_id).map_err(|_| SafeError::new("save.invalid-id", "存档标识无效"))?;
+        let prepared = self.prepare_save_database(save_id)?;
+        let mut connection =
+            open_current_connection(&prepared.path).map_err(|_| recovery_corrupt())?;
+        let candidates = read_rotation_candidates(&connection, AUTOMATIC_RECOVERY_RETENTION)?;
+        if candidates.is_empty() {
+            return Ok(());
+        }
+
+        let recovery_directory = self.root.join("recovery-packages");
+        ensure_recovery_directory(&recovery_directory)?;
+        for candidate in &candidates {
+            candidate.verify_package(&recovery_directory)?;
+        }
+
+        let transaction = connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(|_| recovery_corrupt())?;
+        for candidate in &candidates {
+            let deleted = transaction
+                .execute(
+                    "DELETE FROM recovery_points
+                     WHERE recovery_id=?1 AND kind='automatic' AND status='ready'
+                       AND relative_path=?2 AND package_sha256=?3 AND manifest_sha256=?4",
+                    params![
+                        candidate.recovery_id.as_str(),
+                        candidate.relative_path,
+                        candidate.package_sha256,
+                        candidate.manifest_sha256,
+                    ],
+                )
+                .map_err(|_| recovery_corrupt())?;
+            if deleted != 1 {
+                return Err(recovery_corrupt());
+            }
+        }
+        transaction.commit().map_err(|_| recovery_corrupt())?;
+
+        for candidate in &candidates {
+            crate::recovery::remove_verified_database_preimage(
+                &recovery_directory,
+                &candidate.recovery_id,
+                &candidate.package_sha256,
+                &candidate.manifest_sha256,
+            )
+            .map_err(|_| recovery_corrupt())?;
+        }
+        Ok(())
+    }
+
     fn default_display_name(&self) -> Result<String, SafeError> {
         let existing = self.list_saves()?;
         let used = existing
@@ -499,6 +561,77 @@ fn read_ready_recovery_points(
         )?);
     }
     Ok(points)
+}
+
+#[derive(Debug)]
+struct RecoveryRotationCandidate {
+    recovery_id: RecoveryId,
+    relative_path: String,
+    package_sha256: String,
+    manifest_sha256: String,
+}
+
+impl RecoveryRotationCandidate {
+    fn verify_package(&self, recovery_directory: &Path) -> Result<(), SafeError> {
+        let expected_relative_path = format!("recovery-packages/{}", self.recovery_id.as_str());
+        if self.relative_path != expected_relative_path {
+            return Err(recovery_corrupt());
+        }
+        let package_path = recovery_directory.join(self.recovery_id.as_str());
+        let package = crate::recovery::verify_database_preimage(&package_path)
+            .map_err(|_| recovery_corrupt())?;
+        if package.package_sha256 != self.package_sha256
+            || package.manifest_sha256 != self.manifest_sha256
+        {
+            return Err(recovery_corrupt());
+        }
+        Ok(())
+    }
+}
+
+fn read_rotation_candidates(
+    connection: &Connection,
+    retention: i64,
+) -> Result<Vec<RecoveryRotationCandidate>, SafeError> {
+    let mut statement = connection
+        .prepare(
+            "SELECT recovery_id,relative_path,package_sha256,manifest_sha256
+             FROM recovery_points
+             WHERE kind='automatic' AND status='ready'
+             ORDER BY created_at_ms DESC,recovery_id DESC
+             LIMIT -1 OFFSET ?1",
+        )
+        .map_err(|_| recovery_corrupt())?;
+    let rows = statement
+        .query_map([retention], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, Option<String>>(3)?,
+            ))
+        })
+        .map_err(|_| recovery_corrupt())?;
+    let mut candidates = Vec::new();
+    for row in rows {
+        let (recovery_id, relative_path, package_sha256, manifest_sha256) =
+            row.map_err(|_| recovery_corrupt())?;
+        let recovery_id = RecoveryId::parse(recovery_id).map_err(|_| recovery_corrupt())?;
+        let manifest_sha256 = manifest_sha256.ok_or_else(recovery_corrupt)?;
+        if !valid_recovery_relative_path(&relative_path)
+            || !valid_recovery_sha256(&package_sha256)
+            || !valid_recovery_sha256(&manifest_sha256)
+        {
+            return Err(recovery_corrupt());
+        }
+        candidates.push(RecoveryRotationCandidate {
+            recovery_id,
+            relative_path,
+            package_sha256,
+            manifest_sha256,
+        });
+    }
+    Ok(candidates)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -5036,6 +5169,41 @@ mod tests {
         .unwrap()
     }
 
+    fn insert_verified_ready_automatic_recovery_point(
+        repository: &SaveRepository,
+        save_id: &str,
+        recovery_id: &str,
+        created_at_ms: i64,
+    ) {
+        let recovery_id = RecoveryId::parse(recovery_id).unwrap();
+        let recovery_directory = repository.root.join("recovery-packages");
+        fs::create_dir_all(&recovery_directory).unwrap();
+        let package = crate::recovery::create_database_preimage(
+            &repository.db_path(save_id),
+            &recovery_directory,
+            &recovery_id,
+        )
+        .unwrap();
+        let connection = open_current_connection(&repository.db_path(save_id)).unwrap();
+        connection
+            .execute(
+                "INSERT INTO recovery_points(
+                   recovery_id,kind,origin_commit_revision,restore_revision,reason,status,
+                   relative_path,package_sha256,manifest_sha256,created_at_ms
+                 ) VALUES(?1,'automatic',?2,?3,'construction','ready',?4,?5,?6,?7)",
+                params![
+                    recovery_id.as_str(),
+                    created_at_ms + 1,
+                    created_at_ms,
+                    format!("recovery-packages/{}", recovery_id.as_str()),
+                    package.package_sha256,
+                    package.manifest_sha256,
+                    created_at_ms,
+                ],
+            )
+            .unwrap();
+    }
+
     #[test]
     fn phase5_pending_recovery_row_rolls_back_with_its_game_transaction() {
         let repository = SaveRepository::new(root("phase5-recovery-pending-rollback"));
@@ -5325,6 +5493,146 @@ mod tests {
 
         let error = repository.list_recovery_points(&save.save_id).unwrap_err();
         assert!(error.to_string().ends_with("(recovery.corrupt)"));
+    }
+
+    #[test]
+    fn phase5_rotation_keeps_twenty_ready_automatic_points_and_protects_other_rows() {
+        let repository = SaveRepository::new(root("phase5-recovery-rotation"));
+        let save = repository
+            .create_save(Some("恢复轮换".to_string()))
+            .unwrap();
+        for ordinal in 0..21 {
+            insert_verified_ready_automatic_recovery_point(
+                &repository,
+                &save.save_id,
+                &format!("automatic-{ordinal:02}"),
+                ordinal,
+            );
+        }
+        insert_recovery_point(
+            &repository,
+            &save.save_id,
+            "protected-pre-upgrade",
+            "pre-upgrade",
+            None,
+            0,
+            "construction",
+            "ready",
+            100,
+        );
+        insert_recovery_point(
+            &repository,
+            &save.save_id,
+            "protected-pending",
+            "automatic",
+            Some(1),
+            0,
+            "construction",
+            "pending",
+            101,
+        );
+        insert_recovery_point(
+            &repository,
+            &save.save_id,
+            "protected-failed",
+            "automatic",
+            Some(1),
+            0,
+            "construction",
+            "failed",
+            102,
+        );
+
+        repository
+            .rotate_ready_automatic_recovery_points(&save.save_id)
+            .unwrap();
+
+        let connection = open_current_connection(&repository.db_path(&save.save_id)).unwrap();
+        assert_eq!(
+            connection
+                .query_row(
+                    "SELECT count(*) FROM recovery_points
+                     WHERE kind='automatic' AND status='ready'",
+                    [],
+                    |row| row.get::<_, i64>(0),
+                )
+                .unwrap(),
+            20
+        );
+        for recovery_id in [
+            "protected-pre-upgrade",
+            "protected-pending",
+            "protected-failed",
+        ] {
+            assert_eq!(
+                connection
+                    .query_row(
+                        "SELECT count(*) FROM recovery_points WHERE recovery_id=?1",
+                        [recovery_id],
+                        |row| row.get::<_, i64>(0),
+                    )
+                    .unwrap(),
+                1
+            );
+        }
+        drop(connection);
+        assert!(!repository
+            .root
+            .join("recovery-packages")
+            .join("automatic-00")
+            .exists());
+        assert!(repository
+            .root
+            .join("recovery-packages")
+            .join("automatic-01")
+            .is_dir());
+    }
+
+    #[test]
+    fn phase5_rotation_refuses_to_delete_catalog_rows_when_a_package_is_missing() {
+        let repository = SaveRepository::new(root("phase5-recovery-rotation-missing"));
+        let save = repository
+            .create_save(Some("恢复轮换".to_string()))
+            .unwrap();
+        for ordinal in 0..21 {
+            insert_verified_ready_automatic_recovery_point(
+                &repository,
+                &save.save_id,
+                &format!("automatic-{ordinal:02}"),
+                ordinal,
+            );
+        }
+        let oldest_package = repository
+            .root
+            .join("recovery-packages")
+            .join("automatic-00");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(&oldest_package, fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        fs::rename(
+            &oldest_package,
+            repository.root.join("withheld-automatic-00"),
+        )
+        .unwrap();
+
+        let error = repository
+            .rotate_ready_automatic_recovery_points(&save.save_id)
+            .unwrap_err();
+        assert!(error.to_string().ends_with("(recovery.corrupt)"));
+        let connection = open_current_connection(&repository.db_path(&save.save_id)).unwrap();
+        assert_eq!(
+            connection
+                .query_row(
+                    "SELECT count(*) FROM recovery_points
+                     WHERE kind='automatic' AND status='ready'",
+                    [],
+                    |row| row.get::<_, i64>(0),
+                )
+                .unwrap(),
+            21
+        );
     }
 
     #[test]
