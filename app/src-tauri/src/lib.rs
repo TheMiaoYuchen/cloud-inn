@@ -60,6 +60,50 @@ fn commit_game(
         .map_err(redaction::persistence_commit_error)
 }
 
+#[tauri::command]
+fn list_saves(
+    app: tauri::AppHandle,
+) -> Result<Vec<persistence::SaveSummary>, redaction::SafeError> {
+    use tauri::Manager;
+    let root = app
+        .path()
+        .app_data_dir()
+        .map_err(|_| redaction::app_storage_error())?;
+    persistence::SaveRepository::new(root).list_saves()
+}
+
+#[tauri::command]
+fn create_save(
+    app: tauri::AppHandle,
+    display_name: Option<String>,
+) -> Result<persistence::SaveSummary, redaction::SafeError> {
+    use tauri::Manager;
+    let root = app
+        .path()
+        .app_data_dir()
+        .map_err(|_| redaction::app_storage_error())?;
+    persistence::SaveRepository::new(root).create_save(display_name)
+}
+
+#[tauri::command]
+fn rename_save(
+    app: tauri::AppHandle,
+    save_id: String,
+    display_name: String,
+    expected_metadata_revision: i64,
+) -> Result<persistence::SaveSummary, redaction::SafeError> {
+    use tauri::Manager;
+    let root = app
+        .path()
+        .app_data_dir()
+        .map_err(|_| redaction::app_storage_error())?;
+    persistence::SaveRepository::new(root).rename_save(
+        &save_id,
+        display_name,
+        expected_metadata_revision,
+    )
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     redaction::install_panic_hook();
@@ -74,6 +118,9 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             load_game,
             commit_game,
+            list_saves,
+            create_save,
+            rename_save,
             provider_token_status,
             set_provider_token,
             delete_provider_token

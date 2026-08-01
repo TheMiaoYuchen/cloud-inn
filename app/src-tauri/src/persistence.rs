@@ -2,8 +2,8 @@ use crate::cross_database_validation::validate_issued_grants_for_save;
 use crate::provider_control::ProviderControlStore;
 use crate::redaction::SafeError;
 use crate::reliability::{
-    legacy_schema_needs_repair, lock_save, validate_current_save_database, PerSaveLock,
-    SAVE_APPLICATION_ID, SAVE_SCHEMA_VERSION,
+    legacy_schema_needs_repair, lock_save, normalize_display_name, validate_current_save_database,
+    PerSaveLock, SAVE_APPLICATION_ID, SAVE_SCHEMA_VERSION,
 };
 use crate::save_validation::{validate_asset_registry, validate_single_save_identity};
 use rusqlite::backup::Backup;
@@ -16,9 +16,24 @@ use std::fs::{self, File, OpenOptions};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
+use uuid::Uuid;
 
 pub struct SaveRepository {
     root: PathBuf,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SaveSummary {
+    save_id: String,
+    display_name: String,
+    metadata_revision: i64,
+    game_revision: i64,
+    current_day: i64,
+    room_count: i64,
+    schema_healthy: bool,
+    recovery_available: bool,
+    last_played_at_ms: i64,
 }
 
 pub(crate) struct PreparedSaveDatabase {
@@ -46,6 +61,125 @@ impl SaveRepository {
         }
         let conn = self.open_existing(save_id)?;
         load_game_from_connection(&conn, save_id)
+    }
+
+    pub fn list_saves(&self) -> Result<Vec<SaveSummary>, SafeError> {
+        let saves_root = self.root.join("saves");
+        let entries = match fs::read_dir(&saves_root) {
+            Ok(entries) => entries,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+            Err(_) => return Err(SafeError::new("save.corrupt", "无法读取存档目录")),
+        };
+        let mut saves = Vec::new();
+        for entry in entries {
+            let Ok(entry) = entry else { continue };
+            let Ok(file_type) = entry.file_type() else {
+                continue;
+            };
+            if !file_type.is_dir() || file_type.is_symlink() {
+                continue;
+            }
+            let Some(save_id) = entry.file_name().to_str().map(str::to_owned) else {
+                continue;
+            };
+            if validate_save_id(&save_id).is_err() {
+                continue;
+            }
+            let path = entry.path().join("save.sqlite3");
+            if !existing_regular_database(&path)? {
+                continue;
+            }
+            let Ok(connection) = open_read_only(&path, "migration.validation-failed") else {
+                continue;
+            };
+            if validate_current_save_database(&connection).is_err()
+                || validate_opened_save(&connection, &path, &save_id, false).is_err()
+            {
+                continue;
+            }
+            if let Ok(summary) = read_save_summary(&connection, &save_id) {
+                saves.push(summary);
+            }
+        }
+        saves.sort_by(|left, right| left.save_id.cmp(&right.save_id));
+        Ok(saves)
+    }
+
+    pub fn create_save(&self, display_name: Option<String>) -> Result<SaveSummary, SafeError> {
+        let display_name = match display_name {
+            Some(value) => normalize_display_name(&value)?,
+            None => self.default_display_name()?,
+        };
+        let save_id = Uuid::new_v4().to_string();
+        let path = self.db_path(&save_id);
+        let directory = path
+            .parent()
+            .ok_or_else(|| SafeError::new("save.corrupt", "存档目录无效"))?;
+        let _control = self.bootstrap_provider_control()?;
+        ensure_save_directory(directory)?;
+        let _save_lock = lock_save(directory)?;
+        if database_or_journal_exists(&path)
+            .map_err(|_| SafeError::new("save.conflict", "存档已存在"))?
+        {
+            return Err(SafeError::new("save.conflict", "存档已存在"));
+        }
+        prepare_database_file(&path, &save_id, true)?;
+        let mut connection = open_current_connection(&path)?;
+        let timestamp = current_time_ms()?;
+        let tx = connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(|_| SafeError::new("save.corrupt", "无法创建存档"))?;
+        tx.execute(
+            "INSERT INTO saves(save_id,schema_version,ruleset_version,revision,phase,current_day,cash_cents,rate_cents,updated_at) VALUES(?1,1,'prototype-v1',0,'design',0,100000000,80000,datetime('now'))",
+            [&save_id],
+        ).map_err(|_| SafeError::new("save.corrupt", "无法创建存档"))?;
+        tx.execute(
+            "INSERT INTO save_metadata(save_id,display_name,created_at_ms,renamed_at_ms,metadata_revision) VALUES(?1,?2,?3,?3,0)",
+            params![save_id, display_name, timestamp],
+        ).map_err(|_| SafeError::new("save.corrupt", "无法创建存档"))?;
+        tx.commit()
+            .map_err(|_| SafeError::new("save.corrupt", "无法创建存档"))?;
+        validate_opened_save(&connection, &path, &save_id, false)?;
+        read_save_summary(&connection, &save_id)
+    }
+
+    pub fn rename_save(
+        &self,
+        save_id: &str,
+        display_name: String,
+        expected_metadata_revision: i64,
+    ) -> Result<SaveSummary, SafeError> {
+        validate_save_id(save_id).map_err(|_| SafeError::new("save.invalid-id", "存档标识无效"))?;
+        if expected_metadata_revision < 0 {
+            return Err(SafeError::new("save.conflict", "存档版本无效"));
+        }
+        let display_name = normalize_display_name(&display_name)?;
+        let prepared = self.prepare_save_database(save_id)?;
+        let connection = open_current_connection(&prepared.path)?;
+        let timestamp = current_time_ms()?;
+        let changed = connection.execute(
+            "UPDATE save_metadata SET display_name=?1,renamed_at_ms=?2,metadata_revision=metadata_revision+1 WHERE save_id=?3 AND metadata_revision=?4",
+            params![display_name, timestamp, save_id, expected_metadata_revision],
+        ).map_err(|_| SafeError::new("save.corrupt", "无法重命名存档"))?;
+        if changed != 1 {
+            return Err(SafeError::new("save.conflict", "存档已更新，请重新加载"));
+        }
+        read_save_summary(&connection, save_id)
+    }
+
+    fn default_display_name(&self) -> Result<String, SafeError> {
+        let existing = self.list_saves()?;
+        let used = existing
+            .iter()
+            .map(|save| save.display_name.as_str())
+            .collect::<HashSet<_>>();
+        for ordinal in 1..=10_000 {
+            let candidate = format!("云岫酒店 {ordinal}");
+            if !used.contains(candidate.as_str()) {
+                return Ok(candidate);
+            }
+        }
+        Err(SafeError::new("save.conflict", "无法生成存档名称"))
     }
 
     pub fn commit_game(&self, expected_revision: i64, game: Value) -> Result<(), String> {
@@ -201,6 +335,39 @@ impl SaveRepository {
     fn open(&self, save_id: &str) -> Result<Connection, String> {
         self.open_for_commit(save_id)
     }
+}
+
+fn read_save_summary(connection: &Connection, save_id: &str) -> Result<SaveSummary, SafeError> {
+    connection.query_row(
+        "SELECT metadata.display_name,metadata.metadata_revision,saves.revision,saves.current_day,
+                (SELECT count(*) FROM room_instances WHERE save_id=saves.save_id),
+                EXISTS(SELECT 1 FROM recovery_points WHERE status='ready'),
+                MAX(metadata.created_at_ms, metadata.renamed_at_ms)
+         FROM saves
+         JOIN save_metadata AS metadata ON metadata.save_id=saves.save_id
+         WHERE saves.save_id=?1",
+        [save_id],
+        |row| Ok(SaveSummary {
+            save_id: save_id.to_owned(),
+            display_name: row.get(0)?,
+            metadata_revision: row.get(1)?,
+            game_revision: row.get(2)?,
+            current_day: row.get(3)?,
+            room_count: row.get(4)?,
+            schema_healthy: true,
+            recovery_available: row.get(5)?,
+            last_played_at_ms: row.get(6)?,
+        }),
+    ).map_err(|_| SafeError::new("save.not-found", "存档不存在"))
+}
+
+fn current_time_ms() -> Result<i64, SafeError> {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_err(|_| SafeError::new("save.corrupt", "系统时间无效"))?
+        .as_millis()
+        .try_into()
+        .map_err(|_| SafeError::new("save.corrupt", "系统时间无效"))
 }
 
 fn load_game_from_connection(conn: &Connection, save_id: &str) -> Result<Option<Value>, String> {
@@ -4403,6 +4570,60 @@ mod tests {
                 .query_row::<i64, _, _>("SELECT count(*) FROM schema_migrations", [], |x| x.get(0))
                 .unwrap(),
             7
+        );
+    }
+
+    #[test]
+    fn phase5_catalog_uses_stable_ids_normalized_names_and_metadata_cas() {
+        let repository = SaveRepository::new(root("phase5-catalog"));
+        let created = repository
+            .create_save(Some("  e\u{301}  ".to_string()))
+            .unwrap();
+        assert!(Uuid::parse_str(&created.save_id).is_ok());
+        assert_eq!(created.display_name, "é");
+        assert_eq!(created.metadata_revision, 0);
+        assert_eq!(created.game_revision, 0);
+        assert_eq!(created.current_day, 0);
+        assert_eq!(created.room_count, 0);
+
+        let renamed = repository
+            .rename_save(&created.save_id, "同名存档".to_string(), 0)
+            .unwrap();
+        assert_eq!(renamed.save_id, created.save_id);
+        assert_eq!(renamed.display_name, "同名存档");
+        assert_eq!(renamed.metadata_revision, 1);
+        assert_eq!(renamed.game_revision, 0);
+        assert!(repository
+            .rename_save(&created.save_id, "过期写入".to_string(), 0)
+            .unwrap_err()
+            .to_string()
+            .ends_with("(save.conflict)"));
+
+        let duplicate_name = repository
+            .create_save(Some("同名存档".to_string()))
+            .unwrap();
+        let default_named = repository.create_save(None).unwrap();
+        assert_ne!(duplicate_name.save_id, created.save_id);
+        assert_eq!(default_named.display_name, "云岫酒店 1");
+        assert_eq!(repository.list_saves().unwrap().len(), 3);
+    }
+
+    #[test]
+    fn phase5_catalog_ignores_invalid_directory_entries() {
+        let repository = SaveRepository::new(root("phase5-catalog-invalid-entry"));
+        let valid = repository.create_save(Some("有效存档".to_string())).unwrap();
+        let saves_root = repository.root.join("saves");
+        fs::create_dir_all(saves_root.join("not a save")).unwrap();
+        fs::write(saves_root.join("random-file"), b"not a save").unwrap();
+
+        assert_eq!(
+            repository
+                .list_saves()
+                .unwrap()
+                .into_iter()
+                .map(|summary| summary.save_id)
+                .collect::<Vec<_>>(),
+            vec![valid.save_id]
         );
     }
 

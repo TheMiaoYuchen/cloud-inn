@@ -5,11 +5,25 @@ use rusqlite::Connection;
 use std::collections::HashSet;
 use std::fs::{self, File, OpenOptions};
 use std::path::Path;
+use unicode_normalization::UnicodeNormalization;
+use unicode_segmentation::UnicodeSegmentation;
 
 pub(crate) const SAVE_APPLICATION_ID: i64 = 0x434C_494E;
 pub(crate) const CONTROL_APPLICATION_ID: i64 = 0x434C_4354;
 pub(crate) const SAVE_SCHEMA_VERSION: i64 = 7;
 pub(crate) const CONTROL_SCHEMA_VERSION: i64 = 1;
+
+pub(crate) fn normalize_display_name(value: &str) -> Result<String, SafeError> {
+    let normalized = value.trim().nfc().collect::<String>();
+    if normalized.chars().any(char::is_control)
+        || normalized.graphemes(true).count() > 40
+        || normalized.graphemes(true).count() == 0
+        || normalized.len() > 1024
+    {
+        return Err(SafeError::new("save.invalid-name", "存档名称无效"));
+    }
+    Ok(normalized)
+}
 
 pub(crate) struct AppRootLock(File);
 
@@ -295,5 +309,12 @@ mod tests {
         assert_eq!(CONTROL_APPLICATION_ID, 0x434C_4354);
         assert_eq!(SAVE_SCHEMA_VERSION, 7);
         assert_eq!(CONTROL_SCHEMA_VERSION, 1);
+    }
+
+    #[test]
+    fn display_names_trim_normalize_and_reject_controls_or_excessive_graphemes() {
+        assert_eq!(normalize_display_name("  Cafe\u{301}  ").unwrap(), "Café");
+        assert!(normalize_display_name("safe\nname").is_err());
+        assert!(normalize_display_name(&"云".repeat(41)).is_err());
     }
 }
