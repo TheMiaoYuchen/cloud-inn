@@ -3,6 +3,9 @@ pub mod generation_jobs;
 mod keychain;
 mod persistence;
 pub mod provider_control;
+// Recovery packages are introduced before the write coordinator wires them in.
+#[allow(dead_code)]
+mod recovery;
 pub mod redaction;
 mod reliability;
 mod save_validation;
