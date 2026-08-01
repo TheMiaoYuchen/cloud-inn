@@ -107,6 +107,19 @@ fn rename_save(
     )
 }
 
+#[tauri::command]
+fn list_recovery_points(
+    app: tauri::AppHandle,
+    save_id: String,
+) -> Result<Vec<persistence::RecoveryPointSummary>, redaction::SafeError> {
+    use tauri::Manager;
+    let root = app
+        .path()
+        .app_data_dir()
+        .map_err(|_| redaction::app_storage_error())?;
+    persistence::SaveRepository::new(root).list_recovery_points(&save_id)
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     redaction::install_panic_hook();
@@ -124,6 +137,7 @@ pub fn run() {
             list_saves,
             create_save,
             rename_save,
+            list_recovery_points,
             provider_token_status,
             set_provider_token,
             delete_provider_token

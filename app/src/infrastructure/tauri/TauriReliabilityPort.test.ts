@@ -23,4 +23,35 @@ describe("TauriReliabilityPort", () => {
       saveId: "save-1", displayName: "新名称", expectedMetadataRevision: 0,
     });
   });
+
+  it("uses typed native provider token commands without reading token values", async () => {
+    const missing = { state: "missing" as const };
+    const available = { state: "available" as const };
+    const invoke = vi.fn()
+      .mockResolvedValueOnce(missing)
+      .mockResolvedValueOnce(available)
+      .mockResolvedValueOnce(missing);
+    const port = new TauriReliabilityPort(invoke);
+
+    await expect(port.providerTokenStatus()).resolves.toEqual(missing);
+    await expect(port.setProviderToken("token-value")).resolves.toEqual(available);
+    await expect(port.deleteProviderToken()).resolves.toEqual(missing);
+    expect(invoke).toHaveBeenNthCalledWith(1, "provider_token_status");
+    expect(invoke).toHaveBeenNthCalledWith(2, "set_provider_token", {
+      token: "token-value",
+    });
+    expect(invoke).toHaveBeenNthCalledWith(3, "delete_provider_token");
+  });
+
+  it("lists recovery points by opaque save identifier", async () => {
+    const points = [{
+      recoveryId: "recovery-1", kind: "automatic", restoreRevision: 3,
+      reason: "construction", createdAtMs: 1,
+    }];
+    const invoke = vi.fn().mockResolvedValue(points);
+    const port = new TauriReliabilityPort(invoke);
+
+    await expect(port.listRecoveryPoints("save-1")).resolves.toEqual(points);
+    expect(invoke).toHaveBeenCalledWith("list_recovery_points", { saveId: "save-1" });
+  });
 });

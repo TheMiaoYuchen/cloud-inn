@@ -1,5 +1,6 @@
 use crate::cross_database_validation::validate_issued_grants_for_save;
 use crate::provider_control::ProviderControlStore;
+use crate::recovery::{RecoveryId, RecoveryReason};
 use crate::redaction::SafeError;
 use crate::reliability::{
     legacy_schema_needs_repair, lock_save, normalize_display_name, validate_current_save_database,
@@ -34,6 +35,18 @@ pub struct SaveSummary {
     schema_healthy: bool,
     recovery_available: bool,
     last_played_at_ms: i64,
+}
+
+/// A player-visible recovery point. Package paths and checksums deliberately
+/// remain private; callers can only act on the opaque recovery identifier.
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RecoveryPointSummary {
+    recovery_id: String,
+    kind: String,
+    restore_revision: i64,
+    reason: String,
+    created_at_ms: i64,
 }
 
 pub(crate) struct PreparedSaveDatabase {
@@ -165,6 +178,19 @@ impl SaveRepository {
             return Err(SafeError::new("save.conflict", "存档已更新，请重新加载"));
         }
         read_save_summary(&connection, save_id)
+    }
+
+    /// Lists only catalog rows that have been promoted to `ready` and whose
+    /// complete, non-player-visible metadata passes the native validation
+    /// boundary. A malformed ready row is never partially exposed.
+    pub fn list_recovery_points(
+        &self,
+        save_id: &str,
+    ) -> Result<Vec<RecoveryPointSummary>, SafeError> {
+        validate_save_id(save_id).map_err(|_| SafeError::new("save.invalid-id", "存档标识无效"))?;
+        let prepared = self.prepare_save_database(save_id)?;
+        let connection = open_read_only(&prepared.path, "recovery.corrupt")?;
+        read_ready_recovery_points(&connection)
     }
 
     fn default_display_name(&self) -> Result<String, SafeError> {
@@ -359,6 +385,123 @@ fn read_save_summary(connection: &Connection, save_id: &str) -> Result<SaveSumma
             last_played_at_ms: row.get(6)?,
         }),
     ).map_err(|_| SafeError::new("save.not-found", "存档不存在"))
+}
+
+fn read_ready_recovery_points(
+    connection: &Connection,
+) -> Result<Vec<RecoveryPointSummary>, SafeError> {
+    let mut statement = connection
+        .prepare(
+            "SELECT recovery_id,kind,origin_commit_revision,restore_revision,reason,
+                    relative_path,package_sha256,manifest_sha256,created_at_ms
+             FROM recovery_points
+             WHERE status='ready'
+             ORDER BY created_at_ms DESC,recovery_id ASC",
+        )
+        .map_err(|_| recovery_corrupt())?;
+    let rows = statement
+        .query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, Option<i64>>(2)?,
+                row.get::<_, i64>(3)?,
+                row.get::<_, String>(4)?,
+                row.get::<_, String>(5)?,
+                row.get::<_, String>(6)?,
+                row.get::<_, Option<String>>(7)?,
+                row.get::<_, i64>(8)?,
+            ))
+        })
+        .map_err(|_| recovery_corrupt())?;
+    let mut points = Vec::new();
+    for row in rows {
+        let (
+            recovery_id,
+            kind,
+            origin_commit_revision,
+            restore_revision,
+            reason,
+            relative_path,
+            package_sha256,
+            manifest_sha256,
+            created_at_ms,
+        ) = row.map_err(|_| recovery_corrupt())?;
+        points.push(validate_ready_recovery_point(
+            recovery_id,
+            kind,
+            origin_commit_revision,
+            restore_revision,
+            reason,
+            relative_path,
+            package_sha256,
+            manifest_sha256,
+            created_at_ms,
+        )?);
+    }
+    Ok(points)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn validate_ready_recovery_point(
+    recovery_id: String,
+    kind: String,
+    origin_commit_revision: Option<i64>,
+    restore_revision: i64,
+    reason: String,
+    relative_path: String,
+    package_sha256: String,
+    manifest_sha256: Option<String>,
+    created_at_ms: i64,
+) -> Result<RecoveryPointSummary, SafeError> {
+    let recovery_id = RecoveryId::parse(recovery_id).map_err(|_| recovery_corrupt())?;
+    let reason = RecoveryReason::parse_storage_value(&reason).map_err(|_| recovery_corrupt())?;
+    let valid_kind = matches!(kind.as_str(), "automatic" | "pre-upgrade" | "pre-restore");
+    let valid_origin = match kind.as_str() {
+        "automatic" => origin_commit_revision.is_some_and(|revision| revision >= 0),
+        "pre-upgrade" | "pre-restore" => {
+            origin_commit_revision.is_none_or(|revision| revision >= 0)
+        }
+        _ => false,
+    };
+    if !valid_kind
+        || !valid_origin
+        || restore_revision < 0
+        || created_at_ms < 0
+        || !valid_recovery_relative_path(&relative_path)
+        || !valid_recovery_sha256(&package_sha256)
+        || manifest_sha256
+            .as_deref()
+            .is_some_and(|digest| !valid_recovery_sha256(digest))
+    {
+        return Err(recovery_corrupt());
+    }
+    Ok(RecoveryPointSummary {
+        recovery_id: recovery_id.as_str().to_owned(),
+        kind,
+        restore_revision,
+        reason: reason.as_storage_value().to_owned(),
+        created_at_ms,
+    })
+}
+
+fn valid_recovery_relative_path(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= crate::recovery::MAX_PAYLOAD_PATH_LENGTH
+        && !value.starts_with('/')
+        && !value.contains(['\\', '\0'])
+        && !value.contains("..")
+}
+
+fn valid_recovery_sha256(value: &str) -> bool {
+    value.len() == 64
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || matches!(byte, b'a'..=b'f'))
+}
+
+fn recovery_corrupt() -> SafeError {
+    SafeError::new("recovery.corrupt", "恢复点记录无效")
 }
 
 fn current_time_ms() -> Result<i64, SafeError> {
@@ -4611,7 +4754,9 @@ mod tests {
     #[test]
     fn phase5_catalog_ignores_invalid_directory_entries() {
         let repository = SaveRepository::new(root("phase5-catalog-invalid-entry"));
-        let valid = repository.create_save(Some("有效存档".to_string())).unwrap();
+        let valid = repository
+            .create_save(Some("有效存档".to_string()))
+            .unwrap();
         let saves_root = repository.root.join("saves");
         fs::create_dir_all(saves_root.join("not a save")).unwrap();
         fs::write(saves_root.join("random-file"), b"not a save").unwrap();
@@ -4625,6 +4770,132 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec![valid.save_id]
         );
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn insert_recovery_point(
+        repository: &SaveRepository,
+        save_id: &str,
+        recovery_id: &str,
+        kind: &str,
+        origin_commit_revision: Option<i64>,
+        restore_revision: i64,
+        reason: &str,
+        status: &str,
+        created_at_ms: i64,
+    ) {
+        let connection = open_current_connection(&repository.db_path(save_id)).unwrap();
+        connection
+            .execute(
+                "INSERT INTO recovery_points(
+                   recovery_id,kind,origin_commit_revision,restore_revision,reason,status,
+                   relative_path,package_sha256,manifest_sha256,created_at_ms
+                 ) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)",
+                params![
+                    recovery_id,
+                    kind,
+                    origin_commit_revision,
+                    restore_revision,
+                    reason,
+                    status,
+                    format!("recovery-packages/{recovery_id}"),
+                    "a".repeat(64),
+                    Some("b".repeat(64)),
+                    created_at_ms,
+                ],
+            )
+            .unwrap();
+    }
+
+    #[test]
+    fn phase5_recovery_catalog_lists_only_valid_ready_points() {
+        let repository = SaveRepository::new(root("phase5-recovery-catalog"));
+        let save = repository
+            .create_save(Some("恢复目录".to_string()))
+            .unwrap();
+        insert_recovery_point(
+            &repository,
+            &save.save_id,
+            "ready-later",
+            "automatic",
+            Some(4),
+            3,
+            "construction",
+            "ready",
+            20,
+        );
+        insert_recovery_point(
+            &repository,
+            &save.save_id,
+            "ready-earlier",
+            "pre-upgrade",
+            None,
+            2,
+            "settlement",
+            "ready",
+            10,
+        );
+        insert_recovery_point(
+            &repository,
+            &save.save_id,
+            "pending-hidden",
+            "automatic",
+            Some(5),
+            4,
+            "visual-adoption",
+            "pending",
+            30,
+        );
+
+        let points = repository.list_recovery_points(&save.save_id).unwrap();
+        assert_eq!(points.len(), 2);
+        assert_eq!(points[0].recovery_id, "ready-later");
+        assert_eq!(points[0].kind, "automatic");
+        assert_eq!(points[0].restore_revision, 3);
+        assert_eq!(points[0].reason, "construction");
+        assert_eq!(points[0].created_at_ms, 20);
+        assert_eq!(points[1].recovery_id, "ready-earlier");
+    }
+
+    #[test]
+    fn phase5_recovery_catalog_rejects_a_corrupt_ready_row() {
+        let repository = SaveRepository::new(root("phase5-recovery-catalog-corrupt"));
+        let save = repository
+            .create_save(Some("恢复目录".to_string()))
+            .unwrap();
+        insert_recovery_point(
+            &repository,
+            &save.save_id,
+            "ready-valid",
+            "automatic",
+            Some(1),
+            0,
+            "construction",
+            "ready",
+            1,
+        );
+        let connection = open_current_connection(&repository.db_path(&save.save_id)).unwrap();
+        connection
+            .pragma_update(None, "ignore_check_constraints", "ON")
+            .unwrap();
+        connection
+            .execute(
+                "INSERT INTO recovery_points(
+                   recovery_id,kind,origin_commit_revision,restore_revision,reason,status,
+                   relative_path,package_sha256,manifest_sha256,created_at_ms
+                 ) VALUES('bad/id','automatic',2,1,'construction','ready',
+                   'recovery-packages/bad','aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+                   NULL,2)",
+                [],
+            )
+            .unwrap();
+        connection
+            .pragma_update(None, "ignore_check_constraints", "OFF")
+            .unwrap();
+        drop(connection);
+
+        let error = repository.list_recovery_points(&save.save_id).unwrap_err();
+        assert!(error.to_string().ends_with("(recovery.corrupt)"));
     }
 
     #[test]
