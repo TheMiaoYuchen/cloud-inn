@@ -29,6 +29,9 @@ pub(crate) struct AppRootLock(File);
 
 pub(crate) struct PerSaveLock(File);
 
+pub(crate) struct SharedSendRestorePermit(File);
+pub(crate) struct ExclusiveSendRestorePermit(File);
+
 pub(crate) fn lock_app_root(app_root: &Path) -> Result<AppRootLock, SafeError> {
     fs::create_dir_all(app_root).map_err(|_| lock_error())?;
     lock_file(&app_root.join(".cloud-inn.root.lock")).map(AppRootLock)
@@ -39,7 +42,32 @@ pub(crate) fn lock_save(save_directory: &Path) -> Result<PerSaveLock, SafeError>
     lock_file(&save_directory.join(".cloud-inn.save.lock")).map(PerSaveLock)
 }
 
+pub(crate) fn lock_send_restore_shared(
+    app_root: &Path,
+) -> Result<SharedSendRestorePermit, SafeError> {
+    let file = open_lock_file(&app_root.join(".cloud-inn.send-restore.lock"))?;
+    file.lock_shared().map_err(|_| lock_error())?;
+    Ok(SharedSendRestorePermit(file))
+}
+
+pub(crate) fn lock_send_restore_exclusive(
+    app_root: &Path,
+) -> Result<ExclusiveSendRestorePermit, SafeError> {
+    let file = open_lock_file(&app_root.join(".cloud-inn.send-restore.lock"))?;
+    file.lock_exclusive().map_err(|_| lock_error())?;
+    Ok(ExclusiveSendRestorePermit(file))
+}
+
 fn lock_file(path: &Path) -> Result<File, SafeError> {
+    let file = open_lock_file(path)?;
+    file.lock_exclusive().map_err(|_| lock_error())?;
+    Ok(file)
+}
+
+fn open_lock_file(path: &Path) -> Result<File, SafeError> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).map_err(|_| lock_error())?;
+    }
     let file = OpenOptions::new()
         .create(true)
         .truncate(false)
@@ -47,7 +75,6 @@ fn lock_file(path: &Path) -> Result<File, SafeError> {
         .write(true)
         .open(path)
         .map_err(|_| lock_error())?;
-    file.lock_exclusive().map_err(|_| lock_error())?;
     Ok(file)
 }
 
@@ -58,6 +85,18 @@ impl Drop for AppRootLock {
 }
 
 impl Drop for PerSaveLock {
+    fn drop(&mut self) {
+        let _ = FileExt::unlock(&self.0);
+    }
+}
+
+impl Drop for SharedSendRestorePermit {
+    fn drop(&mut self) {
+        let _ = FileExt::unlock(&self.0);
+    }
+}
+
+impl Drop for ExclusiveSendRestorePermit {
     fn drop(&mut self) {
         let _ = FileExt::unlock(&self.0);
     }

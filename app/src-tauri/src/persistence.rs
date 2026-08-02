@@ -483,6 +483,7 @@ impl SaveRepository {
         save_id: &str,
         recovery_id: &str,
     ) -> Result<RestoreRecoveryResult, SafeError> {
+        let _send_restore_permit = crate::reliability::lock_send_restore_exclusive(&self.root)?;
         validate_save_id(save_id).map_err(|_| SafeError::new("save.invalid-id", "存档标识无效"))?;
         let recovery_id = RecoveryId::parse(recovery_id).map_err(|_| recovery_corrupt())?;
         let prepared = self.prepare_save_database(save_id)?;
@@ -6206,11 +6207,14 @@ mod tests {
     }
 
     fn png_header(width: u32, height: u32) -> Vec<u8> {
-        let mut bytes = vec![
-            137, 80, 78, 71, 13, 10, 26, 10, 0, 0, 0, 13, b'I', b'H', b'D', b'R',
-        ];
-        bytes.extend_from_slice(&width.to_be_bytes());
-        bytes.extend_from_slice(&height.to_be_bytes());
+        let image = image::RgbaImage::from_pixel(width, height, image::Rgba([255, 255, 255, 255]));
+        let mut bytes = Vec::new();
+        image::DynamicImage::ImageRgba8(image)
+            .write_to(
+                &mut std::io::Cursor::new(&mut bytes),
+                image::ImageFormat::Png,
+            )
+            .unwrap();
         bytes
     }
     fn operations_departments() -> Value {

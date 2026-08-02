@@ -1,6 +1,6 @@
 import type { ReliabilityPort } from "../../application/ports/ReliabilityPort";
 import { VisualJobService } from "../../application/VisualJobService";
-import { createNewGame } from "../../domain/game/state";
+import { createNewGame, type GameState } from "../../domain/game/state";
 import type { SaveId } from "../../domain/primitives";
 import {
   JOB_STATUSES,
@@ -10,7 +10,9 @@ import {
   type ConfirmVisualAdoptionInput,
   type ConfirmVisualSendInput,
   type EnqueueVisualJobInput,
+  type ArchiveExportResult,
   type GenerationJobId,
+  type ImportInspection,
   type ImportInspectionToken,
   type RecoveryId,
   type ProviderPreferencesProjection,
@@ -29,6 +31,9 @@ const JOBS_PREFIX = "cloud-inn:visual-jobs:";
 const PREFERENCES_KEY = "cloud-inn:provider-preferences";
 const DAY_MS = 86_400_000;
 const BROWSER_FALLBACK_MODEL = "browser-offline-compatible-1k";
+const ARCHIVE_KEY = "cloud-inn:browser-archive";
+const ARCHIVE_TOKEN_KEY = "cloud-inn:browser-archive-token";
+const ARCHIVE_TOKEN_EXPIRY_KEY = "cloud-inn:browser-archive-token-expiry";
 
 type BrowserSaveMetadata = { displayName: string; metadataRevision: number; createdAtMs: number; renamedAtMs: number };
 type BrowserPreferences = WritableProviderPreferences & {
@@ -232,11 +237,60 @@ export class BrowserReliabilityPort implements ReliabilityPort {
     throw new Error("recovery.not-found");
   }
 
-  async exportSave(): Promise<never> { throw new Error("archive.export-failed"); }
+  async exportSave(saveId: SaveId): Promise<ArchiveExportResult> {
+    const game = await this.savePort.load(saveId);
+    const metadata = getMetadata(saveId);
+    if (!game || !metadata) throw new Error("save.not-found");
+    const payload = JSON.stringify({ archiveVersion: 1, saveId, displayName: metadata.displayName, game });
+    const bytes = new TextEncoder().encode(payload);
+    const digest = await crypto.subtle.digest("SHA-256", bytes);
+    const sha256 = Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, "0")).join("");
+    window.localStorage.setItem(ARCHIVE_KEY, payload);
+    return { archiveVersion: 1, suggestedFileName: `${metadata.displayName}.cloudinn`, byteLength: bytes.byteLength, sha256 };
+  }
 
-  async inspectImport(): Promise<never> { throw new Error("archive.cancelled"); }
+  async inspectImport(): Promise<ImportInspection> {
+    const raw = window.localStorage.getItem(ARCHIVE_KEY);
+    if (!raw) throw new Error("archive.cancelled");
+    const parsed = JSON.parse(raw) as { archiveVersion: 1; saveId: SaveId; displayName: string; game: unknown };
+    const token = (globalThis.crypto?.randomUUID?.() ?? `${this.now()}-${Math.random()}`) as ImportInspectionToken;
+    window.localStorage.setItem(ARCHIVE_TOKEN_KEY, token);
+    window.localStorage.setItem(ARCHIVE_TOKEN_EXPIRY_KEY, String(this.now() + RELIABILITY_LIMITS.importInspectionTtlMs));
+    return {
+      token,
+      archiveVersion: 1,
+      sourceSaveId: parsed.saveId,
+      displayName: parsed.displayName,
+      schemaVersion: 1,
+      rulesetVersion: "1",
+      assetCount: 0,
+      totalBytes: new TextEncoder().encode(raw).byteLength,
+      expiresAtMs: this.now() + RELIABILITY_LIMITS.importInspectionTtlMs,
+    };
+  }
 
-  async importSave(_token: ImportInspectionToken): Promise<never> { throw new Error("archive.import-failed"); }
+  async importSave(token: ImportInspectionToken, displayName?: string): Promise<SaveSummary> {
+    const expiry = Number(window.localStorage.getItem(ARCHIVE_TOKEN_EXPIRY_KEY));
+    if (window.localStorage.getItem(ARCHIVE_TOKEN_KEY) !== token || !Number.isFinite(expiry) || this.now() >= expiry) {
+      throw new Error("archive.expired-inspection");
+    }
+    const raw = window.localStorage.getItem(ARCHIVE_KEY);
+    if (!raw) throw new Error("archive.import-failed");
+    const parsed = JSON.parse(raw) as { saveId: SaveId; displayName: string; game: GameState };
+    let ordinal = 1;
+    let saveId: SaveId;
+    do { saveId = `browser-import-${ordinal.toString().padStart(4, "0")}` as SaveId; ordinal += 1; }
+    while (window.localStorage.getItem(`${SAVE_PREFIX}${saveId}`) !== null);
+    const importedGame = { ...parsed.game, saveId, revision: 1 };
+    await this.savePort.commit(0, importedGame);
+    const name = normalizeName(displayName ?? parsed.displayName);
+    const nowMs = this.now();
+    const metadata: BrowserSaveMetadata = { displayName: name, metadataRevision: 0, createdAtMs: nowMs, renamedAtMs: nowMs };
+    window.localStorage.setItem(`${METADATA_PREFIX}${saveId}`, JSON.stringify(metadata));
+    window.localStorage.removeItem(ARCHIVE_TOKEN_KEY);
+    window.localStorage.removeItem(ARCHIVE_TOKEN_EXPIRY_KEY);
+    return { saveId, displayName: name, metadataRevision: 0, gameRevision: 1, currentDay: importedGame.currentDay, roomCount: importedGame.floor.rooms.length, schemaHealthy: true, recoveryAvailable: false, lastPlayedAtMs: nowMs };
+  }
 
   async providerTokenStatus() { return { state: "unavailable" as const }; }
 

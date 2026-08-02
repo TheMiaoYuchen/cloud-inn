@@ -1,4 +1,6 @@
+use image::{ImageFormat, ImageReader};
 use std::fmt;
+use std::io::Cursor;
 use std::io::Read;
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
@@ -666,10 +668,9 @@ fn parse_generated_image(
     if decoded.len() > decoded_limit {
         return Err(ProviderError::ResponseTooLarge);
     }
-    let (detected_mime, width, height) = image_metadata(&decoded)?;
-    if detected_mime != inline.mime_type
-        || u64::from(width) * u64::from(height) > resolution.pixel_limit()
-    {
+    let (width, height) = validate_encoded_image(&decoded, &inline.mime_type)
+        .map_err(|_| ProviderError::MalformedResponse)?;
+    if u64::from(width) * u64::from(height) > resolution.pixel_limit() {
         return Err(ProviderError::MalformedResponse);
     }
 
@@ -682,6 +683,26 @@ fn parse_generated_image(
     })
 }
 
+fn validate_encoded_image(bytes: &[u8], mime_type: &str) -> Result<(u32, u32), ProviderError> {
+    let format = match mime_type {
+        "image/png" => ImageFormat::Png,
+        "image/jpeg" => ImageFormat::Jpeg,
+        "image/webp" => ImageFormat::WebP,
+        _ => return Err(ProviderError::MalformedResponse),
+    };
+    let mut reader = ImageReader::with_format(Cursor::new(bytes), format);
+    let mut limits = image::Limits::default();
+    limits.max_image_width = Some(MAX_IMAGE_DIMENSION);
+    limits.max_image_height = Some(MAX_IMAGE_DIMENSION);
+    limits.max_alloc = Some(768 * 1024 * 1024);
+    reader.limits(limits);
+    let decoded = reader
+        .decode()
+        .map_err(|_| ProviderError::MalformedResponse)?;
+    Ok((decoded.width(), decoded.height()))
+}
+
+#[allow(dead_code)]
 fn image_metadata(bytes: &[u8]) -> Result<(&'static str, u32, u32), ProviderError> {
     let (mime, width, height) = if bytes.len() >= 24
         && &bytes[..8] == b"\x89PNG\r\n\x1a\n"
@@ -706,6 +727,7 @@ fn image_metadata(bytes: &[u8]) -> Result<(&'static str, u32, u32), ProviderErro
     Ok((mime, width, height))
 }
 
+#[allow(dead_code)]
 fn jpeg_metadata(bytes: &[u8]) -> Result<(&'static str, u32, u32), ProviderError> {
     let mut cursor = 2_usize;
     while cursor + 4 <= bytes.len() {
@@ -748,6 +770,7 @@ fn jpeg_metadata(bytes: &[u8]) -> Result<(&'static str, u32, u32), ProviderError
     Err(ProviderError::MalformedResponse)
 }
 
+#[allow(dead_code)]
 fn webp_metadata(bytes: &[u8]) -> Result<(&'static str, u32, u32), ProviderError> {
     let declared_length = u64::from(u32::from_le_bytes(
         bytes[4..8]

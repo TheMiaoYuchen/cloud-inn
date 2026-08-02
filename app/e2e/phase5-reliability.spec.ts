@@ -13,7 +13,7 @@ test("first run keeps AI optional and exposes only bounded diagnostics", async (
   await page.getByRole("link", { name: "诊断" }).click();
   await expect(page.getByRole("heading", { name: "诊断与 AI 设置" })).toBeVisible();
   await expect(page.getByRole("main")).not.toContainText("never-render-this-token");
-  await expect(page.getByRole("region", { name: "AI 服务" })).toContainText("unavailable");
+  await expect(page.getByRole("region", { name: "AI 服务" })).toContainText("暂不可用");
   await expect(page.getByRole("region", { name: "AI 服务" })).toContainText("network.offline");
 });
 
@@ -47,5 +47,9 @@ test("save manager creates and renames without offering deletion", async ({ page
   await expect(page.getByRole("button", { name: /第二家云端旅店/u })).toBeVisible();
 
   await page.getByRole("button", { name: "导出 .cloudinn" }).click();
-  await expect(page.getByRole("alert")).toContainText("archive.export-failed");
+  await expect(page.getByRole("status")).toContainText("归档已导出");
+  await page.getByRole("button", { name: "检查导入文件" }).click();
+  await expect(page.getByRole("complementary", { name: "导入检查结果" })).toContainText("可以导入");
+  await page.getByRole("button", { name: "确认导入为新存档" }).click();
+  await expect(page.getByRole("status")).toContainText("归档已作为新存档导入");
 });

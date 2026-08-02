@@ -1,6 +1,6 @@
 # Cloud Inn Phase 5 macOS Release Readiness
 
-Updated: 2026-08-01 (Asia/Shanghai)
+Updated: 2026-08-02 (Asia/Shanghai)
 
 ## Release identity
 
@@ -25,13 +25,28 @@ Updated: 2026-08-01 (Asia/Shanghai)
 
 | Item | Status | Notes |
 |---|---|---|
-| App/DMG local build | Pending final gate | Rebuild after the last code change. |
+| App/DMG local build | Complete (2026-08-02) | Apple Silicon arm64, macOS 26.5.2; unsigned local artifacts. |
 | Hardened runtime | Pending release decision | Do not enable/sign until release authority is provided. |
 | Developer ID certificate | Not inspected | Requires the developer's Apple account/certificate choice. |
 | Notarization credentials | Not configured | Requires a separate release decision. |
 | Stapling | Not performed | Depends on successful notarization. |
 | Entitlements audit | Pending final native feature set | Keychain and network usage must be checked against the final bundle. |
 | Update strategy | Pending product decision | Version 1 ships without silently enabling an updater. |
+
+## Browser acceptance evidence (2026-08-02)
+
+- TypeScript typecheck passes after the deterministic browser archive round-trip path was added.
+- Focused Vitest passes for browser reliability, first-run and save-manager workflows (13 tests).
+- Playwright `phase5-reliability.spec.ts` covers first-run optional AI, offline queue persistence/cancellation, save create/rename, and browser export -> inspect -> import into a fresh save.
+- Browser fallback remains an offline simulation; native provider, archive, recovery, Keychain and macOS shell gates remain pending below.
+
+## Native package evidence (2026-08-02)
+
+- App: `app/src-tauri/target/release/bundle/macos/Cloud Inn.app` (18 MB), arm64 Mach-O.
+- DMG: `app/src-tauri/target/release/bundle/dmg/Cloud Inn_0.1.0_aarch64.dmg` (6.6 MB).
+- SHA-256 (app executable): `d0cb22a5094a44b386fe339cbb8e6ed4aa3b3fc421c51f907c9d675a22cf98ca`.
+- SHA-256 (DMG): `5fce4c5f2a53032fb621231edcd65ba9365075e9f3371dca743187a193999a3c`.
+- Bundle uses the expected `com.cloudinn.game` identifier and an ad-hoc linker signature; Developer ID signing, notarization and stapling were not performed.
 
 ## Final gate still required
 

@@ -4,9 +4,11 @@
 //! lowercase SHA-256 digest.  Keeping these rules free of filesystem access
 //! makes them safe to use both before writes and while validating a save.
 
+use image::{ImageFormat, ImageReader};
 use sha2::{Digest, Sha256};
 use std::fmt;
 use std::fs::{self, File, OpenOptions};
+use std::io::Cursor;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 
@@ -48,6 +50,16 @@ pub(crate) struct StoredAsset {
     pub(crate) byte_length: u64,
     pub(crate) width: u32,
     pub(crate) height: u32,
+}
+
+pub(crate) fn planned_asset_path(
+    bytes: &[u8],
+    mime_type: &str,
+) -> Result<(String, String), AssetStoreError> {
+    let sha256 = lower_hex(&Sha256::digest(bytes));
+    let relative_path = content_addressed_relative_path(&sha256, mime_type)
+        .map_err(|_| AssetStoreError::InvalidAsset)?;
+    Ok((sha256, relative_path))
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -95,7 +107,7 @@ impl AssetStore {
         if !(1..=MAX_ASSET_BYTES).contains(&byte_length)
             || !(1..=MAX_IMAGE_DIMENSION).contains(&width)
             || !(1..=MAX_IMAGE_DIMENSION).contains(&height)
-            || image_dimensions(bytes, mime_type)? != (width, height)
+            || validate_encoded_image(bytes, mime_type)? != (width, height)
         {
             return Err(AssetStoreError::InvalidAsset);
         }
@@ -275,6 +287,37 @@ fn image_dimensions(bytes: &[u8], mime_type: &str) -> Result<(u32, u32), AssetSt
     }
 }
 
+/// Fully decodes the encoded image after the cheap header check.  Header-only
+/// sniffing accepts truncated payloads and is not sufficient for bytes that
+/// will later be handed to the WebView image decoder.
+pub(crate) fn validate_encoded_image(
+    bytes: &[u8],
+    mime_type: &str,
+) -> Result<(u32, u32), AssetStoreError> {
+    let expected_format = match mime_type {
+        "image/png" => ImageFormat::Png,
+        "image/jpeg" => ImageFormat::Jpeg,
+        "image/webp" => ImageFormat::WebP,
+        _ => return Err(AssetStoreError::InvalidAsset),
+    };
+    let header_dimensions = image_dimensions(bytes, mime_type)?;
+    let mut reader = ImageReader::with_format(Cursor::new(bytes), expected_format);
+    let mut limits = image::Limits::default();
+    limits.max_image_width = Some(MAX_IMAGE_DIMENSION);
+    limits.max_image_height = Some(MAX_IMAGE_DIMENSION);
+    limits.max_alloc = Some((MAX_ASSET_BYTES as u64).saturating_mul(8));
+    reader.limits(limits);
+    let decoded = reader.decode().map_err(|_| AssetStoreError::InvalidAsset)?;
+    let dimensions = (decoded.width(), decoded.height());
+    if dimensions != header_dimensions
+        || u64::from(dimensions.0).saturating_mul(u64::from(dimensions.1))
+            > u64::from(MAX_IMAGE_DIMENSION).saturating_mul(u64::from(MAX_IMAGE_DIMENSION))
+    {
+        return Err(AssetStoreError::InvalidAsset);
+    }
+    Ok(dimensions)
+}
+
 fn png_dimensions(bytes: &[u8]) -> Result<(u32, u32), AssetStoreError> {
     if bytes.len() < 24
         || bytes[..8] != [137, 80, 78, 71, 13, 10, 26, 10]
@@ -443,9 +486,11 @@ pub(crate) fn validate_lowercase_sha256(sha256: &str) -> Result<(), AssetPathErr
 #[cfg(test)]
 mod tests {
     use super::{
-        content_addressed_relative_path, lower_hex, validate_lowercase_sha256,
-        validate_stored_asset_path, AssetPathError, AssetStore, AssetStoreError, STAGING_PREFIX,
+        content_addressed_relative_path, lower_hex, validate_encoded_image,
+        validate_lowercase_sha256, validate_stored_asset_path, AssetPathError, AssetStore,
+        AssetStoreError, STAGING_PREFIX,
     };
+    use base64::Engine as _;
     use sha2::{Digest, Sha256};
     use std::fs;
     use std::sync::atomic::{AtomicU64, Ordering};
@@ -480,6 +525,48 @@ mod tests {
         bytes.extend_from_slice(&width.to_be_bytes());
         bytes.extend_from_slice(&height.to_be_bytes());
         bytes
+    }
+
+    fn valid_png() -> Vec<u8> {
+        base64::engine::general_purpose::STANDARD
+            .decode("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=")
+            .unwrap()
+    }
+
+    fn jpeg_header(width: u16, height: u16) -> Vec<u8> {
+        let mut bytes = vec![0xff, 0xd8, 0xff, 0xc0, 0, 7, 8];
+        bytes.extend_from_slice(&height.to_be_bytes());
+        bytes.extend_from_slice(&width.to_be_bytes());
+        bytes
+    }
+
+    fn webp_header(width: u32, height: u32) -> Vec<u8> {
+        let mut bytes = vec![0; 30];
+        bytes[..4].copy_from_slice(b"RIFF");
+        bytes[4..8].copy_from_slice(&22_u32.to_le_bytes());
+        bytes[8..12].copy_from_slice(b"WEBP");
+        bytes[12..16].copy_from_slice(b"VP8X");
+        for (offset, value) in [width - 1, height - 1].into_iter().enumerate() {
+            let start = 24 + offset * 3;
+            let encoded = value.to_le_bytes();
+            bytes[start..start + 3].copy_from_slice(&encoded[..3]);
+        }
+        bytes
+    }
+
+    #[test]
+    fn rejects_header_valid_but_truncated_supported_images() {
+        for (bytes, mime_type) in [
+            (png_header(1, 1), "image/png"),
+            (jpeg_header(1, 1), "image/jpeg"),
+            (webp_header(1, 1), "image/webp"),
+        ] {
+            assert_eq!(
+                validate_encoded_image(&bytes, mime_type),
+                Err(AssetStoreError::InvalidAsset),
+                "{mime_type} header without a decodable image payload must be rejected"
+            );
+        }
     }
 
     #[test]
@@ -547,10 +634,10 @@ mod tests {
     #[test]
     fn asset_store_deduplicates_identical_verified_content() {
         let root = TestRoot::new("dedupe");
-        let bytes = png_header(17, 23);
+        let bytes = valid_png();
         let store = AssetStore::new(&root.0);
-        let first = store.store(&bytes, "image/png", 17, 23).unwrap();
-        let second = store.store(&bytes, "image/png", 17, 23).unwrap();
+        let first = store.store(&bytes, "image/png", 1, 1).unwrap();
+        let second = store.store(&bytes, "image/png", 1, 1).unwrap();
         let digest = lower_hex(&Sha256::digest(&bytes));
 
         assert_eq!(first, second);
@@ -585,7 +672,7 @@ mod tests {
     #[test]
     fn asset_store_removes_only_its_stale_staging_file_before_retry() {
         let root = TestRoot::new("staging-cleanup");
-        let bytes = png_header(17, 23);
+        let bytes = valid_png();
         let digest = lower_hex(&Sha256::digest(&bytes));
         let prefix = root.0.join("assets/sha256").join(&digest[..2]);
         fs::create_dir_all(&prefix).unwrap();
@@ -593,7 +680,7 @@ mod tests {
         fs::write(&stale, b"partial").unwrap();
 
         let stored = AssetStore::new(&root.0)
-            .store(&bytes, "image/png", 17, 23)
+            .store(&bytes, "image/png", 1, 1)
             .unwrap();
 
         assert!(!stale.exists());

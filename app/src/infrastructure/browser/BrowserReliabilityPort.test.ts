@@ -5,6 +5,7 @@ import type {
   GenerationJobId,
   VisualJobProjection,
 } from "../../domain/reliability/reliabilityTypes";
+import { RELIABILITY_LIMITS } from "../../domain/reliability/reliabilityTypes";
 import { LocalStorageSavePort } from "./LocalStorageSavePort";
 import { BrowserReliabilityPort } from "./BrowserReliabilityPort";
 import { createNewGame } from "../../domain/game/state";
@@ -33,6 +34,33 @@ function replaceStoredJob(
 
 describe("BrowserReliabilityPort visual reliability adapter", () => {
   beforeEach(() => window.localStorage.clear());
+
+  it("round-trips a browser archive into a fresh save id", async () => {
+    const port = new BrowserReliabilityPort(new LocalStorageSavePort(fakeLocks()), () => 1_700_000_000_000);
+    const source = await port.createSave("原始酒店");
+
+    const exported = await port.exportSave(source.saveId);
+    expect(exported.suggestedFileName).toMatch(/\.cloudinn$/u);
+    const inspection = await port.inspectImport();
+    expect(inspection.displayName).toBe("原始酒店");
+
+    const imported = await port.importSave(inspection.token, "导入副本");
+    expect(imported.saveId).not.toBe(source.saveId);
+    expect(imported.displayName).toBe("导入副本");
+    expect((await port.listSaves()).map((save) => save.displayName)).toEqual(
+      expect.arrayContaining(["原始酒店", "导入副本"]),
+    );
+  });
+
+  it("rejects an expired archive inspection token", async () => {
+    let nowMs = 1_700_000_000_000;
+    const port = new BrowserReliabilityPort(new LocalStorageSavePort(fakeLocks()), () => nowMs);
+    const source = await port.createSave("过期检查");
+    await port.exportSave(source.saveId);
+    const inspection = await port.inspectImport();
+    nowMs += RELIABILITY_LIMITS.importInspectionTtlMs + 1;
+    await expect(port.importSave(inspection.token)).rejects.toThrow("archive.expired-inspection");
+  });
 
   it("implements save asset activation as an explicit browser no-op", async () => {
     await expect(new BrowserReliabilityPort().activateSaveAssets("save-1")).resolves.toBeUndefined();

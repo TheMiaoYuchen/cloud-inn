@@ -4,7 +4,7 @@
 //! It deliberately keeps provider credentials inside Rust and makes provider
 //! I/O an explicit `run_one` operation; enqueue/list/UI actions never send.
 
-use crate::assets::AssetStore;
+use crate::assets::{planned_asset_path, AssetStore};
 use crate::generation_jobs::{
     GenerationJobLeaseUpdate, GenerationJobNextState, GenerationJobStatus,
     GenerationJobTransitionExt, GenerationJobTransitionProjection, GenerationJobTransitionRequest,
@@ -18,7 +18,7 @@ use crate::provider::{
 };
 use crate::provider_control::ProviderControlStore;
 use crate::redaction::SafeError;
-use crate::reliability::validate_current_save_database;
+use crate::reliability::{lock_send_restore_shared, validate_current_save_database};
 use rusqlite::{
     params, Connection, OpenFlags, OptionalExtension, Transaction, TransactionBehavior,
 };
@@ -335,6 +335,7 @@ impl VisualRuntimeService {
         expected_job_revision: i64,
         now_ms: i64,
     ) -> Result<VisualJobProjection, SafeError> {
+        let _send_restore_permit = crate::reliability::lock_send_restore_exclusive(&self.app_root)?;
         let (_prepared, connection) = self.open_save(save_id)?;
         let current = self.require_job(&connection, save_id, job_id)?;
         require_revision(&current, expected_job_revision)?;
@@ -536,7 +537,7 @@ impl VisualRuntimeService {
             );
         };
 
-        let (attempt_id, model, request, running) = {
+        let (attempt_id, model, request, running, running_lease_epoch) = {
             let (_prepared, connection) = self.open_save(save_id)?;
             let mut current = self.require_job(&connection, save_id, job_id)?;
             if !matches!(
@@ -595,7 +596,14 @@ impl VisualRuntimeService {
                 Some(model.clone()),
                 now_ms,
             )?;
-            (attempt_id, model, request, running)
+            let running_lease_epoch: i64 = connection
+                .query_row(
+                    "SELECT lease_epoch FROM generation_jobs WHERE save_id=?1 AND job_id=?2",
+                    params![save_id, job_id],
+                    |row| row.get(0),
+                )
+                .map_err(|_| save_error())?;
+            (attempt_id, model, request, running, running_lease_epoch)
         };
 
         if let Err(error) = provider.check_health(token.as_str()) {
@@ -604,12 +612,14 @@ impl VisualRuntimeService {
             let current = self.require_matching_running(&connection, &running)?;
             return self.finish_provider_error(&connection, &current, error, false, now_ms);
         }
-        self.mark_attempt_sent(&attempt_id, now_ms)?;
+        let send_permit = lock_send_restore_shared(&self.app_root)?;
+        self.final_send_handoff(save_id, &running, running_lease_epoch, &attempt_id, now_ms)?;
         let generated = if model == FALLBACK_MODEL {
             provider.generate_fallback(token.as_str(), &request)
         } else {
             provider.generate_primary(token.as_str(), &request)
         };
+        drop(send_permit);
         match &generated {
             Ok(_) => self.finish_attempt_success(&attempt_id, now_ms)?,
             Err(error) => self.finish_attempt(&attempt_id, error, now_ms, true)?,
@@ -632,6 +642,38 @@ impl VisualRuntimeService {
             }
             Err(error) => self.finish_provider_error(&connection, &current, error, true, now_ms),
         }
+    }
+
+    fn final_send_handoff(
+        &self,
+        save_id: &str,
+        running: &VisualJobProjection,
+        running_lease_epoch: i64,
+        attempt_id: &str,
+        now_ms: i64,
+    ) -> Result<(), SafeError> {
+        let (_prepared, connection) = self.open_save(save_id)?;
+        let current = self.require_job(&connection, save_id, &running.job_id)?;
+        if current.job_revision != running.job_revision
+            || current.status != running.status
+            || current.request_fingerprint != running.request_fingerprint
+            || current.target_fingerprint != running.target_fingerprint
+        {
+            self.finish_attempt_code(attempt_id, "expired-unsent", "expired-unsent", now_ms)?;
+            return Err(job_stale());
+        }
+        let current_lease_epoch: i64 = connection
+            .query_row(
+                "SELECT lease_epoch FROM generation_jobs WHERE save_id=?1 AND job_id=?2",
+                params![save_id, running.job_id],
+                |row| row.get(0),
+            )
+            .map_err(|_| save_error())?;
+        if current_lease_epoch != running_lease_epoch {
+            self.finish_attempt_code(attempt_id, "expired-unsent", "expired-unsent", now_ms)?;
+            return Err(job_stale());
+        }
+        self.mark_attempt_sent(attempt_id, now_ms)
     }
 
     fn require_matching_running(
@@ -1123,9 +1165,47 @@ impl VisualRuntimeService {
         now_ms: i64,
     ) -> Result<VisualJobProjection, SafeError> {
         let save_directory = self.app_root.join("saves").join(&current.save_id);
+        let (expected_sha256, final_relative_path) =
+            planned_asset_path(&image.bytes, &image.mime_type)
+                .map_err(|_| SafeError::new("asset.write-failed", "无法保存生成图片"))?;
+        let operation_id = Uuid::new_v4().to_string();
+        let intent_transaction = connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(|_| save_error())?;
+        intent_transaction
+            .execute(
+                "INSERT INTO asset_write_intents(
+                   job_id,operation_id,temp_relative_path,final_relative_path,expected_sha256,
+                   mime_type,byte_length,width,height,created_at_ms
+                 ) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)
+                 ON CONFLICT(job_id) DO UPDATE SET
+                   operation_id=excluded.operation_id,
+                   temp_relative_path=excluded.temp_relative_path,
+                   final_relative_path=excluded.final_relative_path,
+                   expected_sha256=excluded.expected_sha256,
+                   mime_type=excluded.mime_type,
+                   byte_length=excluded.byte_length,
+                   width=excluded.width,
+                   height=excluded.height,
+                   created_at_ms=excluded.created_at_ms",
+                params![
+                    current.job_id,
+                    operation_id,
+                    format!("assets/.cloud-inn-asset-stage-{operation_id}"),
+                    final_relative_path,
+                    expected_sha256,
+                    image.mime_type,
+                    i64::try_from(image.bytes.len()).map_err(|_| save_error())?,
+                    i64::from(image.width),
+                    i64::from(image.height),
+                    now_ms,
+                ],
+            )
+            .map_err(|_| save_error())?;
+        intent_transaction.commit().map_err(|_| save_error())?;
         let stored = AssetStore::new(&save_directory)
             .store(&image.bytes, &image.mime_type, image.width, image.height)
-            .map_err(|_| SafeError::new("asset.write-failed", "无法保存生成图片"))?;
+            .map_err(|_error| SafeError::new("asset.write-failed", "无法保存生成图片"))?;
         let transaction = connection
             .transaction_with_behavior(TransactionBehavior::Immediate)
             .map_err(|_| save_error())?;
@@ -1151,6 +1231,12 @@ impl VisualRuntimeService {
                 now_ms,
             },
         )?;
+        transaction
+            .execute(
+                "DELETE FROM asset_write_intents WHERE job_id=?1",
+                [current.job_id.as_str()],
+            )
+            .map_err(|_| save_error())?;
         transaction.commit().map_err(|_| save_error())?;
         self.require_job(connection, &current.save_id, &current.job_id)
     }
@@ -1838,6 +1924,7 @@ mod tests {
     struct BlockingProvider {
         entered: Mutex<Option<mpsc::Sender<()>>>,
         release: Mutex<mpsc::Receiver<()>>,
+        generation_calls: AtomicUsize,
     }
 
     impl ProviderBackend for BlockingProvider {
@@ -1866,11 +1953,46 @@ mod tests {
         }
     }
 
+    struct SendBarrierProvider {
+        entered: Mutex<Option<mpsc::Sender<()>>>,
+        release: Mutex<mpsc::Receiver<()>>,
+    }
+
+    impl ProviderBackend for SendBarrierProvider {
+        fn check_health(&self, _token: &str) -> Result<(), ProviderError> {
+            Ok(())
+        }
+
+        fn generate_primary(
+            &self,
+            _token: &str,
+            _request: &GenerateImageRequest,
+        ) -> Result<GeneratedImage, ProviderError> {
+            if let Some(sender) = self.entered.lock().unwrap().take() {
+                sender.send(()).unwrap();
+            }
+            self.release.lock().unwrap().recv().unwrap();
+            Err(ProviderError::Transient { status: 503 })
+        }
+
+        fn generate_fallback(
+            &self,
+            _token: &str,
+            _request: &GenerateImageRequest,
+        ) -> Result<GeneratedImage, ProviderError> {
+            unreachable!("the regression only exercises primary generation")
+        }
+    }
+
     fn test_image(model: &'static str) -> GeneratedImage {
-        let mut bytes = vec![137, 80, 78, 71, 13, 10, 26, 10, 0, 0, 0, 13];
-        bytes.extend_from_slice(b"IHDR");
-        bytes.extend_from_slice(&1_u32.to_be_bytes());
-        bytes.extend_from_slice(&1_u32.to_be_bytes());
+        let mut bytes = Vec::new();
+        let image = image::RgbaImage::from_pixel(1, 1, image::Rgba([255, 255, 255, 255]));
+        image::DynamicImage::ImageRgba8(image)
+            .write_to(
+                &mut std::io::Cursor::new(&mut bytes),
+                image::ImageFormat::Png,
+            )
+            .unwrap();
         GeneratedImage {
             mime_type: "image/png".to_owned(),
             bytes,
@@ -2685,6 +2807,7 @@ mod tests {
         let provider = Arc::new(BlockingProvider {
             entered: Mutex::new(Some(entered_tx)),
             release: Mutex::new(release_rx),
+            generation_calls: AtomicUsize::new(0),
         });
         let worker_provider = Arc::clone(&provider);
         let worker_root = root.0.clone();
@@ -2753,6 +2876,71 @@ mod tests {
             )
             .unwrap_err();
         assert_eq!(serialized_code(&error), "provider.invalid-transition");
+    }
+
+    #[test]
+    fn cancellation_waits_for_final_send_handoff_before_transitioning() {
+        let (root, service, save_id) = setup("cancel-send-handoff");
+        let queued = service
+            .enqueue_visual_job(&save_id, request(), 0, &"a".repeat(64), 10)
+            .unwrap();
+        let _confirmed = service
+            .confirm_visual_send(&save_id, &queued.job_id, 0, 11)
+            .unwrap();
+        let (entered_tx, entered_rx) = mpsc::channel();
+        let (release_tx, release_rx) = mpsc::channel();
+        let provider = Arc::new(SendBarrierProvider {
+            entered: Mutex::new(Some(entered_tx)),
+            release: Mutex::new(release_rx),
+        });
+        let worker_root = root.0.clone();
+        let worker_save_id = save_id.clone();
+        let worker_job_id = queued.job_id.clone();
+        let worker_provider = Arc::clone(&provider);
+        let worker = std::thread::spawn(move || {
+            VisualRuntimeService::new(worker_root).run_one_with(
+                &worker_save_id,
+                &worker_job_id,
+                &FakeTokens(Some("token".to_owned())),
+                worker_provider.as_ref(),
+                12,
+            )
+        });
+        entered_rx
+            .recv_timeout(Duration::from_secs(2))
+            .expect("provider entered after authorization");
+
+        let running_revision = service
+            .list_visual_jobs(&save_id)
+            .unwrap()
+            .into_iter()
+            .find(|job| job.job_id == queued.job_id)
+            .unwrap()
+            .job_revision;
+
+        let (cancel_tx, cancel_rx) = mpsc::channel();
+        let cancel_root = root.0.clone();
+        let cancel_save_id = save_id.clone();
+        let cancel_job_id = queued.job_id.clone();
+        std::thread::spawn(move || {
+            let result = VisualRuntimeService::new(cancel_root).cancel_visual_job(
+                &cancel_save_id,
+                &cancel_job_id,
+                running_revision,
+                13,
+            );
+            cancel_tx.send(result).unwrap();
+        });
+
+        assert!(cancel_rx.recv_timeout(Duration::from_millis(100)).is_err());
+        release_tx.send(()).unwrap();
+        let worker_result = worker.join().unwrap().expect("worker completion");
+        assert_eq!(worker_result.status, GenerationJobStatus::Cancelled);
+        let cancelled = cancel_rx
+            .recv_timeout(Duration::from_secs(2))
+            .expect("cancel completion")
+            .expect("cancel completes after provider handoff");
+        assert_eq!(cancelled.status, GenerationJobStatus::Cancelled);
     }
 
     #[test]
