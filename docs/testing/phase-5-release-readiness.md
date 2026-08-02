@@ -44,8 +44,8 @@ Updated: 2026-08-02 (Asia/Shanghai)
 
 - App: `app/src-tauri/target/release/bundle/macos/Cloud Inn.app` (18 MB), arm64 Mach-O.
 - DMG: `app/src-tauri/target/release/bundle/dmg/Cloud Inn_0.1.0_aarch64.dmg` (6.6 MB).
-- SHA-256 (app executable): `d0cb22a5094a44b386fe339cbb8e6ed4aa3b3fc421c51f907c9d675a22cf98ca`.
-- SHA-256 (DMG): `5fce4c5f2a53032fb621231edcd65ba9365075e9f3371dca743187a193999a3c`.
+- SHA-256 (app executable, exact release commit `cfd1dab359370eea4fa0634d168bf6978d17f9ff`): `b294c6be306359f6ccdc431f94a5afe337625970f293bd51dc76f1c317a194bf`.
+- SHA-256 (DMG): `e46bd698b193875ca51e84a9f78481a4695e89e69193c6f6e7d14a4f43ced8a5`.
 - Bundle uses the expected `com.cloudinn.game` identifier and an ad-hoc linker signature; Developer ID signing, notarization and stapling were not performed.
 
 ## Final gate still required
