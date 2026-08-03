@@ -45,7 +45,7 @@ Updated: 2026-08-02 (Asia/Shanghai)
 - App: `app/src-tauri/target/release/bundle/macos/Cloud Inn.app` (18 MB), arm64 Mach-O.
 - DMG: `app/src-tauri/target/release/bundle/dmg/Cloud Inn_0.1.0_aarch64.dmg` (6.6 MB).
 - SHA-256 (app executable, exact release commit `cfd1dab359370eea4fa0634d168bf6978d17f9ff`): `b294c6be306359f6ccdc431f94a5afe337625970f293bd51dc76f1c317a194bf`.
-- SHA-256 (DMG): `e46bd698b193875ca51e84a9f78481a4695e89e69193c6f6e7d14a4f43ced8a5`.
+- SHA-256 (DMG, rebuilt after accelerated soak): `88ef921b3b80f286c3afb3dfdd27d4bff5ae1b64b263393ea6e6a3b47b7c26e4`.
 - Bundle uses the expected `com.cloudinn.game` identifier and an ad-hoc linker signature; Developer ID signing, notarization and stapling were not performed.
 - Accelerated equivalent soak: 720 cycles (the 120-minute run's 10-second sampling count) at 100ms intervals passed in 1m24s on the current Mac. The real-time 120-minute wall-clock mode remains available with `CLOUD_INN_SOAK_MINUTES=120`.
 
