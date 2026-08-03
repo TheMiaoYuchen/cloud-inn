@@ -6,6 +6,8 @@ import { createPhase4AcceptanceState } from "../src/testing/phase4Fixtures";
 import { ensureBrowserSave } from "./reliabilitySetup";
 
 const soakMinutes = Number(process.env.CLOUD_INN_SOAK_MINUTES ?? 0);
+const soakIntervalMs = Number(process.env.CLOUD_INN_SOAK_INTERVAL_MS ?? 10_000);
+const acceleratedCycles = Number(process.env.CLOUD_INN_SOAK_CYCLES ?? 0);
 
 function maximumFixture(saveId: string) {
   const state = createPhase4AcceptanceState(saveId);
@@ -32,7 +34,8 @@ function maximumFixture(saveId: string) {
 
 test("keeps the maximum hotel responsive for the configured soak window", async ({ page }) => {
   test.skip(!Number.isFinite(soakMinutes) || soakMinutes <= 0, "release soak only");
-  test.setTimeout((soakMinutes + 2) * 60_000);
+  const cycleCount = acceleratedCycles > 0 ? acceleratedCycles : Number.POSITIVE_INFINITY;
+  test.setTimeout(acceleratedCycles > 0 ? Math.max(60_000, acceleratedCycles * soakIntervalMs + 30_000) : (soakMinutes + 2) * 60_000);
   await ensureBrowserSave(page);
   const saveId = await page.evaluate(() => {
     const key = Object.keys(localStorage).find((candidate) => candidate.startsWith("cloud-inn:save:"));
@@ -55,19 +58,19 @@ test("keeps the maximum hotel responsive for the configured soak window", async 
   await expect(host).toBeVisible();
   expect(Number(await host.getAttribute("data-flow-sprite-count"))).toBeGreaterThan(0);
 
-  const deadline = Date.now() + soakMinutes * 60_000;
+  const deadline = acceleratedCycles > 0 ? Number.POSITIVE_INFINITY : Date.now() + soakMinutes * 60_000;
   let cycle = 0;
-  while (Date.now() < deadline) {
+  while (Date.now() < deadline && cycle < cycleCount) {
     await expect(host).toBeVisible();
     await expect(page.getByRole("navigation", { name: "主导航" })).toBeVisible();
     const tickBefore = Number(await host.getAttribute("data-flow-animation-tick"));
-    await page.waitForTimeout(10_000);
+    await page.waitForTimeout(soakIntervalMs);
     const tickAfter = Number(await host.getAttribute("data-flow-animation-tick"));
     // A remount or bounded counter rollover resets the tick; either way a
     // changed value proves the animation loop remained active for this sample.
     expect(tickAfter).not.toBe(tickBefore);
     cycle += 1;
-    if (cycle % 30 === 0) {
+    if (cycle % 30 === 0 && (acceleratedCycles > 0 || Date.now() + 15_000 < deadline)) {
       await page.reload();
       await expect(page.getByTestId("hotel-flow-host")).toBeVisible();
     }

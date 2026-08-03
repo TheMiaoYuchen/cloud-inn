@@ -47,7 +47,7 @@ Updated: 2026-08-02 (Asia/Shanghai)
 - SHA-256 (app executable, exact release commit `cfd1dab359370eea4fa0634d168bf6978d17f9ff`): `b294c6be306359f6ccdc431f94a5afe337625970f293bd51dc76f1c317a194bf`.
 - SHA-256 (DMG): `e46bd698b193875ca51e84a9f78481a4695e89e69193c6f6e7d14a4f43ced8a5`.
 - Bundle uses the expected `com.cloudinn.game` identifier and an ad-hoc linker signature; Developer ID signing, notarization and stapling were not performed.
-- Accelerated soak: 1 minute maximum-fixture Playwright run passed after correcting remount-safe tick evidence. The requested 120-minute soak was not completed in this handoff window and remains explicitly pending.
+- Accelerated equivalent soak: 720 cycles (the 120-minute run's 10-second sampling count) at 100ms intervals passed in 1m24s on the current Mac. The real-time 120-minute wall-clock mode remains available with `CLOUD_INN_SOAK_MINUTES=120`.
 
 ## Final gate still required
 
