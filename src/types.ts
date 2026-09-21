@@ -34,7 +34,8 @@ export type ApiError = {
 
 export type FloorPlacement = {
   id: string;
-  blueprintId: string;
+  kind: "blueprint" | "corridor" | "staff";
+  blueprintId?: string;
   areaSqm: number;
   allocatedAreaSqm: number;
   shapes: FloorPoint[][];
