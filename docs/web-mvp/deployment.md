@@ -15,7 +15,7 @@ CLOUD_INN_IMAGE_API_KEY=<图片服务密钥>
 可选覆盖项：
 
 ```text
-CLOUD_INN_IMAGE_MODEL=gemini-3.1-flash-image
+CLOUD_INN_IMAGE_MODEL=gpt-image-2.5
 CLOUD_INN_IMAGE_API_ORIGIN=https://img-api.apinebula.ai/
 CLOUD_INN_ALLOWED_ORIGIN=https://cloud-inn-test.zhong2.xyz
 ```
@@ -26,5 +26,5 @@ CLOUD_INN_ALLOWED_ORIGIN=https://cloud-inn-test.zhong2.xyz
 
 - 首页返回 200，并显示客房设计工作台。
 - `POST /api/generate` 从测试域名调用时，在未配置密钥前返回 `GENERATION_NOT_CONFIGURED`（503）。
-- 配置密钥后，同一请求返回图片的 `base64`、`mimeType` 与实际模型名。
+- 配置密钥后，同一请求返回图片的 `base64`、`mimeType` 与模型名。
 - 从非允许来源调用时返回 `ORIGIN_DENIED`（403）。

@@ -24,7 +24,7 @@
     "base64": "...",
     "mimeType": "image/png"
   },
-  "model": "gemini-3.1-flash-image"
+  "model": "gpt-image-2.5"
 }
 ```
 
@@ -49,8 +49,8 @@
 | 变量 | 含义 |
 | --- | --- |
 | `CLOUD_INN_IMAGE_API_KEY` | 图片服务访问令牌，必填，不进入前端构建 |
-| `CLOUD_INN_IMAGE_MODEL` | 唯一启用的模型名 |
-| `CLOUD_INN_IMAGE_API_ORIGIN` | 受控图片服务根地址 |
+| `CLOUD_INN_IMAGE_MODEL` | 唯一启用的模型名，默认 `gpt-image-2.5` |
+| `CLOUD_INN_IMAGE_API_ORIGIN` | 受控图片服务根地址；函数会请求其 `/v1/images/generations` 接口 |
 | `CLOUD_INN_ALLOWED_ORIGIN` | 允许请求的网页来源；用逗号分隔多个值 |
 | `CLOUD_INN_PROXY_PORT` | 代理监听端口 |
 
