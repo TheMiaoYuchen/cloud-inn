@@ -3,7 +3,7 @@ import test from "node:test";
 import { createGenerateHandler } from "./_image-generation.js";
 
 const origin = "https://cloud-inn-test.zhong2.xyz";
-const validBody = { roomTypeId: "single", bedTypeId: "queen", furniture: [{ id: "lounge-chair", material: "藤编", style: "低矮" }, { id: "reading-lamp", material: "", style: "" }], stylePrompt: "设计风格：安静温暖的海边客房。光照：午后自然光。特殊元素：可见海面。" };
+const validBody = { roomTypeId: "single", bedTypeId: "queen", furniture: [{ id: "lounge-chair", material: "藤编", style: "低矮" }, { id: "reading-lamp", material: "", style: "" }], areaSqm: 36, stylePrompt: "设计风格：安静温暖的海边客房。光照：午后自然光。特殊元素：可见海面。" };
 
 function responseSpy() {
   return {
@@ -45,6 +45,7 @@ test("requests one native 2:1 four-view blueprint from the Images API", async ()
   assert.match(providerBody.prompt, /lounge chair/);
   assert.match(providerBody.prompt, /material: 藤编/);
   assert.match(providerBody.prompt, /choose material and style randomly/);
+  assert.match(providerBody.prompt, /exactly 36 square metres/);
   assert.match(providerBody.prompt, /exactly four equal panels/);
 });
 
@@ -66,11 +67,12 @@ test("accepts one functional-area request and sends its area brief", async () =>
     },
   });
   const response = responseSpy();
-  await handler(request({ designKind: "zone", zoneTypeId: "spa", stylePrompt: "低照度石材水疗，蒸汽与香气。" }), response);
+  await handler(request({ designKind: "zone", zoneTypeId: "spa", areaSqm: 140, stylePrompt: "低照度石材水疗，蒸汽与香气。" }), response);
   assert.equal(response.statusCode, 200);
   const providerBody = JSON.parse(upstreamRequests[0].body);
   assert.match(providerBody.prompt, /hotel spa/);
   assert.match(providerBody.prompt, /低照度石材水疗/);
+  assert.match(providerBody.prompt, /exactly 140 square metres/);
   assert.match(providerBody.prompt, /four complementary eye-level views/);
 });
 
