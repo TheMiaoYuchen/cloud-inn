@@ -10,12 +10,6 @@ const OUTPUT_WIDTH = 2048;
 const OUTPUT_HEIGHT = 1024;
 const GUTTER = 12;
 const supportedMimeTypes = new Set(["image/png", "image/jpeg", "image/webp"]);
-const views = [
-  "the entry-facing view toward the bed",
-  "the window-side seating view",
-  "the bed-facing detail view",
-  "the reverse view looking toward the entry",
-];
 
 const templates = new Map([
   ["garden-queen", "花园大床房：暖光、窗边休憩区、自然材质"],
@@ -75,18 +69,14 @@ function validate(input) {
   return { templateId: input.templateId, furnitureIds: [...new Set(input.furnitureIds)], stylePrompt };
 }
 
-function buildPrompt(input, view, hasReference) {
+function buildPrompt(input) {
   const selectedFurniture = input.furnitureIds.map((id) => furniture.get(id)).join("、") || "保持留白";
   return [
-    "Create one polished, photorealistic 2:1 landscape hotel-room interior view. Frame the composition safely for a wide landscape crop.",
+    "Create one polished, photorealistic hotel-room blueprint contact sheet. Show exactly four equal panels arranged in 2 columns by 2 rows with thin quiet gutters. Keep each panel composed safely for a wide landscape crop.",
     `Room template: ${templates.get(input.templateId)}.`,
     `Furniture and arrangement cues: ${selectedFurniture}.`,
     `Creative direction supplied by the player: ${input.stylePrompt}`,
-    `This panel is ${view}.`,
-    hasReference
-      ? "The supplied reference image is the canonical version of this exact room. Preserve its architecture, bed, window placement, furniture, materials, lighting and styling; only change the camera angle."
-      : "Establish the canonical version of this room: architecture, bed, window placement, furniture, materials, lighting and styling must be clear and internally consistent.",
-    "No people, no text, no logos, and no collage. Compose a believable eye-level interior with soft natural light.",
+    "All four panels depict the same physically consistent room: preserve architecture, bed, window placement, furniture, materials, lighting and styling across the sheet. The views are: entry toward bed, window-side seating, bed-facing detail, and the reverse view toward entry. No people, no text and no logos. Compose believable eye-level interiors with soft natural light.",
   ].join("\n");
 }
 
@@ -114,7 +104,7 @@ function allowRequest(request, callsByAddress, now) {
   return true;
 }
 
-async function callImageModel(input, view, reference, { apiKey, model, providerOrigin, fetchImplementation }) {
+async function callImageModel(input, { apiKey, model, providerOrigin, fetchImplementation }) {
   const origin = new URL(providerOrigin);
   const endpoint = new URL(`v1beta/models/${encodeURIComponent(model)}:generateContent`, origin);
   if (endpoint.origin !== origin.origin) throw new Error("provider_origin");
@@ -123,8 +113,7 @@ async function callImageModel(input, view, reference, { apiKey, model, providerO
     headers: { authorization: `Bearer ${apiKey}`, "content-type": "application/json" },
     body: JSON.stringify({
       contents: [{ role: "user", parts: [
-        { text: buildPrompt(input, view, Boolean(reference)) },
-        ...(reference ? [{ inlineData: { mimeType: reference.mimeType, data: reference.base64 } }] : []),
+        { text: buildPrompt(input) },
       ] }],
       generationConfig: { responseModalities: ["IMAGE"], imageConfig: { aspectRatio: "2:1", imageSize: "1K" } },
     }),
@@ -141,10 +130,18 @@ async function callImageModel(input, view, reference, { apiKey, model, providerO
   return image;
 }
 
-async function composePanels(panels) {
+async function composeContactSheet(contactSheet) {
   const tileWidth = (OUTPUT_WIDTH - GUTTER) / 2;
   const tileHeight = (OUTPUT_HEIGHT - GUTTER) / 2;
-  const tiles = await Promise.all(panels.map(async (panel) => sharp(Buffer.from(panel.base64, "base64"))
+  const source = sharp(Buffer.from(contactSheet.base64, "base64"));
+  const metadata = await source.metadata();
+  if (!metadata.width || !metadata.height) throw new Error("invalid_provider_response");
+  const squareSize = Math.min(metadata.width, metadata.height);
+  const squareLeft = Math.floor((metadata.width - squareSize) / 2);
+  const squareTop = Math.floor((metadata.height - squareSize) / 2);
+  const panelSize = Math.floor(squareSize / 2);
+  const tiles = await Promise.all([0, 1, 2, 3].map((index) => source.clone()
+    .extract({ left: squareLeft + (index % 2) * panelSize, top: squareTop + Math.floor(index / 2) * panelSize, width: panelSize, height: panelSize })
     .resize(tileWidth, tileHeight, { fit: "cover", position: "centre" })
     .jpeg({ quality: 88, mozjpeg: true })
     .toBuffer()));
@@ -160,9 +157,8 @@ async function composePanels(panels) {
 }
 
 async function generateMultiAngleBlueprint(input, options) {
-  const canonical = await callImageModel(input, views[0], undefined, options);
-  const connectedViews = await Promise.all(views.slice(1).map((view) => callImageModel(input, view, canonical, options)));
-  return composePanels([canonical, ...connectedViews]);
+  const contactSheet = await callImageModel(input, options);
+  return composeContactSheet(contactSheet);
 }
 
 async function readModelPayload(upstream) {

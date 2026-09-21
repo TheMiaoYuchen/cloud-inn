@@ -20,7 +20,7 @@ function request(body = validBody, requestOrigin = origin) {
   return { method: "POST", url: "/api/generate", body, headers: { origin: requestOrigin, "x-forwarded-for": "203.0.113.42" } };
 }
 
-test("generates a four-view blueprint through the configured model", async () => {
+test("turns one four-view model response into a 2:1 blueprint", async () => {
   const upstreamRequests = [];
   const panel = (await sharp({ create: { width: 4, height: 4, channels: 3, background: "#c9a071" } }).jpeg().toBuffer()).toString("base64");
   const handler = createGenerateHandler({
@@ -37,14 +37,14 @@ test("generates a four-view blueprint through the configured model", async () =>
   assert.equal(response.payload.image.mimeType, "image/jpeg");
   const metadata = await sharp(Buffer.from(response.payload.image.base64, "base64")).metadata();
   assert.deepEqual({ width: metadata.width, height: metadata.height }, { width: 2048, height: 1024 });
-  assert.equal(upstreamRequests.length, 4);
+  assert.equal(upstreamRequests.length, 1);
   assert.equal(upstreamRequests[0].url, "https://image.example/v1beta/models/one-model:generateContent");
   assert.equal(upstreamRequests[0].options.headers.authorization, "Bearer test-only-key");
-  const providerBody = JSON.parse(upstreamRequests[3].options.body);
+  const providerBody = JSON.parse(upstreamRequests[0].options.body);
   assert.match(providerBody.contents[0].parts[0].text, /橡木床架/);
+  assert.match(providerBody.contents[0].parts[0].text, /exactly four equal panels/);
   assert.equal(providerBody.generationConfig.imageConfig.aspectRatio, "2:1");
-  assert.equal(providerBody.contents[0].parts.length, 2);
-  assert.match(providerBody.contents[0].parts[0].text, /canonical version/);
+  assert.equal(providerBody.contents[0].parts.length, 1);
 });
 
 test("does not call the provider without a server-side key", async () => {
