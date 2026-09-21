@@ -97,6 +97,17 @@ export async function saveFloorPlan(floorPlan: FloorPlan): Promise<void> {
   });
 }
 
+export async function deleteFloorPlan(id: string): Promise<void> {
+  const database = await openDatabase();
+  return new Promise((resolve, reject) => {
+    const transaction = database.transaction(FLOOR_STORE, "readwrite");
+    transaction.objectStore(FLOOR_STORE).delete(id);
+    transaction.oncomplete = () => { database.close(); resolve(); };
+    transaction.onerror = () => reject(transaction.error ?? new Error("无法删除楼层平面图"));
+    transaction.onabort = () => reject(transaction.error ?? new Error("无法删除楼层平面图"));
+  });
+}
+
 export async function saveFloorPlans(floorPlans: FloorPlan[]): Promise<void> {
   const database = await openDatabase();
   return new Promise((resolve, reject) => {
