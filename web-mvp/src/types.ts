@@ -19,8 +19,18 @@ export type DesignProject = {
   updatedAt: string;
 };
 
+export type LegendGift = {
+  guestName: string;
+  guestTitle: string;
+  stayStory: string;
+  note: string;
+  awardedAt: string;
+};
+
 export type Blueprint = DesignProject & {
   createdAt: string;
+  isLimited?: boolean;
+  legendGift?: LegendGift;
 };
 
 export type GenerateResponse = {
@@ -30,6 +40,21 @@ export type GenerateResponse = {
 
 export type ApiError = {
   error: { code: string; message: string };
+};
+
+export type LegendGiftResponse = {
+  guest: { name: string; title: string; stayStory: string; note: string };
+  gift: {
+    name: string;
+    designKind: "room" | "zone";
+    roomTypeId: string;
+    bedTypeId: string;
+    zoneTypeId?: string;
+    areaSqm: number;
+    furniture: FurnitureSelection[];
+    stylePrompt: string;
+  };
+  model: string;
 };
 
 export type FloorPlacement = {

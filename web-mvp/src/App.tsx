@@ -1,8 +1,9 @@
 import { useEffect, useMemo, useRef, useState, type ChangeEvent } from "react";
 import { bedTypes, furnitureCards, roomTypes, zoneChoices, zoneGroups } from "./catalog";
 import { FloorPlanner } from "./FloorPlanner";
+import { LegendGifts } from "./LegendGifts";
 import { listBlueprints, listFloorPlans, loadProject, saveBlueprint, saveBlueprints, saveFloorPlans, saveProject } from "./storage";
-import type { ApiError, Blueprint, DesignProject, FloorPlan, FurnitureSelection, GenerateResponse } from "./types";
+import type { ApiError, Blueprint, DesignProject, FloorPlan, FurnitureSelection, GenerateResponse, LegendGift, LegendGiftResponse } from "./types";
 
 type StoredProject = Partial<DesignProject> & { templateId?: string; furnitureIds?: string[] };
 type HotelArchive = { format: "cloud-inn-hotel-archive"; version: 2; exportedAt: string; blueprints: Blueprint[]; floors: FloorPlan[]; currentProject: DesignProject };
@@ -79,15 +80,28 @@ function formatDate(date: string): string {
   return new Intl.DateTimeFormat("zh-CN", { month: "short", day: "numeric" }).format(new Date(date));
 }
 
+function normaliseLegendGift(value: unknown): LegendGift | undefined {
+  if (!value || typeof value !== "object") return undefined;
+  const gift = value as Partial<LegendGift>;
+  if (![gift.guestName, gift.guestTitle, gift.stayStory, gift.note, gift.awardedAt].every((item) => typeof item === "string" && item.trim())) return undefined;
+  return { guestName: gift.guestName!, guestTitle: gift.guestTitle!, stayStory: gift.stayStory!, note: gift.note!, awardedAt: gift.awardedAt! };
+}
+
+function normaliseBlueprint(raw: Blueprint & StoredProject): Blueprint {
+  const blueprint = normaliseProject(raw);
+  const id = typeof raw.id === "string" && raw.id ? raw.id : crypto.randomUUID();
+  const legendGift = normaliseLegendGift(raw.legendGift);
+  return { ...blueprint, id, blueprintId: id, createdAt: typeof raw.createdAt === "string" ? raw.createdAt : blueprint.updatedAt, isLimited: raw.isLimited === true && Boolean(legendGift), legendGift };
+}
+
 function readBlueprints(value: unknown): Blueprint[] {
   if (!Array.isArray(value)) throw new Error("存档中缺少蓝图库。");
   return value.map((item) => {
     if (!item || typeof item !== "object") throw new Error("存档中包含无效蓝图。");
     const raw = item as Blueprint & StoredProject;
-    const blueprint = normaliseProject(raw);
+    const blueprint = normaliseBlueprint(raw);
     if (!blueprint.imageDataUrl?.startsWith("data:image/")) throw new Error("存档中有蓝图缺少图片。");
-    const id = typeof raw.id === "string" && raw.id ? raw.id : crypto.randomUUID();
-    return { ...blueprint, id, blueprintId: id, createdAt: typeof raw.createdAt === "string" ? raw.createdAt : blueprint.updatedAt };
+    return blueprint;
   });
 }
 
@@ -115,7 +129,7 @@ function readArchive(value: unknown): ImportedArchive {
 export function App() {
   const [project, setProject] = useState<DesignProject>(newProject);
   const [areaInput, setAreaInput] = useState("36");
-  const [workspace, setWorkspace] = useState<"room" | "zone" | "floor">("room");
+  const [workspace, setWorkspace] = useState<"room" | "zone" | "floor" | "gifts">("room");
   const [blueprints, setBlueprints] = useState<Blueprint[]>([]);
   const [ready, setReady] = useState(false);
   const [saveState, setSaveState] = useState("正在打开本地作品…");
@@ -129,7 +143,7 @@ export function App() {
   useEffect(() => {
     void Promise.all([loadProject(), listBlueprints()]).then(([stored, library]) => {
       if (stored) { const restored = normaliseProject(stored); setProject(restored); setAreaInput(String(restored.areaSqm)); setWorkspace(restored.designKind); }
-      setBlueprints(library.map((item) => normaliseProject(item) as Blueprint));
+      setBlueprints(library.map((item) => normaliseBlueprint(item)));
       setReady(true);
       setSaveState(stored ? "已恢复本地作品" : "新作品已准备好");
     }).catch(() => { setReady(true); setSaveState("浏览器存储不可用"); });
@@ -184,7 +198,7 @@ export function App() {
     if (!project.imageDataUrl) return;
     const now = new Date().toISOString();
     const id = project.blueprintId ?? crypto.randomUUID();
-    const blueprint: Blueprint = { ...project, id, blueprintId: id, createdAt: currentBlueprint?.createdAt ?? now, updatedAt: now };
+    const blueprint: Blueprint = { ...project, id, blueprintId: id, createdAt: currentBlueprint?.createdAt ?? now, updatedAt: now, isLimited: currentBlueprint?.isLimited, legendGift: currentBlueprint?.legendGift };
     try {
       await saveBlueprint(blueprint);
       setProject({ ...project, blueprintId: id, updatedAt: now });
@@ -193,25 +207,39 @@ export function App() {
     } catch { setSaveState("保存蓝图失败"); }
   }
 
-  async function generate() {
-    setGenerationError("");
-    setGenerationState("loading");
+  async function generateImage(design: DesignProject) {
     try {
       const response = await fetch("/api/generate", {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify(project.designKind === "zone"
-          ? { designKind: "zone", zoneTypeId: project.zoneTypeId, areaSqm: project.areaSqm, stylePrompt: project.stylePrompt }
-          : { designKind: "room", roomTypeId: project.roomTypeId, bedTypeId: project.bedTypeId, furniture: project.furniture, areaSqm: project.areaSqm, stylePrompt: project.stylePrompt }),
+        body: JSON.stringify(design.designKind === "zone"
+          ? { designKind: "zone", zoneTypeId: design.zoneTypeId, areaSqm: design.areaSqm, stylePrompt: design.stylePrompt }
+          : { designKind: "room", roomTypeId: design.roomTypeId, bedTypeId: design.bedTypeId, furniture: design.furniture, areaSqm: design.areaSqm, stylePrompt: design.stylePrompt }),
       });
       const body = await response.json() as GenerateResponse | ApiError;
       if (!response.ok || !("image" in body)) throw new Error("error" in body ? body.error.message : "生成服务暂时不可用");
-      setProject((current) => updateTimestamp({ ...current, imageDataUrl: `data:${body.image.mimeType};base64,${body.image.base64}` }));
-      setGenerationState("idle");
-    } catch (error) {
-      setGenerationError(error instanceof Error ? error.message : "生成服务暂时不可用");
-      setGenerationState("error");
-    }
+      return `data:${body.image.mimeType};base64,${body.image.base64}`;
+    } catch (error) { throw error instanceof Error ? error : new Error("生成服务暂时不可用"); }
+  }
+
+  async function generate() {
+    setGenerationError(""); setGenerationState("loading");
+    try {
+      const imageDataUrl = await generateImage(project);
+      setProject((current) => updateTimestamp({ ...current, imageDataUrl })); setGenerationState("idle");
+    } catch (error) { setGenerationError(error instanceof Error ? error.message : "生成服务暂时不可用"); setGenerationState("error"); }
+  }
+
+  async function awardLegendGift(result: LegendGiftResponse): Promise<Blueprint> {
+    const now = new Date().toISOString();
+    const id = crypto.randomUUID();
+    const design: DesignProject = { id, blueprintId: id, name: result.gift.name, designKind: result.gift.designKind, roomTypeId: result.gift.roomTypeId, bedTypeId: result.gift.bedTypeId, zoneTypeId: result.gift.zoneTypeId, furniture: result.gift.furniture, areaSqm: result.gift.areaSqm, stylePrompt: result.gift.stylePrompt, updatedAt: now };
+    const imageDataUrl = await generateImage(design);
+    const legendGift: LegendGift = { guestName: result.guest.name, guestTitle: result.guest.title, stayStory: result.guest.stayStory, note: result.guest.note, awardedAt: now };
+    const blueprint: Blueprint = { ...design, imageDataUrl, createdAt: now, isLimited: true, legendGift };
+    await saveBlueprint(blueprint);
+    setBlueprints((current) => [blueprint, ...current.filter((item) => item.id !== id)].sort((left, right) => right.updatedAt.localeCompare(left.updatedAt)));
+    return blueprint;
   }
 
   async function exportArchive() {
@@ -254,12 +282,12 @@ export function App() {
       <div className="topbar-actions"><p aria-live="polite">{saveState}</p><button className="library-trigger" type="button" onClick={() => setLibraryOpen(true)}>蓝图库 <span>{blueprints.length}</span></button></div>
     </header>
     <section className="intro">
-      <div className="design-switcher" role="tablist" aria-label="酒店设计与经营"><button type="button" role="tab" aria-selected={workspace === "room"} className={workspace === "room" ? "selected" : ""} onClick={() => beginDesign("room")}>设计客房</button><button type="button" role="tab" aria-selected={workspace === "zone"} className={workspace === "zone" ? "selected" : ""} onClick={() => beginDesign("zone")}>设计功能区域</button><button type="button" role="tab" aria-selected={workspace === "floor"} className={workspace === "floor" ? "selected" : ""} onClick={() => setWorkspace("floor")}>楼层平面图</button></div>
-      <p className="eyebrow">{workspace === "floor" ? "酒店经营，从空间开始" : project.designKind === "room" ? "一间房，一种情绪" : "一处区域，一种体验"}</p>
-      <h1>{workspace === "floor" ? "把空间排布成一座正在运转的酒店。" : project.designKind === "room" ? "把你想住进去的客房，变成一张图。" : "把酒店里的功能区域，变成一张图。"}</h1>
-      <p>{workspace === "floor" ? "这是一座从 56F 向上生长的高空酒店，每层共 1200㎡。新建空白层或复制已有楼层后，先建设走廊，再让客房接入走廊；功能区与职员区域可自由布局。" : project.designKind === "room" ? "从客房类型和床型开始，再添置家具。每件家具都能单独决定材质和风格；留空时由模型为整间房随机搭配。" : "选择一处酒店功能区域，再写下它的风格、光照、陈设和特殊元素。模型会将它组织为可用于后续建设的空间蓝图。"}</p>
+      <div className="design-switcher" role="tablist" aria-label="酒店设计与经营"><button type="button" role="tab" aria-selected={workspace === "room"} className={workspace === "room" ? "selected" : ""} onClick={() => beginDesign("room")}>设计客房</button><button type="button" role="tab" aria-selected={workspace === "zone"} className={workspace === "zone" ? "selected" : ""} onClick={() => beginDesign("zone")}>设计功能区域</button><button type="button" role="tab" aria-selected={workspace === "floor"} className={workspace === "floor" ? "selected" : ""} onClick={() => setWorkspace("floor")}>楼层平面图</button><button type="button" role="tab" aria-selected={workspace === "gifts"} className={workspace === "gifts" ? "selected" : ""} onClick={() => setWorkspace("gifts")}>云端赠礼</button></div>
+      <p className="eyebrow">{workspace === "gifts" ? "稀有来访，留下空间" : workspace === "floor" ? "酒店经营，从空间开始" : project.designKind === "room" ? "一间房，一种情绪" : "一处区域，一种体验"}</p>
+      <h1>{workspace === "gifts" ? "让偶然抵达的客人，留下一座酒店的传说。" : workspace === "floor" ? "把空间排布成一座正在运转的酒店。" : project.designKind === "room" ? "把你想住进去的客房，变成一张图。" : "把酒店里的功能区域，变成一张图。"}</h1>
+      <p>{workspace === "gifts" ? "每次来访只有很低概率触发赠礼。文字模型书写客人的故事与空间设定，图片模型将它绘制为一张只能部署一次的限定蓝图。" : workspace === "floor" ? "这是一座从 56F 向上生长的高空酒店，每层共 1200㎡。新建空白层或复制已有楼层后，先建设走廊，再让客房接入走廊；功能区与职员区域可自由布局。" : project.designKind === "room" ? "从客房类型和床型开始，再添置家具。每件家具都能单独决定材质和风格；留空时由模型为整间房随机搭配。" : "选择一处酒店功能区域，再写下它的风格、光照、陈设和特殊元素。模型会将它组织为可用于后续建设的空间蓝图。"}</p>
     </section>
-    {workspace === "floor" ? <FloorPlanner key={floorRevision} blueprints={blueprints} onOpenBlueprint={openBlueprint} /> : <div className="studio">
+    {workspace === "floor" ? <FloorPlanner key={floorRevision} blueprints={blueprints} onOpenBlueprint={openBlueprint} /> : workspace === "gifts" ? <LegendGifts blueprints={blueprints} onOpenBlueprint={openBlueprint} onAward={awardLegendGift} /> : <div className="studio">
       <section className="controls" aria-label="设计工具">
         <fieldset><legend>01 · 命名蓝图</legend><label className="sr-only" htmlFor="room-name">客房蓝图名称</label><input id="room-name" className="room-name" maxLength={40} value={project.name} onChange={(event) => setProject((current) => updateTimestamp({ ...current, name: event.target.value }))} placeholder="例如：海岸午后房" /></fieldset>
         <fieldset><legend>02 · 使用面积</legend><div className="area-input"><input id="area-sqm" type="number" min="8" max="600" step="1" value={areaInput} onChange={(event) => { const value = event.target.value; setAreaInput(value); const areaSqm = Number(value); if (Number.isInteger(areaSqm) && areaSqm >= 8 && areaSqm <= 600) setProject((current) => updateTimestamp({ ...current, areaSqm })); }} onBlur={() => { const parsed = Number(areaInput); const areaSqm = Number.isFinite(parsed) ? Math.max(8, Math.min(600, Math.round(parsed))) : project.areaSqm; setAreaInput(String(areaSqm)); setProject((current) => current.areaSqm === areaSqm ? current : updateTimestamp({ ...current, areaSqm })); }} /><span>m²</span><small>{project.designKind === "zone" ? "决定该区域在楼层中的占地面积。" : "决定该客房在楼层中的占地面积。"}</small></div></fieldset>
