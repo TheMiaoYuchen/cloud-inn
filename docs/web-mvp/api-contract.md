@@ -8,13 +8,17 @@
 
 ```json
 {
-  "templateId": "garden-queen",
-  "furnitureIds": ["oak-bed", "linen-chair"],
-  "stylePrompt": "日式侘寂，暖白墙面和午后阳光。"
+  "roomTypeId": "single",
+  "bedTypeId": "queen",
+  "furniture": [
+    { "id": "lounge-chair", "material": "藤编", "style": "低矮、松弛" },
+    { "id": "reading-lamp", "material": "", "style": "" }
+  ],
+  "stylePrompt": "设计风格：日式侘寂。光照：午后自然光。特殊元素：窗边的海风与绿植。"
 }
 ```
 
-`templateId` 必须是服务端目录中的固定 ID；`furnitureIds` 必须全部在服务端目录中；`stylePrompt` 去除首尾空白后为 1–600 个字符。服务端不信任浏览器传来的展示名或提示词结构。
+`roomTypeId` 仅可为 `single` 或 `suite`；`bedTypeId` 仅可为 `queen` 或 `twin`。`furniture` 最多 10 件，每项都使用服务端目录中的固定 ID；`material` 与 `style` 均为可选的 0–80 字符文本。留空时，模型会为该家具随机选择与整间房协调的材质和风格。`stylePrompt` 去除首尾空白后为 1–600 个字符，只控制整体设计风格、光照和特殊元素。
 
 ## 成功响应
 

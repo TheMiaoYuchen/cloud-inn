@@ -1,9 +1,16 @@
+export type FurnitureSelection = {
+  id: string;
+  material: string;
+  style: string;
+};
+
 export type DesignProject = {
   id: string;
   name: string;
   blueprintId?: string;
-  templateId: string;
-  furnitureIds: string[];
+  roomTypeId: string;
+  bedTypeId: string;
+  furniture: FurnitureSelection[];
   stylePrompt: string;
   imageDataUrl?: string;
   updatedAt: string;
