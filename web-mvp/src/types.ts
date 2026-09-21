@@ -35,13 +35,13 @@ export type ApiError = {
 export type FloorPlacement = {
   id: string;
   blueprintId: string;
-  x: number;
-  y: number;
-  width: number;
-  height: number;
   areaSqm: number;
+  allocatedAreaSqm: number;
+  shape: FloorPoint[];
   journeyRole: "arrival" | "stay" | "restore" | "gather";
 };
+
+export type FloorPoint = { x: number; y: number };
 
 export type FloorPlan = {
   id: "floor-01";
