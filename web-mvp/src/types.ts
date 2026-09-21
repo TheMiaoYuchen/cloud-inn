@@ -45,7 +45,9 @@ export type FloorPlacement = {
 export type FloorPoint = { x: number; y: number };
 
 export type FloorPlan = {
-  id: "floor-01";
+  id: string;
+  floorNumber: number;
+  name: string;
   placements: FloorPlacement[];
   updatedAt: string;
 };

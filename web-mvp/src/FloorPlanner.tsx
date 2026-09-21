@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState, type PointerEvent } from "react";
 import { bedTypes, roomTypes, zoneChoices } from "./catalog";
-import { loadFloorPlan, saveFloorPlan } from "./storage";
+import { listFloorPlans, saveFloorPlan } from "./storage";
 import type { Blueprint, FloorPlacement, FloorPlan, FloorPoint } from "./types";
 
 const FLOOR_AREA = 1200;
@@ -11,6 +11,10 @@ const roleLabels = { arrival: "抵达", stay: "停留", restore: "恢复", gathe
 type DrawingTool = "rectangle" | "freehand";
 type DraftTarget = { kind: "blueprint"; blueprint: Blueprint } | { kind: "corridor" } | { kind: "staff" };
 type LegacyPlacement = Partial<FloorPlacement> & { shape?: FloorPoint[]; x?: number; y?: number; width?: number; height?: number };
+
+function createEmptyFloor(floorNumber: number): FloorPlan {
+  return { id: `floor-${crypto.randomUUID()}`, floorNumber, name: `第 ${floorNumber} 层`, placements: [], updatedAt: new Date().toISOString() };
+}
 
 function nameFor(blueprint: Blueprint) {
   if (blueprint.designKind === "zone") return blueprint.name || zoneChoices.find((item) => item.id === blueprint.zoneTypeId)?.name || "功能区域";
@@ -87,8 +91,11 @@ function rectangleFrom(start: FloorPoint, end: FloorPoint): FloorPoint[] {
 function pointsAttribute(points: FloorPoint[]) { return points.map((point) => `${point.x},${point.y}`).join(" "); }
 function labelPoint(shapes: FloorPoint[][]) { const points = shapes.flat(); return { x: points.reduce((sum, point) => sum + point.x, 0) / points.length, y: points.reduce((sum, point) => sum + point.y, 0) / points.length }; }
 function normaliseFloorPlan(plan: FloorPlan): FloorPlan {
+  const floorNumber = Number.isInteger(plan.floorNumber) && plan.floorNumber > 0 ? plan.floorNumber : 1;
   return {
     ...plan,
+    floorNumber,
+    name: plan.name || `第 ${floorNumber} 层`,
     placements: (plan.placements as LegacyPlacement[]).flatMap((placement) => {
       const shapes = Array.isArray(placement.shapes) && placement.shapes.length
         ? placement.shapes.filter((shape) => Array.isArray(shape) && shape.length >= 3).map((shape) => shape.map(clampPoint))
@@ -108,7 +115,8 @@ function pointFromEvent(event: PointerEvent<HTMLDivElement>, board: HTMLDivEleme
 type FloorPlannerProps = { blueprints: Blueprint[]; onOpenBlueprint: (blueprint: Blueprint) => void };
 
 export function FloorPlanner({ blueprints, onOpenBlueprint }: FloorPlannerProps) {
-  const [floorPlan, setFloorPlan] = useState<FloorPlan>({ id: "floor-01", placements: [], updatedAt: new Date().toISOString() });
+  const [floorPlans, setFloorPlans] = useState<FloorPlan[]>(() => [createEmptyFloor(1)]);
+  const [activeFloorId, setActiveFloorId] = useState(() => floorPlans[0].id);
   const [ready, setReady] = useState(false);
   const [armedTarget, setArmedTarget] = useState<DraftTarget>();
   const [drawingTool, setDrawingTool] = useState<DrawingTool>("rectangle");
@@ -118,8 +126,10 @@ export function FloorPlanner({ blueprints, onOpenBlueprint }: FloorPlannerProps)
   const [notice, setNotice] = useState("先建设走廊，再将客房接入走廊；功能区和职员区域可自由布局。每格约 2㎡。");
   const boardRef = useRef<HTMLDivElement>(null);
 
-  useEffect(() => { void loadFloorPlan().then((stored) => { if (stored) setFloorPlan(normaliseFloorPlan(stored)); setReady(true); }).catch(() => { setNotice("楼层平面暂时无法保存。"); setReady(true); }); }, []);
-  useEffect(() => { if (!ready) return; const timer = window.setTimeout(() => { void saveFloorPlan(floorPlan).catch(() => setNotice("保存楼层平面失败。")); }, 350); return () => window.clearTimeout(timer); }, [floorPlan, ready]);
+  const floorPlan = floorPlans.find((plan) => plan.id === activeFloorId) ?? floorPlans[0];
+
+  useEffect(() => { void listFloorPlans().then((stored) => { const plans = stored.length ? stored.map(normaliseFloorPlan).sort((left, right) => left.floorNumber - right.floorNumber) : [createEmptyFloor(1)]; setFloorPlans(plans); setActiveFloorId(plans[0].id); setReady(true); }).catch(() => { setNotice("楼层平面暂时无法保存。"); setReady(true); }); }, []);
+  useEffect(() => { if (!ready || !floorPlan) return; const timer = window.setTimeout(() => { void saveFloorPlan(floorPlan).catch(() => setNotice("保存楼层平面失败。")); }, 350); return () => window.clearTimeout(timer); }, [floorPlan, ready]);
 
   const usedArea = useMemo(() => floorPlan.placements.reduce((sum, placement) => sum + placement.allocatedAreaSqm, 0), [floorPlan.placements]);
   const selected = floorPlan.placements.find((placement) => placement.id === selectedId);
@@ -133,7 +143,19 @@ export function FloorPlanner({ blueprints, onOpenBlueprint }: FloorPlannerProps)
   const canDeploy = Boolean(armedTarget && draftShapes.length && draftArea >= requiredArea && usedArea + draftArea <= FLOOR_AREA && !draftShapes.some((shape) => overlaps(shape, floorPlan.placements)) && corridorConnected);
   const disconnectedRooms = floorPlan.placements.filter((placement) => isRoomPlacement(placement, blueprints) && !hasCorridorAccess(placement.shapes, floorPlan.placements));
 
-  function updatePlacements(update: (placements: FloorPlacement[]) => FloorPlacement[]) { setFloorPlan((current) => ({ ...current, placements: update(current.placements), updatedAt: new Date().toISOString() })); }
+  function updateFloorPlan(update: (current: FloorPlan) => FloorPlan) { setFloorPlans((current) => current.map((plan) => plan.id === floorPlan.id ? update(plan) : plan)); }
+  function updatePlacements(update: (placements: FloorPlacement[]) => FloorPlacement[]) { updateFloorPlan((current) => ({ ...current, placements: update(current.placements), updatedAt: new Date().toISOString() })); }
+  function resetTransientState() { setArmedTarget(undefined); setDraftShapes([]); setDrawing(undefined); setSelectedId(undefined); }
+  function switchFloor(id: string) { setActiveFloorId(id); resetTransientState(); setNotice(`已切换到 ${floorPlans.find((plan) => plan.id === id)?.name ?? "所选楼层"}。`); }
+  function addEmptyFloor() {
+    const next = createEmptyFloor(Math.max(...floorPlans.map((plan) => plan.floorNumber)) + 1);
+    setFloorPlans((current) => [...current, next]); setActiveFloorId(next.id); resetTransientState(); setNotice(`已新建 ${next.name}，可从走廊开始规划。`);
+  }
+  function copyCurrentFloor() {
+    const floorNumber = Math.max(...floorPlans.map((plan) => plan.floorNumber)) + 1;
+    const next: FloorPlan = { ...floorPlan, id: `floor-${crypto.randomUUID()}`, floorNumber, name: `第 ${floorNumber} 层`, placements: floorPlan.placements.map((placement) => ({ ...placement, id: crypto.randomUUID(), shapes: placement.shapes.map((shape) => shape.map((point) => ({ ...point }))) })), updatedAt: new Date().toISOString() };
+    setFloorPlans((current) => [...current, next]); setActiveFloorId(next.id); resetTransientState(); setNotice(`已复制 ${floorPlan.name} 为 ${next.name}。`);
+  }
   function arm(target: DraftTarget) {
     setArmedTarget(target); setSelectedId(undefined); setDraftShapes([]); setDrawing(undefined);
     setNotice(target.kind === "corridor" ? "正在建设走廊：画出一段或多段相连的通道。" : target.kind === "staff" ? "正在预留职员区域：后续可用于员工、布草间及后勤需求。" : isRoomTarget(target) ? `已选择「${targetName(target)}」：需要至少 ${target.blueprint.areaSqm}㎡，并且必须与走廊共边相连。` : `已选择「${targetName(target)}」：需要至少 ${target.blueprint.areaSqm}㎡。`);
@@ -175,7 +197,8 @@ export function FloorPlanner({ blueprints, onOpenBlueprint }: FloorPlannerProps)
   }
 
   return <section className="floor-workspace" aria-label="楼层平面图">
-    <div className="floor-heading"><div><p className="eyebrow">1200㎡ 酒店楼层</p><h2>楼层平面图</h2><p>先铺设走廊，再让每间客房与走廊相连；餐饮、功能区及职员区域可按经营需求自由连通和布局。</p></div><div className="floor-meter"><strong>{usedArea}</strong><span>/ {FLOOR_AREA} m² 已规划</span><i><b style={{ width: `${Math.min(100, usedArea / FLOOR_AREA * 100)}%` }} /></i></div></div>
+    <div className="floor-heading"><div><p className="eyebrow">真实酒店 · 多楼层</p><h2>{floorPlan.name} 平面图</h2><p>每层均为 1200㎡。先铺设走廊，再让每间客房与走廊相连；餐饮、功能区及职员区域可按经营需求自由连通和布局。</p></div><div className="floor-meter"><strong>{usedArea}</strong><span>/ {FLOOR_AREA} m² 已规划</span><i><b style={{ width: `${Math.min(100, usedArea / FLOOR_AREA * 100)}%` }} /></i></div></div>
+    <nav className="floor-levels" aria-label="酒店楼层"><div><span>酒店楼层</span>{floorPlans.map((plan) => <button key={plan.id} type="button" className={plan.id === floorPlan.id ? "selected" : ""} onClick={() => switchFloor(plan.id)}>{plan.floorNumber}F</button>)}</div><div><button type="button" onClick={addEmptyFloor}>＋ 新建空白层</button><button type="button" onClick={copyCurrentFloor}>复制当前层</button></div></nav>
     <div className="floor-layout">
       <aside className="floor-library"><div className="floor-library-heading"><strong>可部署空间</strong><span>{blueprints.length} 张蓝图</span></div><p className="floor-library-section">基础设施</p><button type="button" className={`floor-infrastructure corridor ${armedTarget && targetKey(armedTarget) === "corridor" ? "armed" : ""}`} onClick={() => arm({ kind: "corridor" })}><span>↔</span><div><strong>走廊</strong><small>客房需要与走廊共边相连</small></div><b>建设</b></button><button type="button" className={`floor-infrastructure staff ${armedTarget && targetKey(armedTarget) === "staff" ? "armed" : ""}`} onClick={() => arm({ kind: "staff" })}><span>◫</span><div><strong>职员区域</strong><small>预留员工、布草与后勤需求</small></div><b>预留</b></button><p className="floor-library-section">已设计空间</p>{blueprints.length ? blueprints.map((blueprint) => <button type="button" className={`floor-source ${armedTarget?.kind === "blueprint" && armedTarget.blueprint.id === blueprint.id ? "armed" : ""}`} key={blueprint.id} onClick={() => arm({ kind: "blueprint", blueprint })} onDoubleClick={() => onOpenBlueprint(blueprint)}><img src={blueprint.imageDataUrl} alt="" /><div><strong>{nameFor(blueprint)}</strong><span>{blueprint.areaSqm} m² · {blueprint.designKind === "zone" ? "功能区域" : bedTypes.find((item) => item.id === blueprint.bedTypeId)?.name}</span></div><b>{armedTarget?.kind === "blueprint" && armedTarget.blueprint.id === blueprint.id ? "圈地中" : "选择"}</b></button>) : <p className="floor-empty">蓝图库还没有可部署的客房或功能区域。</p>}</aside>
       <div className="floor-board-wrap"><div className="floor-tools" aria-label="圈地工具"><span>圈地工具</span><button type="button" className={drawingTool === "rectangle" ? "selected" : ""} onClick={() => setDrawingTool("rectangle")}>矩形</button><button type="button" className={drawingTool === "freehand" ? "selected" : ""} onClick={() => setDrawingTool("freehand")}>自由轮廓</button>{armedTarget && <><em>{draftShapes.length ? `${draftShapes.length} 块 · ${draftArea}㎡` : "尚未圈地"}</em><button type="button" className="floor-cancel" disabled={!draftShapes.length} onClick={undoDraftShape}>撤回一块</button><button type="button" className="floor-cancel" onClick={cancelDraft}>取消</button><button type="button" className="floor-deploy" disabled={!canDeploy} onClick={deployDraft}>确认部署</button></>}</div><div ref={boardRef} className={`floor-board ${armedTarget ? "drawing-enabled" : ""}`} onPointerDown={startDrawing} onPointerMove={continueDrawing} onPointerUp={finishDrawing} onPointerCancel={() => setDrawing(undefined)} onClick={() => !drawing && setSelectedId(undefined)}><span className="floor-entrance">入口</span><svg className="floor-shapes" viewBox={`0 0 ${GRID_COLUMNS} ${GRID_ROWS}`} preserveAspectRatio="none" aria-label="已部署空间">{floorPlan.placements.map((placement) => { const label = labelPoint(placement.shapes); const hasAccess = !isRoomPlacement(placement, blueprints) || hasCorridorAccess(placement.shapes, floorPlan.placements); return <g key={placement.id} className={`floor-shape ${placementVisualKind(placement, blueprints)} ${selectedId === placement.id ? "selected" : ""} ${hasAccess ? "" : "needs-corridor"}`} onPointerDown={(event) => { event.stopPropagation(); setSelectedId(placement.id); }} onClick={(event) => event.stopPropagation()}><path className="floor-shape-fill" d={unionFillPath(placement.shapes)} /><path className="floor-shape-outline" d={unionOutlinePath(placement.shapes)} /><text x={label.x} y={label.y - .35}>{placementName(placement, blueprints)}</text><text className="floor-shape-meta" x={label.x} y={label.y + .45}>{placement.allocatedAreaSqm}m² · {hasAccess ? roleLabels[placement.journeyRole] : "待接入走廊"}</text></g>; })}{draftShapes.map((shape, index) => <polygon className="floor-draft" key={`draft-${index}`} points={pointsAttribute(shape)} />)}{activeShape && activeShape.length >= 3 && <polygon className={`floor-drawing ${previewOverlap || previewArea > FLOOR_AREA - usedArea ? "invalid" : ""}`} points={pointsAttribute(activeShape)} />}</svg></div><p className="floor-notice" role="status">{drawing && armedTarget ? `正在圈地：组合后 ${previewArea}㎡ / 至少 ${requiredArea}㎡` : disconnectedRooms.length ? `${notice} 另有 ${disconnectedRooms.length} 间已部署客房等待接入走廊。` : notice}</p></div>
