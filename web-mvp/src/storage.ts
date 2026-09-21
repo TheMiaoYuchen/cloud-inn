@@ -60,3 +60,15 @@ export async function saveBlueprint(blueprint: Blueprint): Promise<void> {
     transaction.onabort = () => reject(transaction.error ?? new Error("无法保存蓝图"));
   });
 }
+
+export async function saveBlueprints(blueprints: Blueprint[]): Promise<void> {
+  const database = await openDatabase();
+  return new Promise((resolve, reject) => {
+    const transaction = database.transaction(BLUEPRINT_STORE, "readwrite");
+    const store = transaction.objectStore(BLUEPRINT_STORE);
+    blueprints.forEach((blueprint) => store.put(blueprint));
+    transaction.oncomplete = () => { database.close(); resolve(); };
+    transaction.onerror = () => reject(transaction.error ?? new Error("无法导入蓝图库"));
+    transaction.onabort = () => reject(transaction.error ?? new Error("无法导入蓝图库"));
+  });
+}
