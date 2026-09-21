@@ -74,11 +74,13 @@ function readBody(request) {
 
 function validate(input) {
   if (!input || typeof input !== "object" || Array.isArray(input)) return null;
+  const areaSqm = Number(input.areaSqm);
+  if (!Number.isInteger(areaSqm) || areaSqm < 8 || areaSqm > 600) return null;
   if (input.designKind === "zone") {
     if (!zones.has(input.zoneTypeId) || typeof input.stylePrompt !== "string") return null;
     const stylePrompt = input.stylePrompt.trim();
     if (!stylePrompt || [...stylePrompt].length > 600) return null;
-    return { designKind: "zone", zoneTypeId: input.zoneTypeId, stylePrompt };
+    return { designKind: "zone", zoneTypeId: input.zoneTypeId, areaSqm, stylePrompt };
   }
   if (!roomTypes.has(input.roomTypeId) || !bedTypes.has(input.bedTypeId) || !Array.isArray(input.furniture) || input.furniture.length > 10) return null;
   const selectedFurniture = [];
@@ -92,14 +94,14 @@ function validate(input) {
   if (typeof input.stylePrompt !== "string") return null;
   const stylePrompt = input.stylePrompt.trim();
   if (!stylePrompt || [...stylePrompt].length > 600) return null;
-  return { designKind: "room", roomTypeId: input.roomTypeId, bedTypeId: input.bedTypeId, furniture: selectedFurniture, stylePrompt };
+  return { designKind: "room", roomTypeId: input.roomTypeId, bedTypeId: input.bedTypeId, furniture: selectedFurniture, areaSqm, stylePrompt };
 }
 
 function buildPrompt(input) {
   if (input.designKind === "zone") {
     return [
       "Create one polished, photorealistic hotel functional-area blueprint contact sheet. Show exactly four equal panels arranged in 2 columns by 2 rows with thin quiet gutters. Keep each panel composed safely for a wide landscape crop.",
-      `Functional area: ${zones.get(input.zoneTypeId)}.`,
+      `Functional area: ${zones.get(input.zoneTypeId)}. Usable area: exactly ${input.areaSqm} square metres.`,
       `Creative direction supplied by the player (controls style, lighting, furnishings and special elements): ${input.stylePrompt}`,
       "All four panels depict the same physically consistent functional area: preserve architecture, layout, furnishing selection, materials, lighting and styling across the sheet. Show four complementary eye-level views that clearly communicate the area and how guests use it. No people, no text and no logos.",
     ].join("\n");
@@ -110,7 +112,7 @@ function buildPrompt(input) {
   }).join("; ") || "Keep furnishings minimal and let the model choose coherent supporting pieces.";
   return [
     "Create one polished, photorealistic hotel-room blueprint contact sheet. Show exactly four equal panels arranged in 2 columns by 2 rows with thin quiet gutters. Keep each panel composed safely for a wide landscape crop.",
-    `Room type: ${roomTypes.get(input.roomTypeId)}. Bed type: ${bedTypes.get(input.bedTypeId)}.`,
+    `Room type: ${roomTypes.get(input.roomTypeId)}. Bed type: ${bedTypes.get(input.bedTypeId)}. Usable area: exactly ${input.areaSqm} square metres.`,
     `Furniture and per-item directions: ${selectedFurniture}.`,
     `Overall direction (controls the design style, lighting, and special elements): ${input.stylePrompt}`,
     "Treat stated furniture material and style as higher priority than the overall direction. All four panels depict the same physically consistent room: preserve architecture, bed configuration, window placement, furniture, materials, lighting and styling across the sheet. The views are: entry toward bed, window-side seating, bed-facing detail, and the reverse view toward entry. No people, no text and no logos. Compose believable eye-level interiors.",

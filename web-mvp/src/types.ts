@@ -13,6 +13,7 @@ export type DesignProject = {
   bedTypeId: string;
   furniture: FurnitureSelection[];
   zoneTypeId?: string;
+  areaSqm: number;
   stylePrompt: string;
   imageDataUrl?: string;
   updatedAt: string;
@@ -29,4 +30,21 @@ export type GenerateResponse = {
 
 export type ApiError = {
   error: { code: string; message: string };
+};
+
+export type FloorPlacement = {
+  id: string;
+  blueprintId: string;
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  areaSqm: number;
+  journeyRole: "arrival" | "stay" | "restore" | "gather";
+};
+
+export type FloorPlan = {
+  id: "floor-01";
+  placements: FloorPlacement[];
+  updatedAt: string;
 };

@@ -10,6 +10,7 @@
 {
   "roomTypeId": "single",
   "bedTypeId": "queen",
+  "areaSqm": 36,
   "furniture": [
     { "id": "lounge-chair", "material": "藤编", "style": "低矮、松弛" },
     { "id": "reading-lamp", "material": "", "style": "" }
@@ -18,7 +19,7 @@
 }
 ```
 
-`roomTypeId` 仅可为 `single` 或 `suite`；`bedTypeId` 仅可为 `queen` 或 `twin`。`furniture` 最多 10 件，每项都使用服务端目录中的固定 ID；`material` 与 `style` 均为可选的 0–80 字符文本。留空时，模型会为该家具随机选择与整间房协调的材质和风格。`stylePrompt` 去除首尾空白后为 1–600 个字符，只控制整体设计风格、光照和特殊元素。
+`roomTypeId` 仅可为 `single` 或 `suite`；`bedTypeId` 仅可为 `queen` 或 `twin`。`areaSqm` 为必填整数，范围 8–600，表示该空间的使用面积。`furniture` 最多 10 件，每项都使用服务端目录中的固定 ID；`material` 与 `style` 均为可选的 0–80 字符文本。留空时，模型会为该家具随机选择与整间房协调的材质和风格。`stylePrompt` 去除首尾空白后为 1–600 个字符，只控制整体设计风格、光照和特殊元素。
 
 ## 功能区域请求
 
@@ -28,6 +29,7 @@
 {
   "designKind": "zone",
   "zoneTypeId": "spa",
+  "areaSqm": 140,
   "stylePrompt": "设计风格：岩石与雾气。光照：低照度暖光。陈设与特殊元素：蒸汽、水景、理疗床与安静等候区。"
 }
 ```
