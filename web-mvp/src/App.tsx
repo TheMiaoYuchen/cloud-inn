@@ -1,11 +1,12 @@
 import { useEffect, useMemo, useRef, useState, type ChangeEvent } from "react";
 import { bedTypes, furnitureCards, roomTypes, zoneChoices, zoneGroups } from "./catalog";
 import { FloorPlanner } from "./FloorPlanner";
-import { listBlueprints, loadProject, saveBlueprint, saveBlueprints, saveProject } from "./storage";
-import type { ApiError, Blueprint, DesignProject, FurnitureSelection, GenerateResponse } from "./types";
+import { listBlueprints, listFloorPlans, loadProject, saveBlueprint, saveBlueprints, saveFloorPlans, saveProject } from "./storage";
+import type { ApiError, Blueprint, DesignProject, FloorPlan, FurnitureSelection, GenerateResponse } from "./types";
 
 type StoredProject = Partial<DesignProject> & { templateId?: string; furnitureIds?: string[] };
-type BlueprintArchive = { format: "cloud-inn-blueprint-library"; version: 1; exportedAt: string; blueprints: Blueprint[] };
+type HotelArchive = { format: "cloud-inn-hotel-archive"; version: 2; exportedAt: string; blueprints: Blueprint[]; floors: FloorPlan[]; currentProject: DesignProject };
+type ImportedArchive = { blueprints: Blueprint[]; floors: FloorPlan[]; currentProject?: DesignProject; fullHotel: boolean };
 
 const furnitureIds = new Set(furnitureCards.map((item) => item.id));
 const legacyFurniture: Record<string, string> = {
@@ -78,11 +79,9 @@ function formatDate(date: string): string {
   return new Intl.DateTimeFormat("zh-CN", { month: "short", day: "numeric" }).format(new Date(date));
 }
 
-function readArchive(value: unknown): Blueprint[] {
-  if (!value || typeof value !== "object") throw new Error("这不是 Cloud Inn 蓝图库存档。");
-  const archive = value as Partial<BlueprintArchive>;
-  if (archive.format !== "cloud-inn-blueprint-library" || archive.version !== 1 || !Array.isArray(archive.blueprints)) throw new Error("存档格式不受支持。");
-  return archive.blueprints.map((item) => {
+function readBlueprints(value: unknown): Blueprint[] {
+  if (!Array.isArray(value)) throw new Error("存档中缺少蓝图库。");
+  return value.map((item) => {
     if (!item || typeof item !== "object") throw new Error("存档中包含无效蓝图。");
     const raw = item as Blueprint & StoredProject;
     const blueprint = normaliseProject(raw);
@@ -90,6 +89,27 @@ function readArchive(value: unknown): Blueprint[] {
     const id = typeof raw.id === "string" && raw.id ? raw.id : crypto.randomUUID();
     return { ...blueprint, id, blueprintId: id, createdAt: typeof raw.createdAt === "string" ? raw.createdAt : blueprint.updatedAt };
   });
+}
+
+function readFloors(value: unknown): FloorPlan[] {
+  if (!Array.isArray(value)) throw new Error("存档中缺少楼层平面图。");
+  return value.map((item, index) => {
+    if (!item || typeof item !== "object") throw new Error("存档中包含无效楼层。");
+    const floor = item as Partial<FloorPlan>;
+    if (typeof floor.id !== "string" || !Array.isArray(floor.placements)) throw new Error("存档中包含无效楼层。");
+    const floorNumber = typeof floor.floorNumber === "number" && Number.isInteger(floor.floorNumber) && floor.floorNumber > 0 ? floor.floorNumber : 56 + index;
+    return { id: floor.id, floorNumber, name: typeof floor.name === "string" && floor.name ? floor.name : `${floorNumber}F`, placements: floor.placements, updatedAt: typeof floor.updatedAt === "string" ? floor.updatedAt : new Date().toISOString() };
+  });
+}
+
+function readArchive(value: unknown): ImportedArchive {
+  if (!value || typeof value !== "object") throw new Error("这不是 Cloud Inn 存档。");
+  const archive = value as { format?: string; version?: number; blueprints?: unknown; floors?: unknown; currentProject?: StoredProject };
+  if (archive.format === "cloud-inn-hotel-archive" && archive.version === 2) {
+    return { blueprints: readBlueprints(archive.blueprints), floors: readFloors(archive.floors), currentProject: archive.currentProject ? normaliseProject(archive.currentProject) : undefined, fullHotel: true };
+  }
+  if (archive.format === "cloud-inn-blueprint-library" && archive.version === 1) return { blueprints: readBlueprints(archive.blueprints), floors: [], fullHotel: false };
+  throw new Error("存档格式不受支持。");
 }
 
 export function App() {
@@ -103,6 +123,7 @@ export function App() {
   const [generationError, setGenerationError] = useState("");
   const [libraryOpen, setLibraryOpen] = useState(false);
   const [archiveState, setArchiveState] = useState("");
+  const [floorRevision, setFloorRevision] = useState(0);
   const importInput = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
@@ -193,15 +214,18 @@ export function App() {
     }
   }
 
-  function exportArchive() {
-    const archive: BlueprintArchive = { format: "cloud-inn-blueprint-library", version: 1, exportedAt: new Date().toISOString(), blueprints };
-    const url = URL.createObjectURL(new Blob([JSON.stringify(archive)], { type: "application/json" }));
+  async function exportArchive() {
+    try {
+      const floors = await listFloorPlans();
+      const archive: HotelArchive = { format: "cloud-inn-hotel-archive", version: 2, exportedAt: new Date().toISOString(), blueprints, floors, currentProject: project };
+      const url = URL.createObjectURL(new Blob([JSON.stringify(archive)], { type: "application/json" }));
     const link = document.createElement("a");
     link.href = url;
-    link.download = `cloud-inn-blueprints-${new Date().toISOString().slice(0, 10)}.json`;
+      link.download = `cloud-inn-hotel-${new Date().toISOString().slice(0, 10)}.json`;
     link.click();
     URL.revokeObjectURL(url);
-    setArchiveState(`已导出 ${blueprints.length} 张蓝图`);
+      setArchiveState(`已导出完整酒店：${blueprints.length} 张蓝图、${floors.length} 层平面图`);
+    } catch { setArchiveState("导出存档失败。"); }
   }
 
   async function importArchive(event: ChangeEvent<HTMLInputElement>) {
@@ -211,9 +235,14 @@ export function App() {
     if (file.size > 80 * 1024 * 1024) { setArchiveState("存档超过 80 MB，无法导入。"); return; }
     try {
       const imported = readArchive(JSON.parse(await file.text()));
-      await saveBlueprints(imported);
-      setBlueprints((current) => [...imported, ...current.filter((item) => !imported.some((blueprint) => blueprint.id === item.id))].sort((left, right) => right.updatedAt.localeCompare(left.updatedAt)));
-      setArchiveState(`已导入 ${imported.length} 张蓝图`);
+      await saveBlueprints(imported.blueprints);
+      setBlueprints((current) => [...imported.blueprints, ...current.filter((item) => !imported.blueprints.some((blueprint) => blueprint.id === item.id))].sort((left, right) => right.updatedAt.localeCompare(left.updatedAt)));
+      if (imported.fullHotel) {
+        await saveFloorPlans(imported.floors);
+        setFloorRevision((current) => current + 1);
+        if (imported.currentProject) { setProject(imported.currentProject); setAreaInput(String(imported.currentProject.areaSqm)); setWorkspace(imported.currentProject.designKind); }
+        setArchiveState(`已导入完整酒店：${imported.blueprints.length} 张蓝图、${imported.floors.length} 层平面图`);
+      } else setArchiveState(`已导入旧版蓝图库：${imported.blueprints.length} 张蓝图`);
     } catch (error) {
       setArchiveState(error instanceof Error ? error.message : "无法读取该存档。");
     }
@@ -230,7 +259,7 @@ export function App() {
       <h1>{workspace === "floor" ? "把空间排布成一座正在运转的酒店。" : project.designKind === "room" ? "把你想住进去的客房，变成一张图。" : "把酒店里的功能区域，变成一张图。"}</h1>
       <p>{workspace === "floor" ? "这是一座从 56F 向上生长的高空酒店，每层共 1200㎡。新建空白层或复制已有楼层后，先建设走廊，再让客房接入走廊；功能区与职员区域可自由布局。" : project.designKind === "room" ? "从客房类型和床型开始，再添置家具。每件家具都能单独决定材质和风格；留空时由模型为整间房随机搭配。" : "选择一处酒店功能区域，再写下它的风格、光照、陈设和特殊元素。模型会将它组织为可用于后续建设的空间蓝图。"}</p>
     </section>
-    {workspace === "floor" ? <FloorPlanner blueprints={blueprints} onOpenBlueprint={openBlueprint} /> : <div className="studio">
+    {workspace === "floor" ? <FloorPlanner key={floorRevision} blueprints={blueprints} onOpenBlueprint={openBlueprint} /> : <div className="studio">
       <section className="controls" aria-label="设计工具">
         <fieldset><legend>01 · 命名蓝图</legend><label className="sr-only" htmlFor="room-name">客房蓝图名称</label><input id="room-name" className="room-name" maxLength={40} value={project.name} onChange={(event) => setProject((current) => updateTimestamp({ ...current, name: event.target.value }))} placeholder="例如：海岸午后房" /></fieldset>
         <fieldset><legend>02 · 使用面积</legend><div className="area-input"><input id="area-sqm" type="number" min="8" max="600" step="1" value={areaInput} onChange={(event) => { const value = event.target.value; setAreaInput(value); const areaSqm = Number(value); if (Number.isInteger(areaSqm) && areaSqm >= 8 && areaSqm <= 600) setProject((current) => updateTimestamp({ ...current, areaSqm })); }} onBlur={() => { const parsed = Number(areaInput); const areaSqm = Number.isFinite(parsed) ? Math.max(8, Math.min(600, Math.round(parsed))) : project.areaSqm; setAreaInput(String(areaSqm)); setProject((current) => current.areaSqm === areaSqm ? current : updateTimestamp({ ...current, areaSqm })); }} /><span>m²</span><small>{project.designKind === "zone" ? "决定该区域在楼层中的占地面积。" : "决定该客房在楼层中的占地面积。"}</small></div></fieldset>
@@ -274,6 +303,6 @@ export function App() {
         <div className="blueprint-actions"><button type="button" className="secondary" onClick={() => setProject(project.designKind === "zone" ? newZoneProject() : newProject())}>开始新的{project.designKind === "zone" ? "功能区域" : "客房"}</button><button type="button" className="save-blueprint" disabled={!project.imageDataUrl} onClick={() => void saveToLibrary()}>{currentBlueprint ? "更新蓝图" : "保存至蓝图库"}</button></div>
       </section>
     </div>}
-    {libraryOpen && <div className="library-backdrop" role="presentation" onMouseDown={() => setLibraryOpen(false)}><section className="blueprint-library" role="dialog" aria-modal="true" aria-label="蓝图库" onMouseDown={(event) => event.stopPropagation()}><div className="library-heading"><div><p className="eyebrow">可重复使用的酒店方案</p><h2>蓝图库</h2><span>打开一张蓝图，继续修改细节或重新生成效果图。</span>{archiveState && <p className="archive-state" role="status">{archiveState}</p>}</div><div className="library-actions"><input ref={importInput} className="sr-only" type="file" accept="application/json,.json" onChange={(event) => void importArchive(event)} /><button type="button" className="archive-button" onClick={() => importInput.current?.click()}>导入存档</button><button type="button" className="archive-button" disabled={!blueprints.length} onClick={exportArchive}>导出存档</button><button type="button" className="close-library" aria-label="关闭蓝图库" onClick={() => setLibraryOpen(false)}>×</button></div></div>{blueprints.length ? <div className="blueprint-grid">{blueprints.map((blueprint) => { const isZone = blueprint.designKind === "zone"; const blueprintType = isZone ? zoneChoices.find((item) => item.id === blueprint.zoneTypeId)! : roomTypes.find((item) => item.id === blueprint.roomTypeId)!; return <button className="blueprint-card" type="button" key={blueprint.id} onClick={() => openBlueprint(blueprint)}><img src={blueprint.imageDataUrl} alt={`${blueprint.name} 蓝图预览`} /><div><strong>{blueprint.name || blueprintType.name}</strong><span>{blueprintType.name} · {isZone ? "功能区域" : `${blueprint.furniture.length} 件家具`}</span><small>最近编辑于 {formatDate(blueprint.updatedAt)}</small></div></button>; })}</div> : <div className="library-empty"><span>◇</span><h3>还没有蓝图</h3><p>导入已有存档，或生成一张喜欢的效果图后保存至蓝图库。</p></div>}</section></div>}
+    {libraryOpen && <div className="library-backdrop" role="presentation" onMouseDown={() => setLibraryOpen(false)}><section className="blueprint-library" role="dialog" aria-modal="true" aria-label="蓝图库" onMouseDown={(event) => event.stopPropagation()}><div className="library-heading"><div><p className="eyebrow">可重复使用的酒店方案</p><h2>蓝图库</h2><span>完整存档包含蓝图、所有楼层平面图与当前设计项目。</span>{archiveState && <p className="archive-state" role="status">{archiveState}</p>}</div><div className="library-actions"><input ref={importInput} className="sr-only" type="file" accept="application/json,.json" onChange={(event) => void importArchive(event)} /><button type="button" className="archive-button" onClick={() => importInput.current?.click()}>导入酒店存档</button><button type="button" className="archive-button" onClick={() => void exportArchive()}>导出完整存档</button><button type="button" className="close-library" aria-label="关闭蓝图库" onClick={() => setLibraryOpen(false)}>×</button></div></div>{blueprints.length ? <div className="blueprint-grid">{blueprints.map((blueprint) => { const isZone = blueprint.designKind === "zone"; const blueprintType = isZone ? zoneChoices.find((item) => item.id === blueprint.zoneTypeId)! : roomTypes.find((item) => item.id === blueprint.roomTypeId)!; return <button className="blueprint-card" type="button" key={blueprint.id} onClick={() => openBlueprint(blueprint)}><img src={blueprint.imageDataUrl} alt={`${blueprint.name} 蓝图预览`} /><div><strong>{blueprint.name || blueprintType.name}</strong><span>{blueprintType.name} · {isZone ? "功能区域" : `${blueprint.furniture.length} 件家具`}</span><small>最近编辑于 {formatDate(blueprint.updatedAt)}</small></div></button>; })}</div> : <div className="library-empty"><span>◇</span><h3>还没有蓝图</h3><p>导入已有存档，或生成一张喜欢的效果图后保存至蓝图库。</p></div>}</section></div>}
   </main>;
 }
