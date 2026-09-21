@@ -20,6 +20,20 @@
 
 `roomTypeId` 仅可为 `single` 或 `suite`；`bedTypeId` 仅可为 `queen` 或 `twin`。`furniture` 最多 10 件，每项都使用服务端目录中的固定 ID；`material` 与 `style` 均为可选的 0–80 字符文本。留空时，模型会为该家具随机选择与整间房协调的材质和风格。`stylePrompt` 去除首尾空白后为 1–600 个字符，只控制整体设计风格、光照和特殊元素。
 
+## 功能区域请求
+
+设计功能区域使用同一接口，以 `designKind: "zone"` 区分：
+
+```json
+{
+  "designKind": "zone",
+  "zoneTypeId": "spa",
+  "stylePrompt": "设计风格：岩石与雾气。光照：低照度暖光。陈设与特殊元素：蒸汽、水景、理疗床与安静等候区。"
+}
+```
+
+`zoneTypeId` 可为 `lobby`、`dining`、`meeting-room`、`gift-shop`、`pool`、`fitness` 或 `spa`。`stylePrompt` 控制该区域的设计风格、光照、陈设与特殊元素；服务端仍返回相同的 2:1 四视角效果图。
+
 ## 成功响应
 
 ```json
