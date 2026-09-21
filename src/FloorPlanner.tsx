@@ -27,7 +27,9 @@ function placementName(placement: FloorPlacement, blueprints: Blueprint[]) {
 }
 function placementVisualKind(placement: FloorPlacement, blueprints: Blueprint[]) {
   if (placement.kind !== "blueprint") return placement.kind;
-  return blueprints.find((item) => item.id === placement.blueprintId)?.designKind ?? "blueprint";
+  const blueprint = blueprints.find((item) => item.id === placement.blueprintId);
+  if (!blueprint) return "blueprint";
+  return blueprint.designKind === "room" ? "room" : `zone-${blueprint.zoneTypeId ?? "default"}`;
 }
 function isRoomPlacement(placement: FloorPlacement, blueprints: Blueprint[]) { return placement.kind === "blueprint" && blueprints.find((item) => item.id === placement.blueprintId)?.designKind === "room"; }
 
