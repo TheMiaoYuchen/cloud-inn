@@ -75,12 +75,12 @@ export async function saveBlueprints(blueprints: Blueprint[]): Promise<void> {
   });
 }
 
-export async function loadFloorPlan(): Promise<FloorPlan | undefined> {
+export async function listFloorPlans(): Promise<FloorPlan[]> {
   const database = await openDatabase();
   return new Promise((resolve, reject) => {
     const transaction = database.transaction(FLOOR_STORE, "readonly");
-    const request = transaction.objectStore(FLOOR_STORE).get("floor-01");
-    request.onsuccess = () => resolve(request.result as FloorPlan | undefined);
+    const request = transaction.objectStore(FLOOR_STORE).getAll();
+    request.onsuccess = () => resolve(request.result as FloorPlan[]);
     request.onerror = () => reject(request.error ?? new Error("无法读取楼层平面图"));
     transaction.oncomplete = () => database.close();
   });
