@@ -6,7 +6,16 @@ const MODEL_RESPONSE_LIMIT = 4 * 1024 * 1024 + 128 * 1024;
 const REQUEST_TIMEOUT_MS = 50_000;
 const RATE_LIMIT_WINDOW_MS = 60_000;
 const RATE_LIMIT_MAX = 8;
+const OUTPUT_WIDTH = 2048;
+const OUTPUT_HEIGHT = 1024;
+const GUTTER = 12;
 const supportedMimeTypes = new Set(["image/png", "image/jpeg", "image/webp"]);
+const views = [
+  "the entry-facing view toward the bed",
+  "the window-side seating view",
+  "the bed-facing detail view",
+  "the reverse view looking toward the entry",
+];
 
 const templates = new Map([
   ["garden-queen", "花园大床房：暖光、窗边休憩区、自然材质"],
@@ -66,14 +75,18 @@ function validate(input) {
   return { templateId: input.templateId, furnitureIds: [...new Set(input.furnitureIds)], stylePrompt };
 }
 
-function buildPrompt(input) {
+function buildPrompt(input, view, hasReference) {
   const selectedFurniture = input.furnitureIds.map((id) => furniture.get(id)).join("、") || "保持留白";
   return [
-    "Create one polished, photorealistic hotel-room blueprint visual. The full image must be a 2:1 wide landscape contact sheet with exactly four equal 2:1 landscape panels in a 2 columns by 2 rows arrangement, separated by thin quiet gutters.",
+    "Create one polished, photorealistic 2:1 landscape hotel-room interior view. Frame the composition safely for a wide landscape crop.",
     `Room template: ${templates.get(input.templateId)}.`,
     `Furniture and arrangement cues: ${selectedFurniture}.`,
     `Creative direction supplied by the player: ${input.stylePrompt}`,
-    "Every panel depicts the same physically consistent room: preserve its architecture, bed, window placement, furniture, materials, lighting and styling across all four views. Show four complementary angles: entry toward the bed, window-side seating, bed-facing detail, and the reverse view toward the entry. No people, no text, no logos, no collage beyond the four-panel contact sheet, and no panel labels. Compose believable eye-level interiors with soft natural light.",
+    `This panel is ${view}.`,
+    hasReference
+      ? "The supplied reference image is the canonical version of this exact room. Preserve its architecture, bed, window placement, furniture, materials, lighting and styling; only change the camera angle."
+      : "Establish the canonical version of this room: architecture, bed, window placement, furniture, materials, lighting and styling must be clear and internally consistent.",
+    "No people, no text, no logos, and no collage. Compose a believable eye-level interior with soft natural light.",
   ].join("\n");
 }
 
@@ -101,7 +114,7 @@ function allowRequest(request, callsByAddress, now) {
   return true;
 }
 
-async function callImageModel(input, { apiKey, model, providerOrigin, fetchImplementation }) {
+async function callImageModel(input, view, reference, { apiKey, model, providerOrigin, fetchImplementation }) {
   const origin = new URL(providerOrigin);
   const endpoint = new URL(`v1beta/models/${encodeURIComponent(model)}:generateContent`, origin);
   if (endpoint.origin !== origin.origin) throw new Error("provider_origin");
@@ -109,7 +122,10 @@ async function callImageModel(input, { apiKey, model, providerOrigin, fetchImple
     method: "POST",
     headers: { authorization: `Bearer ${apiKey}`, "content-type": "application/json" },
     body: JSON.stringify({
-      contents: [{ role: "user", parts: [{ text: buildPrompt(input) }] }],
+      contents: [{ role: "user", parts: [
+        { text: buildPrompt(input, view, Boolean(reference)) },
+        ...(reference ? [{ inlineData: { mimeType: reference.mimeType, data: reference.base64 } }] : []),
+      ] }],
       generationConfig: { responseModalities: ["IMAGE"], imageConfig: { aspectRatio: "2:1", imageSize: "1K" } },
     }),
     redirect: "error",
@@ -123,6 +139,30 @@ async function callImageModel(input, { apiKey, model, providerOrigin, fetchImple
   if (!image) throw new Error("invalid_provider_response");
   if (Buffer.byteLength(image.base64, "base64") > IMAGE_LIMIT) throw new Error("image_too_large");
   return image;
+}
+
+async function composePanels(panels) {
+  const tileWidth = (OUTPUT_WIDTH - GUTTER) / 2;
+  const tileHeight = (OUTPUT_HEIGHT - GUTTER) / 2;
+  const tiles = await Promise.all(panels.map(async (panel) => sharp(Buffer.from(panel.base64, "base64"))
+    .resize(tileWidth, tileHeight, { fit: "cover", position: "centre" })
+    .jpeg({ quality: 88, mozjpeg: true })
+    .toBuffer()));
+  const image = await sharp({ create: { width: OUTPUT_WIDTH, height: OUTPUT_HEIGHT, channels: 3, background: { r: 25, g: 22, b: 18 } } })
+    .composite([
+      { input: tiles[0], left: 0, top: 0 }, { input: tiles[1], left: tileWidth + GUTTER, top: 0 },
+      { input: tiles[2], left: 0, top: tileHeight + GUTTER }, { input: tiles[3], left: tileWidth + GUTTER, top: tileHeight + GUTTER },
+    ])
+    .jpeg({ quality: 88, mozjpeg: true })
+    .toBuffer();
+  if (image.byteLength > IMAGE_LIMIT) throw new Error("image_too_large");
+  return { base64: image.toString("base64"), mimeType: "image/jpeg" };
+}
+
+async function generateMultiAngleBlueprint(input, options) {
+  const canonical = await callImageModel(input, views[0], undefined, options);
+  const connectedViews = await Promise.all(views.slice(1).map((view) => callImageModel(input, view, canonical, options)));
+  return composePanels([canonical, ...connectedViews]);
 }
 
 async function readModelPayload(upstream) {
@@ -170,7 +210,7 @@ export function createGenerateHandler({ environment = process.env, fetchImplemen
     try {
       const input = validate(await readBody(request));
       if (!input) { problem(response, 400, "INVALID_REQUEST", "请检查客房、家具和风格描述。", corsOrigin); return; }
-      const image = await callImageModel(input, { apiKey, model, providerOrigin, fetchImplementation });
+      const image = await generateMultiAngleBlueprint(input, { apiKey, model, providerOrigin, fetchImplementation });
       send(response, 200, { image, model }, corsOrigin);
     } catch (error) {
       const code = error instanceof Error ? error.message : "unknown";
@@ -182,3 +222,4 @@ export function createGenerateHandler({ environment = process.env, fetchImplemen
 }
 
 export const internal = { buildPrompt, validate, findImage };
+import sharp from "sharp";
