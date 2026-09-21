@@ -94,6 +94,7 @@ function readArchive(value: unknown): Blueprint[] {
 
 export function App() {
   const [project, setProject] = useState<DesignProject>(newProject);
+  const [areaInput, setAreaInput] = useState("36");
   const [workspace, setWorkspace] = useState<"room" | "zone" | "floor">("room");
   const [blueprints, setBlueprints] = useState<Blueprint[]>([]);
   const [ready, setReady] = useState(false);
@@ -106,7 +107,7 @@ export function App() {
 
   useEffect(() => {
     void Promise.all([loadProject(), listBlueprints()]).then(([stored, library]) => {
-      if (stored) { const restored = normaliseProject(stored); setProject(restored); setWorkspace(restored.designKind); }
+      if (stored) { const restored = normaliseProject(stored); setProject(restored); setAreaInput(String(restored.areaSqm)); setWorkspace(restored.designKind); }
       setBlueprints(library.map((item) => normaliseProject(item) as Blueprint));
       setReady(true);
       setSaveState(stored ? "已恢复本地作品" : "新作品已准备好");
@@ -141,13 +142,17 @@ export function App() {
 
   function beginDesign(kind: "room" | "zone") {
     if (project.designKind === kind) { setWorkspace(kind); return; }
-    setProject(kind === "room" ? newProject() : newZoneProject());
+    const nextProject = kind === "room" ? newProject() : newZoneProject();
+    setProject(nextProject);
+    setAreaInput(String(nextProject.areaSqm));
     setWorkspace(kind);
     setGenerationError("");
   }
 
   function openBlueprint(blueprint: Blueprint) {
-    setProject(updateTimestamp({ ...normaliseProject(blueprint), id: "current", blueprintId: blueprint.id }));
+    const nextProject = updateTimestamp({ ...normaliseProject(blueprint), id: "current", blueprintId: blueprint.id });
+    setProject(nextProject);
+    setAreaInput(String(nextProject.areaSqm));
     setWorkspace(blueprint.designKind);
     setLibraryOpen(false);
     setGenerationError("");
@@ -223,12 +228,12 @@ export function App() {
       <div className="design-switcher" role="tablist" aria-label="酒店设计与经营"><button type="button" role="tab" aria-selected={workspace === "room"} className={workspace === "room" ? "selected" : ""} onClick={() => beginDesign("room")}>设计客房</button><button type="button" role="tab" aria-selected={workspace === "zone"} className={workspace === "zone" ? "selected" : ""} onClick={() => beginDesign("zone")}>设计功能区域</button><button type="button" role="tab" aria-selected={workspace === "floor"} className={workspace === "floor" ? "selected" : ""} onClick={() => setWorkspace("floor")}>楼层平面图</button></div>
       <p className="eyebrow">{workspace === "floor" ? "酒店经营，从空间开始" : project.designKind === "room" ? "一间房，一种情绪" : "一处区域，一种体验"}</p>
       <h1>{workspace === "floor" ? "把空间排布成一层正在运转的酒店。" : project.designKind === "room" ? "把你想住进去的客房，变成一张图。" : "把酒店里的功能区域，变成一张图。"}</h1>
-      <p>{workspace === "floor" ? "这一层共 1200㎡。选择蓝图库中已设计的空间，用矩形或自由轮廓在地图上圈地；不够时可叠加多个区域，达到蓝图面积后再确认部署。" : project.designKind === "room" ? "从客房类型和床型开始，再添置家具。每件家具都能单独决定材质和风格；留空时由模型为整间房随机搭配。" : "选择一处酒店功能区域，再写下它的风格、光照、陈设和特殊元素。模型会将它组织为可用于后续建设的空间蓝图。"}</p>
+      <p>{workspace === "floor" ? "这一层共 1200㎡。先建设走廊，再让客房接入走廊；功能区与职员区域可自由布局，并可用多个形状组合成不规则空间。" : project.designKind === "room" ? "从客房类型和床型开始，再添置家具。每件家具都能单独决定材质和风格；留空时由模型为整间房随机搭配。" : "选择一处酒店功能区域，再写下它的风格、光照、陈设和特殊元素。模型会将它组织为可用于后续建设的空间蓝图。"}</p>
     </section>
     {workspace === "floor" ? <FloorPlanner blueprints={blueprints} onOpenBlueprint={openBlueprint} /> : <div className="studio">
       <section className="controls" aria-label="设计工具">
         <fieldset><legend>01 · 命名蓝图</legend><label className="sr-only" htmlFor="room-name">客房蓝图名称</label><input id="room-name" className="room-name" maxLength={40} value={project.name} onChange={(event) => setProject((current) => updateTimestamp({ ...current, name: event.target.value }))} placeholder="例如：海岸午后房" /></fieldset>
-        <fieldset><legend>02 · 使用面积</legend><div className="area-input"><input id="area-sqm" type="number" min="8" max="600" step="1" value={project.areaSqm} onChange={(event) => setProject((current) => updateTimestamp({ ...current, areaSqm: Math.max(8, Math.min(600, Number(event.target.value) || 8)) }))} /><span>m²</span><small>{project.designKind === "zone" ? "决定该区域在楼层中的占地面积。" : "决定该客房在楼层中的占地面积。"}</small></div></fieldset>
+        <fieldset><legend>02 · 使用面积</legend><div className="area-input"><input id="area-sqm" type="number" min="8" max="600" step="1" value={areaInput} onChange={(event) => { const value = event.target.value; setAreaInput(value); const areaSqm = Number(value); if (Number.isInteger(areaSqm) && areaSqm >= 8 && areaSqm <= 600) setProject((current) => updateTimestamp({ ...current, areaSqm })); }} onBlur={() => { const parsed = Number(areaInput); const areaSqm = Number.isFinite(parsed) ? Math.max(8, Math.min(600, Math.round(parsed))) : project.areaSqm; setAreaInput(String(areaSqm)); setProject((current) => current.areaSqm === areaSqm ? current : updateTimestamp({ ...current, areaSqm })); }} /><span>m²</span><small>{project.designKind === "zone" ? "决定该区域在楼层中的占地面积。" : "决定该客房在楼层中的占地面积。"}</small></div></fieldset>
         {project.designKind === "room" && <>
         <fieldset>
           <legend>03 · 选择客房类型</legend>
