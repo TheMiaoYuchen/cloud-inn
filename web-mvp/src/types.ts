@@ -37,7 +37,7 @@ export type FloorPlacement = {
   blueprintId: string;
   areaSqm: number;
   allocatedAreaSqm: number;
-  shape: FloorPoint[];
+  shapes: FloorPoint[][];
   journeyRole: "arrival" | "stay" | "restore" | "gather";
 };
 

@@ -223,7 +223,7 @@ export function App() {
       <div className="design-switcher" role="tablist" aria-label="酒店设计与经营"><button type="button" role="tab" aria-selected={workspace === "room"} className={workspace === "room" ? "selected" : ""} onClick={() => beginDesign("room")}>设计客房</button><button type="button" role="tab" aria-selected={workspace === "zone"} className={workspace === "zone" ? "selected" : ""} onClick={() => beginDesign("zone")}>设计功能区域</button><button type="button" role="tab" aria-selected={workspace === "floor"} className={workspace === "floor" ? "selected" : ""} onClick={() => setWorkspace("floor")}>楼层平面图</button></div>
       <p className="eyebrow">{workspace === "floor" ? "酒店经营，从空间开始" : project.designKind === "room" ? "一间房，一种情绪" : "一处区域，一种体验"}</p>
       <h1>{workspace === "floor" ? "把空间排布成一层正在运转的酒店。" : project.designKind === "room" ? "把你想住进去的客房，变成一张图。" : "把酒店里的功能区域，变成一张图。"}</h1>
-      <p>{workspace === "floor" ? "这一层共 1200㎡。选择蓝图库中已设计的空间，再在空白地图上徒手圈出它的边界；达到蓝图面积后即可部署，并为后续经营模拟建立动线。" : project.designKind === "room" ? "从客房类型和床型开始，再添置家具。每件家具都能单独决定材质和风格；留空时由模型为整间房随机搭配。" : "选择一处酒店功能区域，再写下它的风格、光照、陈设和特殊元素。模型会将它组织为可用于后续建设的空间蓝图。"}</p>
+      <p>{workspace === "floor" ? "这一层共 1200㎡。选择蓝图库中已设计的空间，用矩形或自由轮廓在地图上圈地；不够时可叠加多个区域，达到蓝图面积后再确认部署。" : project.designKind === "room" ? "从客房类型和床型开始，再添置家具。每件家具都能单独决定材质和风格；留空时由模型为整间房随机搭配。" : "选择一处酒店功能区域，再写下它的风格、光照、陈设和特殊元素。模型会将它组织为可用于后续建设的空间蓝图。"}</p>
     </section>
     {workspace === "floor" ? <FloorPlanner blueprints={blueprints} onOpenBlueprint={openBlueprint} /> : <div className="studio">
       <section className="controls" aria-label="设计工具">
