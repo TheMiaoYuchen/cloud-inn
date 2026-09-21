@@ -69,11 +69,11 @@ function validate(input) {
 function buildPrompt(input) {
   const selectedFurniture = input.furnitureIds.map((id) => furniture.get(id)).join("、") || "保持留白";
   return [
-    "Create one polished, photorealistic hotel room interior key visual. No people, no text, no logos, no collage, no exterior view.",
+    "Create one polished, photorealistic hotel-room blueprint visual. The full image must be a 2:1 wide landscape contact sheet with exactly four equal 2:1 landscape panels in a 2 columns by 2 rows arrangement, separated by thin quiet gutters.",
     `Room template: ${templates.get(input.templateId)}.`,
     `Furniture and arrangement cues: ${selectedFurniture}.`,
     `Creative direction supplied by the player: ${input.stylePrompt}`,
-    "Compose a calm eye-level interior shot with believable architecture, soft natural light, and coherent furnishings. Landscape 4:3 aspect ratio.",
+    "Every panel depicts the same physically consistent room: preserve its architecture, bed, window placement, furniture, materials, lighting and styling across all four views. Show four complementary angles: entry toward the bed, window-side seating, bed-facing detail, and the reverse view toward the entry. No people, no text, no logos, no collage beyond the four-panel contact sheet, and no panel labels. Compose believable eye-level interiors with soft natural light.",
   ].join("\n");
 }
 
@@ -110,7 +110,7 @@ async function callImageModel(input, { apiKey, model, providerOrigin, fetchImple
     headers: { authorization: `Bearer ${apiKey}`, "content-type": "application/json" },
     body: JSON.stringify({
       contents: [{ role: "user", parts: [{ text: buildPrompt(input) }] }],
-      generationConfig: { responseModalities: ["IMAGE"], imageConfig: { aspectRatio: "4:3", imageSize: "1K" } },
+      generationConfig: { responseModalities: ["IMAGE"], imageConfig: { aspectRatio: "2:1", imageSize: "1K" } },
     }),
     redirect: "error",
     signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),

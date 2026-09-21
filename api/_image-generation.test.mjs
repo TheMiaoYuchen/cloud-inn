@@ -34,7 +34,10 @@ test("generates one image through the configured model", async () => {
   assert.deepEqual(response.payload, { image: { mimeType: "image/png", base64: "aGVsbG8=" }, model: "one-model" });
   assert.equal(upstreamRequest.url, "https://image.example/v1beta/models/one-model:generateContent");
   assert.equal(upstreamRequest.options.headers.authorization, "Bearer test-only-key");
-  assert.match(JSON.parse(upstreamRequest.options.body).contents[0].parts[0].text, /橡木床架/);
+  const providerBody = JSON.parse(upstreamRequest.options.body);
+  assert.match(providerBody.contents[0].parts[0].text, /橡木床架/);
+  assert.match(providerBody.contents[0].parts[0].text, /exactly four equal 2:1 landscape panels/);
+  assert.equal(providerBody.generationConfig.imageConfig.aspectRatio, "2:1");
 });
 
 test("does not call the provider without a server-side key", async () => {
