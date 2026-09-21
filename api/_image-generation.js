@@ -6,10 +6,6 @@ const MODEL_RESPONSE_LIMIT = 4 * 1024 * 1024 + 128 * 1024;
 const REQUEST_TIMEOUT_MS = 50_000;
 const RATE_LIMIT_WINDOW_MS = 60_000;
 const RATE_LIMIT_MAX = 8;
-const OUTPUT_WIDTH = 2048;
-const OUTPUT_HEIGHT = 1024;
-const GUTTER = 12;
-const supportedMimeTypes = new Set(["image/png", "image/jpeg", "image/webp"]);
 
 const templates = new Map([
   ["garden-queen", "花园大床房：暖光、窗边休憩区、自然材质"],
@@ -81,13 +77,15 @@ function buildPrompt(input) {
 }
 
 function findImage(payload) {
-  for (const candidate of payload?.candidates ?? []) {
-    for (const part of candidate?.content?.parts ?? []) {
-      const data = part?.inlineData;
-      if (data && typeof data.data === "string" && supportedMimeTypes.has(data.mimeType)) return { base64: data.data, mimeType: data.mimeType };
-    }
-  }
-  return null;
+  const image = payload?.data?.[0] ?? payload?.data?.data?.[0];
+  if (!image || typeof image.b64_json !== "string") return null;
+  const header = Buffer.from(image.b64_json.slice(0, 24), "base64");
+  const mimeType = header.subarray(0, 8).equals(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]))
+    ? "image/png"
+    : header.subarray(0, 4).toString("ascii") === "RIFF" && header.subarray(8, 12).toString("ascii") === "WEBP"
+      ? "image/webp"
+      : "image/jpeg";
+  return { base64: image.b64_json, mimeType };
 }
 
 function clientAddress(request) {
@@ -106,16 +104,17 @@ function allowRequest(request, callsByAddress, now) {
 
 async function callImageModel(input, { apiKey, model, providerOrigin, fetchImplementation }) {
   const origin = new URL(providerOrigin);
-  const endpoint = new URL(`v1beta/models/${encodeURIComponent(model)}:generateContent`, origin);
+  const endpoint = new URL("v1/images/generations", origin);
   if (endpoint.origin !== origin.origin) throw new Error("provider_origin");
   const upstream = await fetchImplementation(endpoint, {
     method: "POST",
     headers: { authorization: `Bearer ${apiKey}`, "content-type": "application/json" },
     body: JSON.stringify({
-      contents: [{ role: "user", parts: [
-        { text: buildPrompt(input) },
-      ] }],
-      generationConfig: { responseModalities: ["IMAGE"], imageConfig: { aspectRatio: "2:1", imageSize: "1K" } },
+      model,
+      prompt: buildPrompt(input),
+      size: "2048x1024",
+      quality: "high",
+      response_format: "b64_json",
     }),
     redirect: "error",
     signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
@@ -130,35 +129,8 @@ async function callImageModel(input, { apiKey, model, providerOrigin, fetchImple
   return image;
 }
 
-async function composeContactSheet(contactSheet) {
-  const tileWidth = (OUTPUT_WIDTH - GUTTER) / 2;
-  const tileHeight = (OUTPUT_HEIGHT - GUTTER) / 2;
-  const source = sharp(Buffer.from(contactSheet.base64, "base64"));
-  const metadata = await source.metadata();
-  if (!metadata.width || !metadata.height) throw new Error("invalid_provider_response");
-  const squareSize = Math.min(metadata.width, metadata.height);
-  const squareLeft = Math.floor((metadata.width - squareSize) / 2);
-  const squareTop = Math.floor((metadata.height - squareSize) / 2);
-  const panelSize = Math.floor(squareSize / 2);
-  const tiles = await Promise.all([0, 1, 2, 3].map((index) => source.clone()
-    .extract({ left: squareLeft + (index % 2) * panelSize, top: squareTop + Math.floor(index / 2) * panelSize, width: panelSize, height: panelSize })
-    .resize(tileWidth, tileHeight, { fit: "cover", position: "centre" })
-    .jpeg({ quality: 88, mozjpeg: true })
-    .toBuffer()));
-  const image = await sharp({ create: { width: OUTPUT_WIDTH, height: OUTPUT_HEIGHT, channels: 3, background: { r: 25, g: 22, b: 18 } } })
-    .composite([
-      { input: tiles[0], left: 0, top: 0 }, { input: tiles[1], left: tileWidth + GUTTER, top: 0 },
-      { input: tiles[2], left: 0, top: tileHeight + GUTTER }, { input: tiles[3], left: tileWidth + GUTTER, top: tileHeight + GUTTER },
-    ])
-    .jpeg({ quality: 88, mozjpeg: true })
-    .toBuffer();
-  if (image.byteLength > IMAGE_LIMIT) throw new Error("image_too_large");
-  return { base64: image.toString("base64"), mimeType: "image/jpeg" };
-}
-
 async function generateMultiAngleBlueprint(input, options) {
-  const contactSheet = await callImageModel(input, options);
-  return composeContactSheet(contactSheet);
+  return callImageModel(input, options);
 }
 
 async function readModelPayload(upstream) {
@@ -182,7 +154,7 @@ async function readModelPayload(upstream) {
 export function createGenerateHandler({ environment = process.env, fetchImplementation = fetch, now = () => Date.now() } = {}) {
   const callsByAddress = new Map();
   const permittedOrigins = allowedOrigins(environment);
-  const model = environment.CLOUD_INN_IMAGE_MODEL ?? "gemini-3.1-flash-image";
+  const model = environment.CLOUD_INN_IMAGE_MODEL ?? "gpt-image-2.5";
   const providerOrigin = environment.CLOUD_INN_IMAGE_API_ORIGIN ?? "https://img-api.apinebula.ai/";
   const apiKey = environment.CLOUD_INN_IMAGE_API_KEY;
 
