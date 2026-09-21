@@ -7,15 +7,21 @@ const REQUEST_TIMEOUT_MS = 50_000;
 const RATE_LIMIT_WINDOW_MS = 60_000;
 const RATE_LIMIT_MAX = 8;
 
-const templates = new Map([
-  ["garden-queen", "花园大床房：暖光、窗边休憩区、自然材质"],
-  ["city-twin", "城市双床房：简洁利落、双人入住动线"],
-  ["quiet-suite", "静谧套房：卧室与会客角相连、层次陈设"],
+const roomTypes = new Map([
+  ["single", "single guest room with one complete sleeping area and a compact living flow"],
+  ["suite", "hotel suite with a connected sleeping zone and a distinct living area"],
+]);
+
+const bedTypes = new Map([
+  ["queen", "one large queen bed"],
+  ["twin", "two separate twin beds"],
 ]);
 
 const furniture = new Map([
-  ["oak-bed", "橡木床架"], ["linen-chair", "亚麻单椅"], ["round-rug", "圆形地毯"],
-  ["paper-lamp", "纸灯"], ["art-shelf", "画册置物架"], ["stone-table", "石面边几"],
+  ["lounge-chair", "lounge chair"], ["side-table", "side table"], ["reading-lamp", "reading lamp"],
+  ["floor-rug", "area rug"], ["work-desk", "work desk"], ["mini-bar", "mini bar"],
+  ["lounge-sofa", "two-seat sofa"], ["coffee-table", "coffee table"], ["wardrobe", "wardrobe"],
+  ["console", "entry console"], ["floor-lamp", "floor lamp"], ["indoor-plant", "indoor plant"],
 ]);
 
 function allowedOrigins(environment) {
@@ -58,21 +64,32 @@ function readBody(request) {
 
 function validate(input) {
   if (!input || typeof input !== "object" || Array.isArray(input)) return null;
-  if (!templates.has(input.templateId) || !Array.isArray(input.furnitureIds) || !input.furnitureIds.every((id) => furniture.has(id))) return null;
+  if (!roomTypes.has(input.roomTypeId) || !bedTypes.has(input.bedTypeId) || !Array.isArray(input.furniture) || input.furniture.length > 10) return null;
+  const selectedFurniture = [];
+  for (const item of input.furniture) {
+    if (!item || typeof item !== "object" || !furniture.has(item.id) || typeof item.material !== "string" || typeof item.style !== "string") return null;
+    const material = item.material.trim();
+    const style = item.style.trim();
+    if ([...material].length > 80 || [...style].length > 80 || selectedFurniture.some((choice) => choice.id === item.id)) return null;
+    selectedFurniture.push({ id: item.id, material, style });
+  }
   if (typeof input.stylePrompt !== "string") return null;
   const stylePrompt = input.stylePrompt.trim();
   if (!stylePrompt || [...stylePrompt].length > 600) return null;
-  return { templateId: input.templateId, furnitureIds: [...new Set(input.furnitureIds)], stylePrompt };
+  return { roomTypeId: input.roomTypeId, bedTypeId: input.bedTypeId, furniture: selectedFurniture, stylePrompt };
 }
 
 function buildPrompt(input) {
-  const selectedFurniture = input.furnitureIds.map((id) => furniture.get(id)).join("、") || "保持留白";
+  const selectedFurniture = input.furniture.map((item) => {
+    const details = [item.material && `material: ${item.material}`, item.style && `style: ${item.style}`].filter(Boolean).join(", ");
+    return `${furniture.get(item.id)}${details ? ` (${details})` : " (choose material and style randomly, while keeping the room coherent)"}`;
+  }).join("; ") || "Keep furnishings minimal and let the model choose coherent supporting pieces.";
   return [
     "Create one polished, photorealistic hotel-room blueprint contact sheet. Show exactly four equal panels arranged in 2 columns by 2 rows with thin quiet gutters. Keep each panel composed safely for a wide landscape crop.",
-    `Room template: ${templates.get(input.templateId)}.`,
-    `Furniture and arrangement cues: ${selectedFurniture}.`,
-    `Creative direction supplied by the player: ${input.stylePrompt}`,
-    "All four panels depict the same physically consistent room: preserve architecture, bed, window placement, furniture, materials, lighting and styling across the sheet. The views are: entry toward bed, window-side seating, bed-facing detail, and the reverse view toward entry. No people, no text and no logos. Compose believable eye-level interiors with soft natural light.",
+    `Room type: ${roomTypes.get(input.roomTypeId)}. Bed type: ${bedTypes.get(input.bedTypeId)}.`,
+    `Furniture and per-item directions: ${selectedFurniture}.`,
+    `Overall direction (controls the design style, lighting, and special elements): ${input.stylePrompt}`,
+    "Treat stated furniture material and style as higher priority than the overall direction. All four panels depict the same physically consistent room: preserve architecture, bed configuration, window placement, furniture, materials, lighting and styling across the sheet. The views are: entry toward bed, window-side seating, bed-facing detail, and the reverse view toward entry. No people, no text and no logos. Compose believable eye-level interiors.",
   ].join("\n");
 }
 
