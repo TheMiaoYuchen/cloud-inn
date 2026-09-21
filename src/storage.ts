@@ -96,3 +96,15 @@ export async function saveFloorPlan(floorPlan: FloorPlan): Promise<void> {
     transaction.onabort = () => reject(transaction.error ?? new Error("无法保存楼层平面图"));
   });
 }
+
+export async function saveFloorPlans(floorPlans: FloorPlan[]): Promise<void> {
+  const database = await openDatabase();
+  return new Promise((resolve, reject) => {
+    const transaction = database.transaction(FLOOR_STORE, "readwrite");
+    const store = transaction.objectStore(FLOOR_STORE);
+    floorPlans.forEach((floorPlan) => store.put(floorPlan));
+    transaction.oncomplete = () => { database.close(); resolve(); };
+    transaction.onerror = () => reject(transaction.error ?? new Error("无法导入楼层平面图"));
+    transaction.onabort = () => reject(transaction.error ?? new Error("无法导入楼层平面图"));
+  });
+}
