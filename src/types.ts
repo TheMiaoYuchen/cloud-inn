@@ -1,11 +1,16 @@
 export type DesignProject = {
   id: string;
   name: string;
+  blueprintId?: string;
   templateId: string;
   furnitureIds: string[];
   stylePrompt: string;
   imageDataUrl?: string;
   updatedAt: string;
+};
+
+export type Blueprint = DesignProject & {
+  createdAt: string;
 };
 
 export type GenerateResponse = {
