@@ -8,9 +8,11 @@ export type DesignProject = {
   id: string;
   name: string;
   blueprintId?: string;
+  designKind: "room" | "zone";
   roomTypeId: string;
   bedTypeId: string;
   furniture: FurnitureSelection[];
+  zoneTypeId?: string;
   stylePrompt: string;
   imageDataUrl?: string;
   updatedAt: string;

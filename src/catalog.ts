@@ -17,6 +17,27 @@ export const bedTypes: ChoiceCard[] = [
   { id: "twin", name: "双床", description: "两张独立床位，保留同行住客的界限感。", accent: "双床" },
 ];
 
+export type ZoneGroup = {
+  name: string;
+  choices: ChoiceCard[];
+};
+
+export const zoneGroups: ZoneGroup[] = [
+  { name: "公共区域", choices: [
+    { id: "lobby", name: "接待大厅", description: "抵达、等候与初次相遇的空间", accent: "迎客" },
+    { id: "dining", name: "餐饮区", description: "早餐、用餐与停留的氛围", accent: "餐叙" },
+  ] },
+  { name: "设施", choices: [
+    { id: "meeting-room", name: "会议室", description: "讨论、演示与团队聚会", accent: "会谈" },
+    { id: "gift-shop", name: "礼品店", description: "地方物件与旅途纪念", accent: "礼遇" },
+    { id: "pool", name: "泳池", description: "水面、躺椅与松弛时刻", accent: "水光" },
+    { id: "fitness", name: "健身中心", description: "训练、恢复与充沛能量", accent: "动能" },
+    { id: "spa", name: "水疗中心", description: "静养、理疗与感官放松", accent: "静养" },
+  ] },
+];
+
+export const zoneChoices = zoneGroups.flatMap((group) => group.choices);
+
 export const furnitureCards: FurnitureCard[] = [
   { id: "lounge-chair", name: "休闲椅", description: "留出独处的一角", icon: "◒" },
   { id: "side-table", name: "边几", description: "放下一杯茶", icon: "▱" },

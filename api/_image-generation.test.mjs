@@ -56,6 +56,24 @@ test("does not call the provider without a server-side key", async () => {
   assert.equal(response.payload.error.code, "GENERATION_NOT_CONFIGURED");
 });
 
+test("accepts one functional-area request and sends its area brief", async () => {
+  const upstreamRequests = [];
+  const handler = createGenerateHandler({
+    environment: { CLOUD_INN_IMAGE_API_KEY: "test-only-key", CLOUD_INN_ALLOWED_ORIGIN: origin, CLOUD_INN_IMAGE_API_ORIGIN: "https://image.example/" },
+    fetchImplementation: async (_url, options) => {
+      upstreamRequests.push(options);
+      return new Response(JSON.stringify({ data: { data: [{ b64_json: "aW1hZ2U=" }] } }), { status: 200 });
+    },
+  });
+  const response = responseSpy();
+  await handler(request({ designKind: "zone", zoneTypeId: "spa", stylePrompt: "低照度石材水疗，蒸汽与香气。" }), response);
+  assert.equal(response.statusCode, 200);
+  const providerBody = JSON.parse(upstreamRequests[0].body);
+  assert.match(providerBody.prompt, /hotel spa/);
+  assert.match(providerBody.prompt, /低照度石材水疗/);
+  assert.match(providerBody.prompt, /four complementary eye-level views/);
+});
+
 test("rejects a request from an unconfigured origin", async () => {
   const handler = createGenerateHandler({ environment: { CLOUD_INN_IMAGE_API_KEY: "test-only-key", CLOUD_INN_ALLOWED_ORIGIN: origin } });
   const response = responseSpy();

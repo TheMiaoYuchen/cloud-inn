@@ -17,6 +17,16 @@ const bedTypes = new Map([
   ["twin", "two separate twin beds"],
 ]);
 
+const zones = new Map([
+  ["lobby", "hotel reception lobby for arrival, waiting and welcome"],
+  ["dining", "hotel dining area for breakfast, meals and lingering"],
+  ["meeting-room", "hotel meeting room for discussion and presentations"],
+  ["gift-shop", "hotel gift shop for local objects and travel keepsakes"],
+  ["pool", "hotel swimming pool area with water and lounging"],
+  ["fitness", "hotel fitness center for training and recovery"],
+  ["spa", "hotel spa for treatments, sensory calm and restoration"],
+]);
+
 const furniture = new Map([
   ["lounge-chair", "lounge chair"], ["side-table", "side table"], ["reading-lamp", "reading lamp"],
   ["floor-rug", "area rug"], ["work-desk", "work desk"], ["mini-bar", "mini bar"],
@@ -64,6 +74,12 @@ function readBody(request) {
 
 function validate(input) {
   if (!input || typeof input !== "object" || Array.isArray(input)) return null;
+  if (input.designKind === "zone") {
+    if (!zones.has(input.zoneTypeId) || typeof input.stylePrompt !== "string") return null;
+    const stylePrompt = input.stylePrompt.trim();
+    if (!stylePrompt || [...stylePrompt].length > 600) return null;
+    return { designKind: "zone", zoneTypeId: input.zoneTypeId, stylePrompt };
+  }
   if (!roomTypes.has(input.roomTypeId) || !bedTypes.has(input.bedTypeId) || !Array.isArray(input.furniture) || input.furniture.length > 10) return null;
   const selectedFurniture = [];
   for (const item of input.furniture) {
@@ -76,10 +92,18 @@ function validate(input) {
   if (typeof input.stylePrompt !== "string") return null;
   const stylePrompt = input.stylePrompt.trim();
   if (!stylePrompt || [...stylePrompt].length > 600) return null;
-  return { roomTypeId: input.roomTypeId, bedTypeId: input.bedTypeId, furniture: selectedFurniture, stylePrompt };
+  return { designKind: "room", roomTypeId: input.roomTypeId, bedTypeId: input.bedTypeId, furniture: selectedFurniture, stylePrompt };
 }
 
 function buildPrompt(input) {
+  if (input.designKind === "zone") {
+    return [
+      "Create one polished, photorealistic hotel functional-area blueprint contact sheet. Show exactly four equal panels arranged in 2 columns by 2 rows with thin quiet gutters. Keep each panel composed safely for a wide landscape crop.",
+      `Functional area: ${zones.get(input.zoneTypeId)}.`,
+      `Creative direction supplied by the player (controls style, lighting, furnishings and special elements): ${input.stylePrompt}`,
+      "All four panels depict the same physically consistent functional area: preserve architecture, layout, furnishing selection, materials, lighting and styling across the sheet. Show four complementary eye-level views that clearly communicate the area and how guests use it. No people, no text and no logos.",
+    ].join("\n");
+  }
   const selectedFurniture = input.furniture.map((item) => {
     const details = [item.material && `material: ${item.material}`, item.style && `style: ${item.style}`].filter(Boolean).join(", ");
     return `${furniture.get(item.id)}${details ? ` (${details})` : " (choose material and style randomly, while keeping the room coherent)"}`;

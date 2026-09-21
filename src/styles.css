@@ -12,6 +12,7 @@ button:disabled { cursor: wait; opacity: .62; }
 .brand span { color: #ad9d88; margin-left: 10px; font: 11px "DM Mono", monospace; letter-spacing: .05em; }
 .topbar-actions { display: flex; align-items: center; gap: 18px; }.topbar p { margin: 0; color: #a49a8d; font: 11px "DM Mono", monospace; }.library-trigger { padding: 8px 11px; color: #e9ddcf; background: #28231e; border: 1px solid #ffffff1c; border-radius: 5px; font: 11px "DM Mono", monospace; }.library-trigger:hover { background: #342b23; }.library-trigger span { display: inline-grid; min-width: 17px; place-items: center; margin-left: 5px; padding: 1px 4px; color: #241a13; background: #e1a571; border-radius: 9px; }
 .intro { max-width: 690px; padding: 74px 0 54px; }
+.design-switcher { display: inline-flex; gap: 4px; margin-bottom: 26px; padding: 4px; background: #211d19; border: 1px solid #ffffff16; border-radius: 7px; }.design-switcher button { padding: 8px 12px; color: #a99d90; background: transparent; border: 0; border-radius: 4px; font-size: 12px; }.design-switcher button:hover { color: #f2e8dc; }.design-switcher button.selected { color: #261b13; background: #e1a571; font-weight: 700; }
 .eyebrow { color: #d59b69; font: 11px "DM Mono", monospace; letter-spacing: .13em; text-transform: uppercase; }
 h1 { margin: 13px 0 18px; font: 600 clamp(38px, 5.2vw, 72px)/1.12 "Noto Serif SC", serif; letter-spacing: -.07em; }
 .intro > p:last-child { margin: 0; color: #b6ada1; font-size: 16px; line-height: 1.8; }
@@ -21,6 +22,7 @@ fieldset { min-width: 0; border: 0; padding: 0; margin: 0; }
 legend { width: 100%; margin: 0 0 14px; color: #d6cec1; font: 11px "DM Mono", monospace; letter-spacing: .12em; }
 legend span { float: right; color: #81766a; letter-spacing: 0; }
 .template-list, .choice-list { display: grid; gap: 8px; }
+.zone-groups { display: grid; gap: 18px; }.zone-group h3 { margin: 0 0 8px; color: #a99d90; font: 10px "DM Mono", monospace; letter-spacing: .1em; }.zone-list { display: grid; gap: 8px; }
 .room-name { width: 100%; padding: 13px 14px; color: #f5eee4; background: #211d19; border: 1px solid #ffffff1c; border-radius: 8px; outline: none; font-size: 14px; }.room-name:focus { border-color: #d59b6990; }
 .template { position: relative; display: grid; grid-template-columns: 52px auto; gap: 3px 12px; padding: 15px; color: #bcb1a3; text-align: left; background: #211d19; border: 1px solid #ffffff0e; border-radius: 8px; transition: .18s ease; }
 .template:hover { background: #29231d; }
